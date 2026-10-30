@@ -2,7 +2,15 @@ import WebRtcPlayer from "./WebRTCPlayer";
 import { CameraConfig, FrigateConfig } from "@/types/frigateConfig";
 import AutoUpdatingCameraImage from "../camera/AutoUpdatingCameraImage";
 import ActivityIndicator from "../indicators/activity-indicator";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useResizeObserver } from "@/hooks/resize-observer";
 import MSEPlayer from "./MsePlayer";
 import JSMpegPlayer from "./JSMpegPlayer";
@@ -34,6 +42,10 @@ import useSWR from "swr";
 import { Button } from "../ui/button";
 import { useAutoLiveStream } from "@/hooks/use-auto-live-stream";
 import { adaptiveLiveStreams, viewportLiveRung } from "@/utils/adaptiveLive";
+import type { LiveHlsStatus } from "@/types/liveHls";
+import { toast } from "sonner";
+
+const LiveHlsPlayer = lazy(() => import("./LiveHlsPlayer"));
 
 type LivePlayerProps = {
   cameraRef?: (ref: HTMLDivElement | null) => void;
@@ -112,11 +124,37 @@ export default function LivePlayer({
     adaptive &&
     config?.ui.live_compatibility !== false &&
     adaptiveStreams.length > 1;
+  const [hlsFailed, setHlsFailed] = useState(false);
+  const [hlsStreamName, setHlsStreamName] = useState<string>();
+  const hlsEligible =
+    config?.ui.live_hls === true &&
+    requestedLiveMode === "mse" &&
+    (adaptiveSelected || streamAuto) &&
+    !micEnabled;
+  const failHls = useCallback(() => {
+    setHlsFailed(true);
+    toast.error(t("adaptive.hlsUnavailable"), {
+      id: `live-hls-${cameraConfig.name}`,
+    });
+  }, [cameraConfig.name, t]);
+  const { data: hlsStatus, isLoading: hlsStatusLoading } =
+    useSWR<LiveHlsStatus>(
+      hlsEligible && !hlsFailed
+        ? `${encodeURIComponent(cameraConfig.name)}/live/hls/status`
+        : null,
+      {
+        revalidateOnFocus: false,
+        shouldRetryOnError: false,
+        onError: failHls,
+      },
+    );
+  const hlsActive = hlsEligible && !hlsFailed && hlsStatus?.available === true;
+  const hlsPending = hlsEligible && !hlsFailed && hlsStatusLoading;
   const autoStream = useAutoLiveStream({
     cameraName: cameraConfig.name,
     streams: adaptiveStreams,
-    selected: adaptiveSelected,
-    paused: !windowVisible || !autoLive,
+    selected: adaptiveSelected && !hlsActive && !hlsPending,
+    paused: !windowVisible || !autoLive || hlsActive || hlsPending,
     minimumRung: viewportLiveRung(
       cameraConfig,
       adaptiveStreams,
@@ -125,14 +163,22 @@ export default function LivePlayer({
     ),
     allowFloor: false,
     context: "dashboard",
+    startLow: adaptiveSelected,
   });
   const streamName =
-    (adaptiveSelected ? autoStream.streamName : requestedStreamName) ??
-    requestedStreamName;
+    (adaptiveSelected && !hlsActive
+      ? autoStream.streamName
+      : requestedStreamName) ?? requestedStreamName;
+  const playingStreamName =
+    hlsActive && hlsStatus
+      ? (hlsStreamName ??
+        `${cameraConfig.name}_transcode_${hlsStatus.renditions[0].height}p`)
+      : streamName;
   const { handleError: handleAdaptiveError } = autoStream;
   useEffect(() => {
-    onStreamChange?.(cameraConfig.name, streamName);
-  }, [cameraConfig.name, streamName, onStreamChange]);
+    if (!hlsActive && !hlsPending)
+      onStreamChange?.(cameraConfig.name, streamName);
+  }, [cameraConfig.name, streamName, onStreamChange, hlsActive, hlsPending]);
   const [blockedStream, setBlockedStream] = useState<string>();
   const compatibilityBlocked =
     config?.ui.live_compatibility === false && blockedStream === streamName;
@@ -194,9 +240,9 @@ export default function LivePlayer({
   const streamLabel = useMemo(
     () =>
       Object.keys(cameraConfig.live.streams).find(
-        (label) => cameraConfig.live.streams[label] === streamName,
+        (label) => cameraConfig.live.streams[label] === playingStreamName,
       ),
-    [cameraConfig.live.streams, streamName],
+    [cameraConfig.live.streams, playingStreamName],
   );
 
   // camera activity
@@ -232,54 +278,6 @@ export default function LivePlayer({
   const [liveReady, setLiveReady] = useState(false);
   const [liveAspect, setLiveAspect] = useState<number | undefined>();
   const [liveResolution, setLiveResolution] = useState<VideoResolutionType>();
-  const [playbackWarning, setPlaybackWarning] = useState<
-    "stalled" | "delayed" | undefined
-  >();
-  const frameCountRef = useRef(0);
-  const handleStats = useCallback((value: PlayerStatsType) => {
-    frameCountRef.current = value.totalFrames;
-    setStats(value);
-  }, []);
-
-  useEffect(() => {
-    setPlaybackWarning(undefined);
-    if (!liveReady || !autoLive || !cameraEnabled || !windowVisible) return;
-
-    const video = overlayRef.current?.querySelector("video");
-    const progress = () => {
-      const quality = video?.getVideoPlaybackQuality?.();
-      return quality
-        ? quality.totalVideoFrames - quality.droppedVideoFrames
-        : (video?.currentTime ?? frameCountRef.current);
-    };
-    let lastFrame = progress();
-    let lastProgress = performance.now();
-    const interval = window.setInterval(() => {
-      const frame = progress();
-      if (frame > lastFrame) lastProgress = performance.now();
-      lastFrame = frame;
-      const behind =
-        video && video.buffered.length > 0
-          ? video.buffered.end(video.buffered.length - 1) - video.currentTime
-          : 0;
-      setPlaybackWarning(
-        performance.now() - lastProgress >= 5000
-          ? "stalled"
-          : behind > 10
-            ? "delayed"
-            : undefined,
-      );
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, [
-    liveReady,
-    autoLive,
-    cameraEnabled,
-    windowVisible,
-    streamName,
-    preferredLiveMode,
-    key,
-  ]);
 
   const handleFullResolution = useCallback(
     (value: React.SetStateAction<VideoResolutionType>) => {
@@ -380,7 +378,8 @@ export default function LivePlayer({
 
   useEffect(() => {
     setLiveReady(false);
-  }, [preferredLiveMode]);
+    setHlsStreamName(undefined);
+  }, [preferredLiveMode, hlsActive, hlsPending]);
 
   // the stream is part of the MSE and WebRTC keys, so a stream change
   // remounts them in the same render and the new player is hidden until it
@@ -388,7 +387,7 @@ export default function LivePlayer({
   const [renderedStream, setRenderedStream] = useState(streamName);
   if (renderedStream !== streamName) {
     setRenderedStream(streamName);
-    if (preferredLiveMode !== "jsmpeg") {
+    if (preferredLiveMode !== "jsmpeg" && !hlsActive) {
       setLiveReady(false);
       setLiveResolution(undefined);
     }
@@ -440,6 +439,42 @@ export default function LivePlayer({
   let player;
   if (!autoLive || !streamName || !cameraEnabled) {
     player = null;
+  } else if (hlsPending) {
+    player = <ActivityIndicator className="w-full" />;
+  } else if (hlsActive && hlsStatus) {
+    player = (
+      <Suspense fallback={<ActivityIndicator className="w-full" />}>
+        <LiveHlsPlayer
+          key={`hls_${cameraConfig.name}_${key}`}
+          camera={cameraConfig.name}
+          renditions={hlsStatus.renditions}
+          maximumHeight={
+            inDashboard
+              ? overlayDimensions.height *
+                Math.min(2, Math.max(1, window.devicePixelRatio))
+              : Math.max(...hlsStatus.renditions.map((value) => value.height))
+          }
+          className={`size-full ${liveReady ? "" : "hidden"}`}
+          playbackEnabled={
+            (windowVisible || playInBackground || pip === true) &&
+            (cameraActive || liveReady)
+          }
+          audioEnabled={playAudio}
+          volume={volume}
+          pip={pip}
+          getStats={showStats}
+          setStats={setStats}
+          onPlaying={playerIsPlaying}
+          onError={failHls}
+          onResolution={handleFullResolution}
+          onLevelChange={(height) => {
+            const name = `${cameraConfig.name}_transcode_${height}p`;
+            setHlsStreamName(name);
+            onStreamChange?.(cameraConfig.name, name);
+          }}
+        />
+      </Suspense>
+    );
   } else if (preferredLiveMode == "webrtc") {
     player = (
       <WebRtcPlayer
@@ -450,7 +485,7 @@ export default function LivePlayer({
           (windowVisible || playInBackground) && (cameraActive || liveReady)
         }
         getStats={showStats}
-        setStats={handleStats}
+        setStats={setStats}
         setFullResolution={handleFullResolution}
         audioEnabled={playAudio}
         volume={volume}
@@ -483,7 +518,7 @@ export default function LivePlayer({
           volume={volume}
           playInBackground={playInBackground}
           getStats={showStats}
-          setStats={handleStats}
+          setStats={setStats}
           onPlaying={playerIsPlaying}
           pip={pip}
           setFullResolution={handleFullResolution}
@@ -517,7 +552,7 @@ export default function LivePlayer({
             cameraActive || !showStillWithoutActivity || liveReady
           }
           useWebGL={useWebGL}
-          setStats={handleStats}
+          setStats={setStats}
           containerRef={containerRef ?? internalContainerRef}
           onPlaying={playerIsPlaying}
         />
@@ -542,7 +577,7 @@ export default function LivePlayer({
         }
       }}
       data-camera={cameraConfig.name}
-      data-live-stream={streamName}
+      data-live-stream={playingStreamName}
       data-live-auto={streamAuto || adaptiveSelected}
       className={cn(
         // the card owns the corner: overflow-hidden clips the stream, the still
@@ -741,24 +776,6 @@ export default function LivePlayer({
       )}
 
       <div className="absolute right-2 top-2 flex items-center gap-3">
-        {cameraEnabled &&
-          (!autoLive || !liveReady || offline || playbackWarning) && (
-            <span
-              role="status"
-              data-testid="live-warning-badge"
-              title={
-                playbackWarning === "delayed"
-                  ? t("liveWarning.delayedDescription")
-                  : t("liveWarning.notLiveDescription")
-              }
-              className="z-30 inline-flex items-center gap-1 rounded bg-amber-400 px-2 py-1 text-xs font-semibold text-black"
-            >
-              <TbExclamationCircle className="size-4" aria-hidden />
-              {playbackWarning === "delayed"
-                ? t("liveWarning.delayed")
-                : t("liveWarning.notLive")}
-            </span>
-          )}
         {showResolution &&
           liveReady &&
           cameraEnabled &&

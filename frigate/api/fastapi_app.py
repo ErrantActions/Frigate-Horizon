@@ -32,8 +32,10 @@ from frigate.api import (
     event,
     export,
     hardware,
+    live_hls,
     media,
     motion_search,
+    nfs,
     notices,
     notification,
     playback,
@@ -57,6 +59,7 @@ from frigate.comms.dispatcher import Dispatcher
 from frigate.comms.event_metadata_updater import (
     EventMetadataPublisher,
 )
+from frigate.comms.live_hls import LiveHlsManager
 from frigate.comms.reolink_api import ReolinkEventManager
 from frigate.config import FrigateConfig
 from frigate.config.camera.updater import CameraConfigUpdatePublisher
@@ -125,6 +128,7 @@ def create_fastapi_app(
         replay_watchdog = None
         try:
             # Frigate initializes its database/models before entering ASGI startup.
+            await app.state.live_hls_manager.start()
             await app.playback_manager.start()
             await app.state.audio_repair_manager.start()
             await app.state.compression_manager.start()
@@ -187,7 +191,10 @@ def create_fastapi_app(
                             finally:
                                 await app.state.audio_repair_manager.close()
                         finally:
-                            await app.playback_manager.close()
+                            try:
+                                await app.playback_manager.close()
+                            finally:
+                                await app.state.live_hls_manager.close()
                     finally:
                         try:
                             await app.onvif_replay.shutdown()
@@ -213,6 +220,9 @@ def create_fastapi_app(
     app.state.vector_previews = VectorPreviewManager()
     app.state.timing_calibration = TemporaryTimingTuner(frigate_config.cameras)
     app.state.reolink_events = ReolinkEventManager(lambda: app.frigate_config)
+    app.state.live_hls_manager = LiveHlsManager(
+        lambda: app.frigate_config, Path(CONFIG_DIR) / ".live-hls" / "mediamtx.yml"
+    )
     app.state.plugins = PluginManager(
         Path(CONFIG_DIR) / "plugins",
         lambda: app.frigate_config,
@@ -280,10 +290,12 @@ def create_fastapi_app(
     app.include_router(environment.router)
     app.include_router(onvif_api.router)
     app.include_router(playback.router)
+    app.include_router(live_hls.router)
     app.include_router(audio_repair.router)
     app.include_router(protected_media.router)
     app.include_router(bookmarks.router)
     app.include_router(compression.router)
+    app.include_router(nfs.router)
     app.include_router(media.router)
     app.include_router(motion_search.router)
     app.include_router(record.router)

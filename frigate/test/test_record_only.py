@@ -76,6 +76,22 @@ class TestRecordingOnly(unittest.TestCase):
             with self.assertRaises(ValueError):
                 recording_metadata_cutoff(camera, 0)
 
+    def test_disabled_camera_can_pause_recording_without_generating_commands(self):
+        camera = config()
+        camera.enabled = False
+        camera.record.enabled = False
+        mode = RecordingOnlyMode(mode="recording_only", cameras={"native_test"})
+        with patch("frigate.motion.record_only.configuration", return_value=mode):
+            self.assertEqual(recording_only_commands(camera), [])
+
+    def test_enabled_camera_still_requires_recording_in_recording_only_mode(self):
+        camera = config()
+        camera.record.enabled = False
+        mode = RecordingOnlyMode(mode="recording_only", cameras={"native_test"})
+        with patch("frigate.motion.record_only.configuration", return_value=mode):
+            with self.assertRaisesRegex(ValueError, "existing continuous recording"):
+                recording_only_commands(camera)
+
     def test_unselected_camera_remains_unchanged(self):
         mode = RecordingOnlyMode(mode="recording_only", cameras={"another_camera"})
         with patch("frigate.motion.record_only.configuration", return_value=mode):

@@ -6,7 +6,9 @@
     "delayedDescription": "Playback is more than 10 seconds behind the received video."
   },
   "adaptive": {
-    "minimumUnavailable": "Live video could not be played at the minimum allowed quality. Retry or check the connection."
+    "minimumUnavailable": "Live video could not be played at the minimum allowed quality. Retry or check the connection.",
+    "hlsUnavailable": "Adaptive HLS is unavailable. Using compatibility streaming.",
+    "pictureInPictureUnavailable": "Picture in Picture is unavailable for this video."
   },
   "resolutionBadge": {
     "value": "{{width}} x {{height}}",

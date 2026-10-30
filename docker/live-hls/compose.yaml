@@ -1,0 +1,22 @@
+services:
+  live-hls:
+    image: bluenviron/mediamtx:1.21.3@sha256:59e43552f3be43695b70c19424dc2a42fcec18075f88d91561a24ac5d70a586c
+    network_mode: service:frigate
+    depends_on:
+      - frigate
+    command:
+      - /run/live-hls/mediamtx.yml
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: ./config/.live-hls
+        target: /run/live-hls
+        read_only: true
+        bind:
+          create_host_path: false

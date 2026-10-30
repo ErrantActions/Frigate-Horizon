@@ -1,0 +1,77 @@
+{
+  "title": "Remote NFS storage",
+  "description": "Prepare TrueNAS App mounts for a remote NFS server. Mounts are managed by TrueNAS and Docker, not by a privileged Frigate container.",
+  "localFirstHelp": "Recommended: record locally, then copy and verify retained footage to the NFS archive when the local high-water threshold is reached. If the share fails, transfers pause and local recording can continue while space remains. When the share recovers, the backlog drains.",
+  "safety": "This page never mounts shares, enables recording, allocates disk space, or automatically remounts active storage. Local capacity is finite. Without emergency deletion, recording can stop when the local filesystem fills; protected footage is never automatically discarded.",
+  "unavailable": "NFS setup is unavailable. Check your connection, administrator access, and backend version.",
+  "bufferTooLarge": "The configured local recording budget exceeds the reported local filesystem or dataset capacity. Correct the buffer budget and verify usable free space before enabling recording or archiving.",
+  "unknown": "Unknown",
+  "share": "Share {{count}}",
+  "addShare": "Add another share",
+  "remove": "Remove share",
+  "generate": "Generate TrueNAS App additions",
+  "planFailed": "Could not generate the plan. Check server addresses, absolute dedicated export paths, unique roles, and matching connection settings for shares on the same server.",
+  "copy": "Copy",
+  "copied": "Copied",
+  "copyFailed": "Could not copy. Select and copy the text manually.",
+  "saved": "Transfer settings saved. Recording and mount settings were not changed.",
+  "saveFailed": "Could not save transfer settings. Refresh and retry if another administrator changed them.",
+  "roles": {
+    "archive": "Local-first NFS offload / archive (recommended)",
+    "recordings": "Primary recordings directly on NFS (advanced)"
+  },
+  "fields": {
+    "role": "Share role",
+    "server": "NFS server IP or hostname",
+    "export": "Dedicated export path",
+    "version": "NFS version",
+    "connections": "NFS TCP connections (1-16)"
+  },
+  "connectionsHelp": "nconnect is a mount-time connection-pool setting, not one socket per camera. Multiple mounts to the same server can inherit the first mount's settings. More connections do not guarantee more throughput or multiple physical links.",
+  "directWarning": "Direct-to-NFS has no automatic local fallback. A failed hard mount can block recording. Replacing a primary mount can hide existing local recordings, so migrate footage and preserve its metadata before switching.",
+  "directConfirm": "I understand the outage and migration risks of direct NFS recording.",
+  "mounts": {
+    "title": "Current mount metadata",
+    "refresh": "Refresh mounts",
+    "detected": "NFS mount entry detected",
+    "absent": "No NFS mount covers this directory",
+    "connections": "Reported connection-pool setting: {{value}}",
+    "metadataOnly": "Mount metadata does not verify export access, marker identity, current TCP socket count, write permissions, or speed. The archive worker independently validates the actual mount and identity before writing.",
+    "connections_one": "Reported connection-pool setting: {{value}}",
+    "connections_other": "Reported connection-pool setting: {{value}}"
+  },
+  "probe": {
+    "button": "Test NFS port",
+    "reachable": "TCP port 2049 is reachable. Export access, write permissions, and transfer speed have not been verified.",
+    "requestFailed": "Could not test the NFS server. Check the address and API connection.",
+    "errors": {
+      "timeout": "The NFS port check timed out.",
+      "dns_failed": "The NFS server hostname could not be resolved.",
+      "address_not_remote": "The hostname resolved to a local, link-local, or otherwise unsupported address.",
+      "unreachable": "TCP port 2049 could not be reached. Check the NFS service, routing, and firewall."
+    }
+  },
+  "output": {
+    "title": "TrueNAS App setup plan",
+    "noChanges": "Plan generated only. No shares were mounted and no recording or archive settings were applied.",
+    "mergeWarning": "These are additions, not a replacement App configuration. Merge the named volumes at the top level and append the service mappings to Frigate's existing volumes list. Preserve local /config, existing media mounts, GPU assignments, devices, network, and authentication. Keep the database local.",
+    "volumes": "Add to top-level App volumes",
+    "service": "Append to the Frigate service volumes",
+    "storage": "Merge into Frigate storage settings after reviewing the local buffer budget",
+    "marker": "Before enabling the archive, provision {{filename}} on the intended NFS destination with the exact contents {{contents}}. Frigate never creates or overwrites this identity marker automatically.",
+    "permissions": "Grant the Frigate runtime UID {{uid}} and GID {{gid}} access to the dedicated dataset/export. Configure TrueNAS export access and root-squash deliberately; NFS does not use a username/password mount option. Use a trusted storage network or VPN, not an Internet-exposed NFS export.",
+    "maintenance": "Changing server, export, version, or connection count generates a new Docker volume name because volume options are immutable. Review all mounts to that server, schedule an approved maintenance window, and redeploy through TrueNAS. Never forcibly unmount active recordings. NFSv3 may also require RPC/mountd firewall access beyond port 2049."
+  },
+  "adaptive": {
+    "title": "Adaptive background transfer workers",
+    "help": "Opt in to probing one additional worker after sustained verified completions, up to your cap. The worker backs off when throughput falls or the archive fails. These are copy/readback workers, not NFS TCP connections; this never remounts shares or enables archiving. Fixed concurrency remains the default.",
+    "enabled": "Automatically tune background transfer concurrency",
+    "maximum": "Maximum copy/readback workers",
+    "current": "Current worker limit: {{count}} of {{maximum}}",
+    "save": "Save transfer-worker settings only",
+    "current_one": "Current worker limit: {{count}} of {{maximum}}",
+    "current_other": "Current worker limit: {{count}} of {{maximum}}"
+  },
+  "share_one": "Share {{count}}",
+  "share_other": "Share {{count}}"
+}

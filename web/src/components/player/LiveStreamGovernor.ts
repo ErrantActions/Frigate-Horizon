@@ -33,6 +33,7 @@ const CHRONIC_DEFICIT_S = 6;
 const CHRONIC_WINDOW_MS = 60000;
 // clean time before trying one rung up, doubled after each failed try
 const UPSWITCH_WAIT_MS = 60000;
+const STARTUP_UPSWITCH_WAIT_MS = 3000;
 const UPSWITCH_WAIT_MAX_MS = 600000;
 // a downswitch this soon after an upswitch counts as a failed try
 const PROBATION_MS = 30000;
@@ -71,17 +72,26 @@ export class LiveStreamGovernor {
   private deficits: Shortfall[] = [];
   private upswitchWaitMs = UPSWITCH_WAIT_MS;
   private probationUntil = 0;
+  private startupProbing = false;
 
   /** rungCount includes the jsmpeg floor. */
   constructor(
     rungCount: number,
     now: () => number = Date.now,
     private readonly includeFloor = true,
+    startLow = false,
   ) {
     this.floor = rungCount - 1;
     this.now = now;
     this.rungStartTs = now();
     this.cleanSinceTs = this.rungStartTs;
+    if (startLow) {
+      this.snapshot = { rung: this.lowestPlayable(), reason: undefined };
+      this.startupProbing = this.snapshot.rung > 0;
+      if (this.startupProbing) {
+        this.upswitchWaitMs = STARTUP_UPSWITCH_WAIT_MS;
+      }
+    }
   }
 
   subscribe = (listener: () => void) => {
@@ -222,6 +232,10 @@ export class LiveStreamGovernor {
 
     this.probationUntil = now + PROBATION_MS;
     this.moveTo(target);
+    if (target === this.minimumRung) {
+      this.startupProbing = false;
+      this.upswitchWaitMs = UPSWITCH_WAIT_MS;
+    }
   }
 
   /**
@@ -250,7 +264,9 @@ export class LiveStreamGovernor {
     }
     if (
       this.snapshot.rung < this.minimumRung ||
-      (this.minimumRung < previous && this.snapshot.rung === previous)
+      (this.minimumRung < previous &&
+        this.snapshot.rung === previous &&
+        !this.startupProbing)
     ) {
       this.moveTo(this.minimumRung);
     }
@@ -270,6 +286,7 @@ export class LiveStreamGovernor {
   /** Returns to the top rung and clears every session fact. */
   reset() {
     this.unplayable.clear();
+    this.startupProbing = false;
     this.upswitchWaitMs = UPSWITCH_WAIT_MS;
     this.probationUntil = 0;
     this.moveTo(this.holdLow ? this.lowestPlayable() : this.minimumRung);
@@ -281,6 +298,8 @@ export class LiveStreamGovernor {
       return false;
     }
 
+    this.startupProbing = false;
+    this.upswitchWaitMs = Math.max(this.upswitchWaitMs, UPSWITCH_WAIT_MS);
     if (this.now() < this.probationUntil) {
       this.upswitchWaitMs = Math.min(
         this.upswitchWaitMs * 2,
@@ -319,7 +338,11 @@ export class LiveStreamGovernor {
           : undefined;
     }
 
-    return this.holdLow ? "saveData" : this.downReason;
+    return this.holdLow
+      ? "saveData"
+      : this.startupProbing
+        ? undefined
+        : this.downReason;
   }
 
   private nextPlayableAbove(rung: number): number | undefined {

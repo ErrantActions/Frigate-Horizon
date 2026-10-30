@@ -390,6 +390,7 @@
     "mediaSync": "Media sync",
     "recordingAudioRepair": "Recording audio repair",
     "recordingCompression": "Older recording compression",
+    "recordingNfs": "Remote NFS storage",
     "regionGrid": "Region grid"
   },
   "dialog": {

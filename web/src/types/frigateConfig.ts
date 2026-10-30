@@ -5,6 +5,7 @@ import { RecordingStorageSettings } from "./storage";
 import type { CameraEnvironmentSettings, WeatherSettings } from "./environment";
 
 export interface UiConfig {
+  live_hls?: boolean;
   live_compatibility?: boolean;
   recording_compatibility?: boolean;
   timezone?: string;

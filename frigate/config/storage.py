@@ -100,6 +100,11 @@ class StorageConfig(FrigateBaseModel):
         title="Parallel archive transfers",
         description="Maximum concurrent verified file transfers in each bounded batch. Multiple workers can overlap storage latency but do not guarantee multiple NFS connections or LACP link distribution.",
     )
+    adaptive_transfers: bool = Field(
+        default=False,
+        title="Adaptive archive transfers",
+        description="Adjust copy and readback worker concurrency between verified batches, up to parallel_transfers. Back off when throughput falls or a destination fails. This never changes NFS mount connections, remounts shares, or enables recording.",
+    )
     emergency_delete: bool = Field(
         default=True,
         title="Emergency local deletion",

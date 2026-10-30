@@ -167,6 +167,8 @@ def timing_calibration_options() -> TimingCalibrationOptions | None:
 
 def recording_only_commands(camera: CameraConfig) -> list[dict[str, Any]]:
     """Preserve original stream-copy recording outputs while removing detection outputs."""
+    if not camera.enabled:
+        return []
     if not recording_only(camera.name):
         return [entry for entry in camera.ffmpeg_cmds if "detect" not in entry["roles"]]
     if not camera.record.enabled or camera.record.continuous.days <= 0:

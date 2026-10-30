@@ -49,6 +49,39 @@ class TestNativeReviewSeverity(unittest.TestCase):
             SeverityEnum.alert,
         )
 
+    def test_car_and_pet_filters_do_not_match_broad_camera_labels(self):
+        review = policy(detection_labels=["person", "car", "cat", "dog", "motion"])
+        for label in ("vehicle", "animal"):
+            with self.subTest(label=label):
+                self.assertIsNone(native_review_severity(review, label))
+
+    def test_explicit_camera_labels_restore_categories_without_renaming_objects(self):
+        review = policy(
+            alert_labels=["person", "car", "vehicle"],
+            detection_labels=["person", "car", "cat", "dog", "vehicle", "animal"],
+        )
+        for label, severity in (
+            ("person", SeverityEnum.alert),
+            ("car", SeverityEnum.alert),
+            ("vehicle", SeverityEnum.alert),
+            ("cat", SeverityEnum.detection),
+            ("dog", SeverityEnum.detection),
+            ("animal", SeverityEnum.detection),
+        ):
+            with self.subTest(label=label):
+                self.assertEqual(native_review_severity(review, label), severity)
+
+    def test_explicit_camera_labels_still_cannot_claim_zone_entry(self):
+        review = policy(
+            alert_labels=["person", "car", "vehicle"],
+            detection_labels=["vehicle", "animal"],
+            alert_zones=["driveway"],
+            detection_zones=["driveway"],
+        )
+        for label in ("vehicle", "animal"):
+            with self.subTest(label=label):
+                self.assertIsNone(native_review_severity(review, label))
+
     def test_disabled_alerts_fall_through_to_detections(self):
         self.assertEqual(
             native_review_severity(policy(alerts=False), "person"),

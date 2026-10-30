@@ -20,6 +20,7 @@ from frigate.models import (
     ReviewSegment,
 )
 from frigate.record.archive import ArchiveDrain
+from frigate.record.archive_concurrency import ArchiveConcurrency
 from frigate.record.archive_manager import ArchiveProcess
 from frigate.record.archive_store import (
     copy_recording_unverified,
@@ -69,6 +70,7 @@ class TestParallelArchive(unittest.TestCase):
                 local_budget_gib=100,
                 drain_percent=70,
                 parallel_transfers=2,
+                adaptive_transfers=False,
             )
         )
         self.worker.config_revision = SimpleNamespace(value=1)
@@ -112,6 +114,23 @@ class TestParallelArchive(unittest.TestCase):
             any(
                 report["transfer"].get("parallel_transfers") == 2
                 for report in self.reports
+            )
+        )
+
+    def test_adaptive_batch_preserves_verified_publication_and_source_accounting(self):
+        self.worker.config.storage.adaptive_transfers = True
+        self.worker.adaptive = ArchiveConcurrency()
+        moved = self.worker.move_batch(self.rows, self.archive)
+        self.assertEqual(len(moved), 2)
+        self.assertEqual(self.worker.batch.verified_files, 2)
+        self.assertEqual(ArchiveTransfer.select().count(), 0)
+        self.assertEqual(RecordingLease.select().count(), 0)
+        self.assertEqual(self.worker.adaptive.current, 1)
+        self.assertTrue(
+            any(
+                item["transfer"]["adaptive_transfers"]["effective_workers"] == 1
+                for item in self.reports
+                if item.get("transfer")
             )
         )
 

@@ -19,6 +19,12 @@ class UnitSystemEnum(str, Enum):
 
 
 class UIConfig(FrigateBaseModel):
+    live_hls: bool = Field(
+        default=False,
+        strict=True,
+        title="Bandwidth-adaptive live HLS",
+        description="Use a private on-demand HLS packager for bandwidth-adaptive live viewing over authenticated HTTPS. Requires the live-hls companion service. Recordings, detection, and camera source settings are unchanged.",
+    )
     live_compatibility: bool = Field(
         default=True,
         strict=True,

@@ -110,6 +110,10 @@
       "label": "Parallel archive transfers",
       "description": "Maximum concurrent verified file transfers in each bounded batch. Multiple workers can overlap storage latency but do not guarantee multiple NFS connections or LACP link distribution."
     },
+    "adaptive_transfers": {
+      "label": "Adaptive archive transfers",
+      "description": "Adjust copy and readback worker concurrency between verified batches, up to parallel_transfers. Back off when throughput falls or a destination fails. This never changes NFS mount connections, remounts shares, or enables recording."
+    },
     "emergency_delete": {
       "label": "Emergency local deletion",
       "description": "Reclaim ordinary local footage first and unsaved event footage only as a last resort when less than one estimated hour of free space remains. Protected footage is never automatically deleted; recording may stop if no eligible space remains."
@@ -414,6 +418,10 @@
   "ui": {
     "label": "UI",
     "description": "User interface preferences such as timezone, time/date formatting, and units.",
+    "live_hls": {
+      "label": "Bandwidth-adaptive live HLS",
+      "description": "Use a private on-demand HLS packager for bandwidth-adaptive live viewing over authenticated HTTPS. Requires the live-hls companion service. Recordings, detection, and camera source settings are unchanged."
+    },
     "live_compatibility": {
       "label": "Allow Live compatibility streams",
       "description": "Global administrator control for Frigate-generated H264 Live streams. Disable to use original configured streams only. Camera codecs and recordings are unchanged."

@@ -102,6 +102,7 @@ export const settingsViewGroups = [
       "mediaSync",
       "recordingAudioRepair",
       "recordingCompression",
+      "recordingNfs",
       "regionGrid",
     ],
   },

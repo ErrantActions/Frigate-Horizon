@@ -18,8 +18,9 @@ function governorFor(
   context: string,
   allowFloor: boolean,
   minimumRung: number,
+  startLow: boolean,
 ) {
-  const key = `${context}|${cameraName}|${allowFloor}|${streams.join(",")}`;
+  const key = `${context}|${cameraName}|${allowFloor}|${startLow}|${streams.join(",")}`;
   let governor = governors.get(key);
   if (!governor) {
     // the extra rung is the jsmpeg floor
@@ -27,6 +28,7 @@ function governorFor(
       streams.length + (allowFloor ? 1 : 0),
       Date.now,
       allowFloor,
+      startLow,
     );
     governor.setMinimumRung(minimumRung);
     governors.set(key, governor);
@@ -46,6 +48,7 @@ type UseAutoLiveStreamProps = {
   minimumRung?: number;
   allowFloor?: boolean;
   context?: string;
+  startLow?: boolean;
 };
 
 export type AutoLiveStream = {
@@ -65,10 +68,19 @@ export function useAutoLiveStream({
   minimumRung = 0,
   allowFloor = true,
   context = "camera",
+  startLow = false,
 }: UseAutoLiveStreamProps): AutoLiveStream {
   const governor = useMemo(
-    () => governorFor(cameraName, streams, context, allowFloor, minimumRung),
-    [cameraName, streams, context, allowFloor, minimumRung],
+    () =>
+      governorFor(
+        cameraName,
+        streams,
+        context,
+        allowFloor,
+        minimumRung,
+        startLow,
+      ),
+    [cameraName, streams, context, allowFloor, minimumRung, startLow],
   );
   const { rung, reason } = useSyncExternalStore(
     governor.subscribe,

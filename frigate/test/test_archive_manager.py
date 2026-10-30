@@ -20,8 +20,12 @@ if os.name != "nt":
 
 @unittest.skipIf(os.name == "nt", "Archive worker requires Linux resource/process APIs")
 class TestArchiveWorker(unittest.TestCase):
-    setUp = store_fixture.TestArchiveStore.setUp
     recording = store_fixture.TestArchiveStore.recording
+
+    def setUp(self):
+        store_fixture.TestArchiveStore.setUp(self)
+        self.db.bind([ArchiveTransfer, RecordingLease])
+        self.db.create_tables([ArchiveTransfer, RecordingLease])
 
     def test_expiry_yields_only_after_completed_deletions_outside_transactions(self):
         self.recording(storage_tier="archive")
@@ -76,6 +80,8 @@ class TestArchiveWorker(unittest.TestCase):
                 local_budget_gib=100,
                 start_percent=100,
                 drain_percent=90,
+                parallel_transfers=1,
+                adaptive_transfers=False,
             )
         )
         worker.batch = ArchiveDrain()

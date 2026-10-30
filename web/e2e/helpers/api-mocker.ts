@@ -1,0 +1,410 @@
+/**
+ * REST API mock using Playwright's page.route().
+ *
+ * Intercepts all /api/* requests and returns factory-generated responses.
+ * Must be installed BEFORE page.goto() to prevent auth redirects.
+ */
+
+import type { Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  BASE_CONFIG,
+  type DeepPartial,
+  configFactory,
+} from "../fixtures/mock-data/config";
+import { DETECTION_HARDWARE } from "../fixtures/mock-data/hardware";
+import { adminProfile, type UserProfile } from "../fixtures/mock-data/profile";
+import { BASE_STATS, statsFactory } from "../fixtures/mock-data/stats";
+import { STORAGE_TIERS } from "../fixtures/mock-data/storage";
+import {
+  DISABLED_CAMERA_ENVIRONMENT,
+  DISABLED_WEATHER,
+} from "../fixtures/mock-data/environment";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const MOCK_DATA_DIR = resolve(__dirname, "../fixtures/mock-data");
+
+function loadMockJson(filename: string): unknown {
+  return JSON.parse(readFileSync(resolve(MOCK_DATA_DIR, filename), "utf-8"));
+}
+
+// 1x1 transparent PNG
+export const PLACEHOLDER_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+export interface ApiMockOverrides {
+  config?: DeepPartial<typeof BASE_CONFIG>;
+  profile?: UserProfile;
+  stats?: DeepPartial<typeof BASE_STATS>;
+  reviews?: unknown[];
+  events?: unknown[];
+  exports?: unknown[];
+  cases?: unknown[];
+  faces?: Record<string, unknown>;
+  configRaw?: string;
+  configSchema?: Record<string, unknown>;
+  hardware?: unknown[];
+  hwaccel?: {
+    recommended: string;
+    available?: { key: string; presets: Record<string, string> }[];
+  };
+  users?: { username: string; role: string }[];
+  notices?: unknown[];
+  mutedChecks?: unknown[];
+  /** camera name to the ffprobe entries returned for `paths=camera:<name>` */
+  ffprobe?: Record<string, unknown[]>;
+}
+
+export const FFPROBE_OK = [
+  {
+    return_code: 0,
+    stderr: "",
+    stdout: {
+      streams: [
+        {
+          codec_type: "video",
+          codec_name: "h264",
+          width: 1920,
+          height: 1080,
+          avg_frame_rate: "15/1",
+        },
+        { codec_type: "audio", codec_name: "aac" },
+      ],
+    },
+  },
+];
+
+export class ApiMocker {
+  private page: Page;
+
+  constructor(page: Page) {
+    this.page = page;
+  }
+
+  async install(overrides?: ApiMockOverrides) {
+    const config = configFactory(overrides?.config);
+    const profile = overrides?.profile ?? adminProfile();
+    const stats = statsFactory(overrides?.stats);
+    const reviews =
+      overrides?.reviews ?? (loadMockJson("reviews.json") as unknown[]);
+    const events =
+      overrides?.events ?? (loadMockJson("events.json") as unknown[]);
+    const exports =
+      overrides?.exports ?? (loadMockJson("exports.json") as unknown[]);
+    const cases = overrides?.cases ?? (loadMockJson("cases.json") as unknown[]);
+    const reviewSummary = loadMockJson("review-summary.json");
+
+    // Config endpoint
+    await this.page.route("**/api/config", (route) => {
+      if (route.request().method() === "GET") {
+        return route.fulfill({ json: config });
+      }
+      return route.fulfill({ json: { success: true } });
+    });
+    await this.page.route("**/api/config/raw_paths", (route) =>
+      route.fulfill({
+        json: {
+          go2rtc: { streams: config.go2rtc?.streams ?? {} },
+          cameras: Object.fromEntries(
+            Object.entries(config.cameras).map(([name, camera]) => [
+              name,
+              { ffmpeg: { inputs: camera.ffmpeg.inputs } },
+            ]),
+          ),
+        },
+      }),
+    );
+
+    // Profile endpoint (AuthProvider fetches /profile directly via axios,
+    // which resolves to /api/profile due to axios.defaults.baseURL)
+    await this.page.route("**/profile", (route) =>
+      route.fulfill({ json: profile }),
+    );
+
+    // Environmental status defaults to disabled, not fabricated clear weather.
+    await this.page.route("**/api/environment/weather", (route) =>
+      route.fulfill({ json: DISABLED_WEATHER }),
+    );
+    await this.page.route("**/api/environment/cameras/*", (route) =>
+      route.fulfill({
+        json: {
+          ...DISABLED_CAMERA_ENVIRONMENT,
+          camera: decodeURIComponent(
+            new URL(route.request().url()).pathname.split("/").pop() ?? "",
+          ),
+        },
+      }),
+    );
+
+    // Stats endpoint
+    await this.page.route("**/api/stats", (route) =>
+      route.fulfill({ json: stats }),
+    );
+
+    // Reviews. The real backend exposes /review (singular) for the main
+    // list and /review/summary for the summary — the previous plural glob
+    // (**/api/reviews**) never matched either endpoint, so review-dependent
+    // tests silently ran without data. The POST mutations at /reviews/viewed
+    // and /reviews/delete (plural) still fall through to the generic
+    // mutation catch-all further down the file.
+    await this.page.route(/\/api\/review\/summary/, (route) =>
+      route.fulfill({ json: reviewSummary }),
+    );
+    await this.page.route(/\/api\/review(\?|$)/, (route) =>
+      route.fulfill({ json: reviews }),
+    );
+
+    // Export jobs. The Exports page polls this every 2s while any export
+    // is in_progress; without a mock route it falls through to the preview
+    // server which returns 500 and makes the page flap between loading and
+    // rendered state, breaking tests that navigate to /export.
+    await this.page.route("**/api/jobs/export", (route) =>
+      route.fulfill({ json: [] }),
+    );
+
+    // Recordings summary
+    await this.page.route("**/api/recordings/storage", (route) =>
+      route.fulfill({ json: {} }),
+    );
+    await this.page.route("**/api/recordings/storage/tiers", (route) =>
+      route.fulfill({ json: STORAGE_TIERS }),
+    );
+    await this.page.route("**/api/recordings/summary**", (route) =>
+      route.fulfill({ json: {} }),
+    );
+
+    // Previews (needed for review page event cards)
+    await this.page.route("**/api/preview/**", (route) =>
+      route.fulfill({ json: [] }),
+    );
+
+    // Sub-labels and attributes (for explore filters).
+    // Use trailing ** so query-string variants (e.g. ?split_joined=1) match.
+    await this.page.route("**/api/sub_labels**", (route) =>
+      route.fulfill({ json: [] }),
+    );
+    await this.page.route("**/api/labels**", (route) =>
+      route.fulfill({ json: ["person", "car"] }),
+    );
+    await this.page.route("**/api/*/attributes", (route) =>
+      route.fulfill({ json: [] }),
+    );
+    await this.page.route("**/api/recognized_license_plates", (route) =>
+      route.fulfill({ json: [] }),
+    );
+
+    // Events / search
+    await this.page.route("**/api/events**", (route) =>
+      route.fulfill({ json: events }),
+    );
+
+    // Exports
+    await this.page.route("**/api/export**", (route) =>
+      route.fulfill({ json: exports }),
+    );
+
+    // Cases
+    await this.page.route("**/api/cases", (route) =>
+      route.fulfill({ json: cases }),
+    );
+
+    // Faces
+    await this.page.route("**/api/faces", (route) =>
+      route.fulfill({ json: overrides?.faces ?? {} }),
+    );
+
+    // Logs
+    await this.page.route("**/api/logs/**", (route) =>
+      route.fulfill({
+        contentType: "text/plain",
+        body: "[2026-04-06 10:00:00] INFO: Frigate started\n[2026-04-06 10:00:01] INFO: Cameras loaded\n",
+      }),
+    );
+
+    // Config raw
+    await this.page.route("**/api/config/raw", (route) =>
+      route.fulfill({
+        contentType: "text/plain",
+        body:
+          overrides?.configRaw ??
+          "mqtt:\n  host: mqtt\ncameras:\n  front_door:\n    enabled: true\n",
+      }),
+    );
+
+    // Config schema
+    await this.page.route("**/api/config/schema.json", (route) =>
+      route.fulfill({
+        json: overrides?.configSchema ?? { type: "object", properties: {} },
+      }),
+    );
+
+    // Config set (mutation)
+    await this.page.route("**/api/config/set", (route) =>
+      route.fulfill({ json: { success: true, require_restart: false } }),
+    );
+
+    // Detection hardware discovery
+    await this.page.route("**/api/hardware/probe**", (route) =>
+      route.fulfill({ json: overrides?.hardware ?? DETECTION_HARDWARE }),
+    );
+
+    // Hwaccel preset recommendation
+    await this.page.route("**/api/hardware/hwaccel**", (route) =>
+      route.fulfill({
+        json: {
+          recommended: "",
+          available: [],
+          ...(overrides?.hwaccel ?? {}),
+        },
+      }),
+    );
+
+    // ffprobe. The Health tab's stream checks probe `camera:<name>`; the
+    // wizard probes raw URLs. Both get a healthy h264 + aac answer by default.
+    await this.page.route("**/api/ffprobe**", (route) => {
+      const url = new URL(route.request().url());
+      const paths = url.searchParams.get("paths") ?? "";
+      const camera = paths.startsWith("camera:") ? paths.slice(7) : undefined;
+      const entries = (camera && overrides?.ffprobe?.[camera]) || FFPROBE_OK;
+      return route.fulfill({ json: entries });
+    });
+
+    // Notices
+    await this.page.route("**/api/notices", (route) =>
+      route.fulfill({ json: overrides?.notices ?? [] }),
+    );
+    await this.page.route("**/api/notices/muted_checks", (route) =>
+      route.fulfill({ json: overrides?.mutedChecks ?? [] }),
+    );
+
+    // Users. GET lists them; POST/PUT (create, password) just succeed, so
+    // tests assert on the intercepted request body instead of a response.
+    await this.page.route("**/api/users**", (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({
+            json: overrides?.users ?? [{ username: "admin", role: "admin" }],
+          })
+        : route.fulfill({ json: { message: "ok" } }),
+    );
+
+    // Go2RTC streams
+    await this.page.route("**/api/go2rtc/streams**", (route) =>
+      route.fulfill({ json: {} }),
+    );
+
+    // Profiles
+    await this.page.route("**/api/profiles**", (route) =>
+      route.fulfill({
+        json: { profiles: [], active_profile: null, last_activated: {} },
+      }),
+    );
+
+    // Motion search
+    await this.page.route("**/api/motion_search**", (route) =>
+      route.fulfill({ json: { job_id: "test-job" } }),
+    );
+
+    // Region grid
+    await this.page.route("**/api/*/region_grid", (route) =>
+      route.fulfill({ json: {} }),
+    );
+
+    // Debug replay
+    await this.page.route("**/api/debug_replay/**", (route) =>
+      route.fulfill({ json: {} }),
+    );
+
+    // Generic mutation catch-all for remaining endpoints.
+    // Uses route.fallback() to defer to more specific routes registered above.
+    // Playwright matches routes in reverse registration order (last wins),
+    // so this catch-all must use fallback() to let specific routes take precedence.
+    await this.page.route("**/api/**", (route) => {
+      const method = route.request().method();
+      if (
+        method === "POST" ||
+        method === "PUT" ||
+        method === "PATCH" ||
+        method === "DELETE"
+      ) {
+        return route.fulfill({ json: { success: true } });
+      }
+      // Fall through to more specific routes for GET requests
+      return route.fallback();
+    });
+  }
+}
+
+export class MediaMocker {
+  private page: Page;
+
+  constructor(page: Page) {
+    this.page = page;
+  }
+
+  async install() {
+    await this.page.route("**/api/*/ptz/info**", (route) =>
+      route.fulfill({
+        json: {
+          name: new URL(route.request().url()).pathname.split("/")[2],
+          features: [],
+          presets: [],
+          profiles: [],
+        },
+      }),
+    );
+    // Camera snapshots
+    await this.page.route(
+      /\/api\/[^/]+\/latest\.(?:jpg|webp)(?:\?|$)/,
+      (route) =>
+        route.fulfill({
+          contentType: "image/png",
+          body: PLACEHOLDER_PNG,
+        }),
+    );
+
+    // Clips and thumbnails
+    await this.page.route("**/clips/**", (route) =>
+      route.fulfill({
+        contentType: "image/png",
+        body: PLACEHOLDER_PNG,
+      }),
+    );
+
+    // Event thumbnails. The explore grid and detail dialog request .webp,
+    // everything else requests .jpg.
+    await this.page.route("**/api/events/*/thumbnail.{jpg,webp}**", (route) =>
+      route.fulfill({
+        contentType: "image/png",
+        body: PLACEHOLDER_PNG,
+      }),
+    );
+
+    // Event snapshots
+    await this.page.route("**/api/events/*/snapshot.jpg**", (route) =>
+      route.fulfill({
+        contentType: "image/png",
+        body: PLACEHOLDER_PNG,
+      }),
+    );
+
+    // VOD / recordings
+    await this.page.route("**/vod/**", (route) =>
+      route.fulfill({
+        contentType: "application/vnd.apple.mpegurl",
+        body: "#EXTM3U\n#EXT-X-ENDLIST\n",
+      }),
+    );
+
+    // Live streams
+    await this.page.route("**/live/**", (route) =>
+      route.fulfill({
+        contentType: "application/vnd.apple.mpegurl",
+        body: "#EXTM3U\n#EXT-X-ENDLIST\n",
+      }),
+    );
+  }
+}

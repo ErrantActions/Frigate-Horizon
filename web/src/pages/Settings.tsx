@@ -55,6 +55,7 @@ import FrigatePlusSettingsView from "@/views/settings/FrigatePlusSettingsView";
 import MediaSyncSettingsView from "@/views/settings/MediaSyncSettingsView";
 import AudioRepairSettingsView from "@/views/settings/AudioRepairSettingsView";
 import CompressionSettingsView from "@/views/settings/CompressionSettingsView";
+import NfsSettingsView from "@/views/settings/NfsSettingsView";
 import RegionGridSettingsView from "@/views/settings/RegionGridSettingsView";
 import Go2RtcStreamsSettingsView from "@/views/settings/Go2RtcStreamsSettingsView";
 import PluginsView from "@/views/settings/PluginsView";
@@ -314,6 +315,7 @@ const SECTION_VIEWS = {
   mediaSync: MediaSyncSettingsView,
   recordingAudioRepair: AudioRepairSettingsView,
   recordingCompression: CompressionSettingsView,
+  recordingNfs: NfsSettingsView,
   regionGrid: RegionGridSettingsView,
 };
 

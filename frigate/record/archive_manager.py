@@ -38,6 +38,7 @@ from frigate.record.archive import (
     storage_lock,
     validate_mount,
 )
+from frigate.record.archive_concurrency import ArchiveConcurrency
 from frigate.record.archive_drain_state import ArchiveDrainState
 from frigate.record.archive_jobs import ARCHIVE_QUEUE_MULTIPLIER, run_archive_jobs
 from frigate.record.archive_limits import (
@@ -96,6 +97,7 @@ class ArchiveProcess(FrigateProcess):
         self.local_usage_mib = 0.0
         self.hourly_usage_mib = 0.0
         self.local_sampled_at = 0.0
+        self.adaptive = ArchiveConcurrency()
 
     def report(self, **values) -> None:
         """Publish a bounded health snapshot without blocking on the API."""
@@ -137,6 +139,7 @@ class ArchiveProcess(FrigateProcess):
                 if changed:
                     self.expiry_cursor = None
                     self.capacity.reset()
+                    self.adaptive = ArchiveConcurrency()
                 return changed
 
     def run(self) -> None:
@@ -323,6 +326,8 @@ class ArchiveProcess(FrigateProcess):
                         transfer=self.batch_status(local_mib, phase="waiting"),
                     )
             except ArchiveBlocked as error:
+                if settings.adaptive_transfers:
+                    self.adaptive.failed()
                 code = str(error)
                 if self.snapshot.get("error") != code:
                     logger.warning("Archive transfers paused: %s", code)
@@ -330,6 +335,8 @@ class ArchiveProcess(FrigateProcess):
                     state="blocked", error=code, transfer=self.blocked_transfer()
                 )
             except (OSError, DatabaseError, ValueError):
+                if settings.adaptive_transfers:
+                    self.adaptive.failed()
                 self.expiry_cursor = None
                 logger.exception(
                     "Archive maintenance failed; uncommitted transfers retain their local sources"
@@ -470,6 +477,20 @@ class ArchiveProcess(FrigateProcess):
             "sampled_at": time.time(),
             "phase": phase or ("waiting" if self.batch.active else "buffering"),
             "current_file": self.current_transfer,
+            "adaptive_transfers": {
+                "enabled": self.config.storage.adaptive_transfers,
+                "maximum_workers": self.config.storage.parallel_transfers,
+                "effective_workers": (
+                    self.adaptive.workers(self.config.storage.parallel_transfers)
+                    if self.config.storage.adaptive_transfers
+                    else self.config.storage.parallel_transfers
+                ),
+                "state": (
+                    self.adaptive.reason
+                    if self.config.storage.adaptive_transfers
+                    else "fixed"
+                ),
+            },
             "buffer_seconds": (
                 max(
                     0,
@@ -702,6 +723,12 @@ class ArchiveProcess(FrigateProcess):
     def move_batch(self, recordings: list[Recordings], root: Path) -> list[Recordings]:
         """Run one bounded batch with serial reservations and main-thread controls."""
         settings = self.config.storage
+        workers = (
+            self.adaptive.workers(settings.parallel_transfers)
+            if settings.adaptive_transfers
+            else settings.parallel_transfers
+        )
+        verified_before = self.batch.verified_bytes
         revision = self.config_revision.value
         cancelled = threading.Event()
         lock = threading.Lock()
@@ -720,7 +747,7 @@ class ArchiveProcess(FrigateProcess):
         with pin_archive(root, settings.mount_id) as pinned, ExitStack() as cleanup:
             directories = ArchiveDirectoryBatch(pinned)
             jobs = self._reserve_batch(
-                recordings[: settings.parallel_transfers * ARCHIVE_QUEUE_MULTIPLIER],
+                recordings[: workers * ARCHIVE_QUEUE_MULTIPLIER],
                 root,
                 pinned,
             )
@@ -797,7 +824,7 @@ class ArchiveProcess(FrigateProcess):
                 snapshot = self.batch_status(self.local_usage_mib, phase)
                 snapshot.update(
                     aggregate_rates=True,
-                    parallel_transfers=settings.parallel_transfers,
+                    parallel_transfers=workers,
                     active_files=active,
                     current_file=active[0] if active else None,
                     copy_rate_bytes_per_second=(
@@ -838,7 +865,7 @@ class ArchiveProcess(FrigateProcess):
 
             stopped = run_archive_jobs(
                 jobs,
-                settings.parallel_transfers,
+                workers,
                 lambda job: transfer(*job),
                 lambda: self.transfer_cancelled() or stopping(),
                 completed,
@@ -884,7 +911,7 @@ class ArchiveProcess(FrigateProcess):
 
                 stopped = run_archive_jobs(
                     copied_files,
-                    settings.parallel_transfers,
+                    workers,
                     verify,
                     lambda: self.transfer_cancelled() or stopping(),
                     verified,
@@ -929,6 +956,22 @@ class ArchiveProcess(FrigateProcess):
                     )
             finished.update(states)
             publish()
+            if settings.adaptive_transfers and not stopped:
+                previous = workers
+                self.adaptive.observe(
+                    self.batch.verified_bytes - verified_before,
+                    time.monotonic() - started,
+                    len(moved),
+                    settings.parallel_transfers,
+                    settings.transfer_mib_per_second,
+                )
+                if self.adaptive.current != previous:
+                    logger.info(
+                        "Adaptive archive transfers changed from %s to %s workers (%s)",
+                        previous,
+                        self.adaptive.current,
+                        self.adaptive.reason,
+                    )
         return moved
 
     def written_reservation(self, destination: Path, size: int) -> int:

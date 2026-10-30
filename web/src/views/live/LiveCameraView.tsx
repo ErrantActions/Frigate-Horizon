@@ -212,6 +212,7 @@ export default function LiveCameraView({
     cameraName: camera.name,
     streams: liveStreams,
     selected: autoSelected,
+    startLow: adaptiveResolution,
     allowFloor: camera.capture_mode !== "recording_only" && !adaptiveResolution,
     minimumRung: hasGpu4kLiveStream(camera)
       ? 0

@@ -15,6 +15,7 @@ export type RecordingStorageSettings = {
   archive_reserve_gib?: number;
   transfer_mib_per_second: number;
   parallel_transfers?: number;
+  adaptive_transfers?: boolean;
   emergency_delete: boolean;
 };
 
@@ -85,6 +86,12 @@ export type ArchiveTransferProgress = {
   cannot_outpace_ingest: boolean;
   aggregate_rates?: boolean;
   parallel_transfers?: number;
+  adaptive_transfers?: {
+    enabled: boolean;
+    maximum_workers: number;
+    effective_workers: number;
+    state: string;
+  };
   active_files?: ArchiveTransferFileProgress[];
   current_file: ArchiveTransferFileProgress | null;
 };
