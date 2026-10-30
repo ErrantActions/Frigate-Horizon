@@ -1,0 +1,804 @@
+"""Handle sending notifications for Frigate via Firebase."""
+
+import asyncio
+import datetime
+import json
+import logging
+import os
+import queue
+import threading
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from multiprocessing.synchronize import Event as MpEvent
+from typing import Any
+
+from peewee import DatabaseError
+from py_vapid import Vapid01
+from pywebpush import WebPusher
+from titlecase import titlecase
+
+from frigate.comms.apns import APNsMessage, APNsProvider, APNsTransport
+from frigate.comms.apns_registry import APNsRegistry
+from frigate.comms.base_communicator import Communicator
+from frigate.comms.config_updater import ConfigSubscriber
+from frigate.config import FrigateConfig
+from frigate.config.auth import AuthConfig
+from frigate.config.camera.updater import (
+    CameraConfigUpdateEnum,
+    CameraConfigUpdateSubscriber,
+)
+from frigate.const import BASE_DIR, CONFIG_DIR
+from frigate.models import User
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PushNotification:
+    user: str
+    payload: dict[str, Any]
+    title: str
+    message: str
+    direct_url: str = ""
+    image: str = ""
+    notification_type: str = "alert"
+    ttl: int = 0
+    installation_id: str | None = None
+
+
+def _build_web_pushers(user: str, subs: list[dict[str, Any]]) -> list[WebPusher]:
+    """Build pushers for a user's stored subscriptions, skipping unusable ones."""
+    pushers: list[WebPusher] = []
+
+    for sub in subs:
+        # WebPusher decodes the stored keys and raises on malformed ones
+        try:
+            pushers.append(WebPusher(sub))
+        except Exception:
+            logger.warning("Skipping invalid notification subscription for %s", user)
+
+    return pushers
+
+
+class WebPushClient(Communicator):
+    """Frigate wrapper for webpush client."""
+
+    def __init__(self, config: FrigateConfig, stop_event: MpEvent) -> None:
+        self.config = config
+        self.stop_event = stop_event
+        self.claim_headers: dict[str, dict[str, str]] = {}
+        self.refresh: int = 0
+        self.web_pushers: dict[str, list[WebPusher]] = {}
+        self.expired_subs: dict[str, list[str]] = {}
+        self.suspended_cameras: dict[str, int] = {
+            c.name: 0  # type: ignore[misc]
+            for c in self.config.cameras.values()
+        }
+        self.suspension_broadcaster: Callable[[str, Any, bool], None] | None = None
+        self.config_lock = threading.Lock()
+        self.last_camera_notification_time: dict[str, float] = {
+            c.name: 0  # type: ignore[misc]
+            for c in self.config.cameras.values()
+        }
+        self.last_notification_time: float = 0
+        self.user_cameras: dict[str, set[str]] = {}
+        self.notification_queue: queue.Queue[PushNotification] = queue.Queue()
+        self.notification_thread: threading.Thread | None = None
+        self.suspension_thread: threading.Thread | None = None
+        self.native_health_validator: (
+            Callable[[str, str | None, float], bool] | None
+        ) = None
+
+        if not self.config.notifications.email and not self._native_enabled():
+            logger.warning("Email must be provided for push notifications to be sent.")
+
+        # Pull keys from PEM or generate if they do not exist
+        self.vapid = (
+            None
+            if self._native_enabled() and not self.config.notifications.email
+            else Vapid01.from_file(os.path.join(CONFIG_DIR, "notifications.pem"))
+        )
+
+        users: Iterator[dict[str, Any]] = (
+            User.select(User.username, User.notification_tokens).dicts().iterator()
+        )
+        for user in users:
+            self.web_pushers[user["username"]] = _build_web_pushers(
+                user["username"], user["notification_tokens"]
+            )
+
+        # notification and auth config updater
+        self.global_config_subscriber = ConfigSubscriber("config/")
+        self.config_subscriber = CameraConfigUpdateSubscriber(
+            self.config,
+            self.config.cameras,
+            [CameraConfigUpdateEnum.add, CameraConfigUpdateEnum.notifications],
+        )
+        self._refresh_user_cameras()
+
+    def subscribe(self, receiver: Callable) -> None:
+        """Wrapper for allowing dispatcher to subscribe."""
+        pass
+
+    def start(self) -> None:
+        self.notification_thread = threading.Thread(
+            target=self._process_notifications, daemon=True
+        )
+        self.notification_thread.start()
+        self.suspension_thread = threading.Thread(
+            target=self._process_suspensions, daemon=True
+        )
+        self.suspension_thread.start()
+
+    def check_registrations(self) -> None:
+        if not self.config.notifications.email:
+            return
+        if self.vapid is None:
+            self.vapid = Vapid01.from_file(
+                os.path.join(CONFIG_DIR, "notifications.pem")
+            )
+        # check for valid claim or create new one
+        now = datetime.datetime.now().timestamp()
+        if len(self.claim_headers) == 0 or self.refresh < now:
+            self.refresh = int(
+                (datetime.datetime.now() + datetime.timedelta(hours=1)).timestamp()
+            )
+            endpoints: set[str] = set()
+
+            # get a unique set of push endpoints
+            for pushers in self.web_pushers.values():
+                for push in pushers:
+                    endpoint: str = push.subscription_info["endpoint"]
+                    endpoints.add(endpoint[0 : endpoint.index("/", 10)])
+
+            # create new claim
+            for endpoint in endpoints:
+                claim = {
+                    "sub": f"mailto:{self.config.notifications.email}",
+                    "aud": endpoint,
+                    "exp": self.refresh,
+                }
+                self.claim_headers[endpoint] = self.vapid.sign(claim)
+
+    def cleanup_registrations(self) -> None:
+        # delete any expired subs
+        if len(self.expired_subs) > 0:
+            for user, expired in self.expired_subs.items():
+                user_subs = []
+
+                # get all subscriptions, removing ones that are expired
+                stored_user: User = User.get_by_id(user)
+                for token in stored_user.notification_tokens:
+                    if token["endpoint"] in expired:
+                        continue
+
+                    user_subs.append(token)
+
+                # overwrite the database and reset web pushers
+                User.update(notification_tokens=user_subs).where(
+                    User.username == user
+                ).execute()
+
+                self.web_pushers[user] = _build_web_pushers(user, user_subs)
+
+                logger.info(
+                    f"Cleaned up {len(expired)} notification subscriptions for {user}"
+                )
+
+        self.expired_subs = {}
+
+    def suspend_notifications(self, camera: str, minutes: int) -> None:
+        """Suspend notifications for a specific camera."""
+        suspend_until = int(
+            (datetime.datetime.now() + datetime.timedelta(minutes=minutes)).timestamp()
+        )
+        self.suspended_cameras[camera] = suspend_until
+        logger.info(
+            f"Notifications for {camera} suspended until {datetime.datetime.fromtimestamp(suspend_until).strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+    def unsuspend_notifications(self, camera: str) -> None:
+        """Unsuspend notifications for a specific camera."""
+        self.suspended_cameras[camera] = 0
+        logger.info(f"Notifications for {camera} unsuspended")
+
+    def is_camera_suspended(self, camera: str) -> bool:
+        return datetime.datetime.now().timestamp() <= self.suspended_cameras[camera]
+
+    def set_suspension_broadcaster(
+        self, broadcaster: Callable[[str, Any, bool], None]
+    ) -> None:
+        """Register the callback used to broadcast suspension state changes."""
+        self.suspension_broadcaster = broadcaster
+
+    def _process_suspensions(self) -> None:
+        while not self.stop_event.wait(1):
+            self._clear_expired_suspensions()
+
+    def _clear_expired_suspensions(self) -> None:
+        """Reset and broadcast cameras whose suspension window has elapsed."""
+        now = datetime.datetime.now().timestamp()
+        for camera, suspended_until in list(self.suspended_cameras.items()):
+            if suspended_until and now > suspended_until:
+                self.unsuspend_notifications(camera)
+                if self.suspension_broadcaster is not None:
+                    self.suspension_broadcaster(
+                        f"{camera}/notifications/suspended", "0", True
+                    )
+
+    def publish(self, topic: str, payload: Any, retain: bool = False) -> None:
+        """Wrapper for publishing when client is in valid state."""
+        with self.config_lock:
+            # check for updated global config (notifications, auth)
+            while True:
+                config_topic, config_payload = (
+                    self.global_config_subscriber.check_for_update()
+                )
+                if config_topic is None:
+                    break
+                if config_topic == "config/notifications" and config_payload:
+                    self.config.notifications = config_payload
+                elif config_topic == "config/auth":
+                    if isinstance(config_payload, AuthConfig):
+                        self.config.auth = config_payload
+                    self._refresh_user_cameras()
+
+            updates = self.config_subscriber.check_for_updates()
+
+            if "add" in updates:
+                for camera in updates["add"]:
+                    self.suspended_cameras[camera] = 0
+                    self.last_camera_notification_time[camera] = 0
+
+                self._refresh_user_cameras()
+
+        if topic == "reviews":
+            decoded = json.loads(payload)
+            camera = decoded["before"]["camera"]
+            camera_config = self.config.cameras.get(camera)
+
+            if camera_config is None or not camera_config.notifications.enabled:
+                return
+            if self.is_camera_suspended(camera):
+                logger.debug(f"Notifications for {camera} are currently suspended.")
+                return
+            self.send_alert(decoded)
+        if topic == "triggers":
+            decoded = json.loads(payload)
+
+            camera = decoded["camera"]
+            name = decoded["name"]
+
+            # ensure notifications are enabled and the specific trigger has
+            # notification action enabled
+            camera_config = self.config.cameras.get(camera)
+
+            if (
+                camera_config is None
+                or not camera_config.notifications.enabled
+                or name not in camera_config.semantic_search.triggers
+                or "notification"
+                not in camera_config.semantic_search.triggers[name].actions
+            ):
+                return
+
+            if self.is_camera_suspended(camera):
+                logger.debug(f"Notifications for {camera} are currently suspended.")
+                return
+            self.send_trigger(decoded)
+        elif topic == "camera_monitoring":
+            decoded = json.loads(payload)
+            camera = decoded["camera"]
+            camera_config = self.config.cameras.get(camera)
+
+            if camera_config is None or not camera_config.notifications.enabled:
+                return
+            if self.is_camera_suspended(camera):
+                logger.debug(f"Notifications for {camera} are currently suspended.")
+                return
+            self.send_camera_monitoring(decoded)
+        elif topic == "notification_test":
+            if not self.config.notifications.enabled and not any(
+                cam.notifications.enabled for cam in self.config.cameras.values()
+            ):
+                logger.debug(
+                    "No cameras have notifications enabled, test notification not sent"
+                )
+                return
+            self.send_notification_test()
+
+    def send_push_notification(
+        self,
+        user: str,
+        payload: dict[str, Any],
+        title: str,
+        message: str,
+        direct_url: str = "",
+        image: str = "",
+        notification_type: str = "alert",
+        ttl: int = 0,
+        installation_id: str | None = None,
+    ) -> None:
+        notification = PushNotification(
+            user=user,
+            payload=payload,
+            title=title,
+            message=message,
+            direct_url=direct_url,
+            image=image,
+            notification_type=notification_type,
+            ttl=ttl,
+            installation_id=installation_id,
+        )
+        self.notification_queue.put(notification)
+
+    def _process_notifications(self) -> None:
+        native_loop = asyncio.new_event_loop() if self._native_enabled() else None
+        native_transport = (
+            APNsTransport(APNsProvider.from_settings(self.config.apns))
+            if native_loop is not None
+            else None
+        )
+        try:
+            self._notification_worker(native_loop, native_transport)
+        finally:
+            if native_loop is not None:
+                try:
+                    if native_transport is not None:
+                        native_loop.run_until_complete(native_transport.close())
+                finally:
+                    native_loop.close()
+
+    def _notification_worker(
+        self,
+        native_loop: asyncio.AbstractEventLoop | None,
+        native_transport: APNsTransport | None,
+    ) -> None:
+        while not self.stop_event.is_set():
+            try:
+                notification = self.notification_queue.get(timeout=1.0)
+                try:
+                    self._send_browser_notification(notification)
+                except Exception as error:
+                    logger.error(
+                        "Browser push delivery failed for user %s (%s)",
+                        notification.user,
+                        type(error).__name__,
+                    )
+
+                if native_loop is not None and native_transport is not None:
+                    try:
+                        native_loop.run_until_complete(
+                            self._send_native_notification(
+                                notification, native_transport
+                            )
+                        )
+                    except (ValueError, KeyError, TypeError, DatabaseError) as error:
+                        logger.error(
+                            "Native push delivery failed for user %s (%s)",
+                            notification.user,
+                            type(error).__name__,
+                        )
+
+            except queue.Empty:
+                continue
+            except Exception as error:
+                logger.error("Error processing notification (%s)", type(error).__name__)
+
+    def _send_browser_notification(self, notification: PushNotification) -> None:
+        """A browser-provider failure must not discard the native delivery."""
+        if notification.notification_type == "health":
+            return
+        message = APNsMessage(
+            notification.user,
+            notification.payload,
+            notification.title,
+            notification.message,
+            notification.notification_type,
+        )
+        if self.config.auth.enabled:
+            account = (
+                User.select(User.role).where(User.username == notification.user).first()
+            )
+            if account is None or account.role not in self.config.auth.roles:
+                return
+            if (
+                message.camera is not None
+                and message.camera
+                not in User.get_allowed_cameras(
+                    account.role, self.config.auth.roles, set(self.config.cameras)
+                )
+            ):
+                return
+        if message.camera is not None:
+            camera = self.config.cameras.get(message.camera)
+            if (
+                camera is None
+                or not camera.enabled
+                or not camera.notifications.enabled
+                or self.is_camera_suspended(message.camera)
+            ):
+                return
+        self.check_registrations()
+        for pusher in (
+            self.web_pushers.get(notification.user, [])
+            if self.config.notifications.email
+            else []
+        ):
+            endpoint = pusher.subscription_info["endpoint"]
+            headers = self.claim_headers[endpoint[: endpoint.index("/", 10)]].copy()
+            headers["urgency"] = "high"
+
+            resp = pusher.send(
+                headers=headers,
+                ttl=notification.ttl,
+                data=json.dumps(
+                    {
+                        "title": notification.title,
+                        "message": notification.message,
+                        "direct_url": notification.direct_url,
+                        "image": notification.image,
+                        "id": notification.payload.get("after", {}).get("id", ""),
+                        "type": notification.notification_type,
+                    }
+                ),
+                timeout=10,
+            )
+
+            if resp.status_code in (404, 410):
+                self.expired_subs.setdefault(notification.user, []).append(endpoint)
+                logger.debug(
+                    f"Notification endpoint expired for {notification.user}, received {resp.status_code}"
+                )
+            elif resp.status_code != 201:
+                logger.warning(
+                    f"Failed to send notification to {notification.user} :: {resp.status_code}"
+                )
+
+    def _native_enabled(self) -> bool:
+        settings = getattr(self.config, "apns", None)
+        auth = getattr(self.config, "auth", None)
+        return (
+            getattr(settings, "enabled", False) is True
+            and getattr(auth, "enabled", False) is True
+        )
+
+    def _notification_users(self) -> set[str]:
+        return set(self.web_pushers) | set(getattr(self, "user_cameras", {}))
+
+    async def _send_native_notification(
+        self, notification: PushNotification, transport: APNsTransport
+    ) -> None:
+        """Recheck database roles at delivery, including already-queued alerts."""
+        if not self._native_enabled():
+            return
+        registry = APNsRegistry(User._meta.database.execute_sql)
+        message = APNsMessage(
+            notification.user,
+            notification.payload,
+            notification.title,
+            notification.message,
+            notification.notification_type,
+            notification.ttl,
+        )
+        camera = message.camera
+        devices = await asyncio.to_thread(
+            registry.authorized_devices,
+            notification.user,
+            camera,
+            self.config.auth.roles,
+            set(self.config.cameras),
+        )
+        if not devices:
+            return
+        if notification.installation_id is not None:
+            devices = [
+                device
+                for device in devices
+                if device.installation_id == notification.installation_id
+            ]
+        health = notification.notification_type == "health"
+        if health:
+            validator = getattr(self, "native_health_validator", None)
+            identity = notification.payload.get("identifier")
+            observed = notification.payload.get("health_first_seen")
+            if (
+                validator is None
+                or not isinstance(identity, str)
+                or not isinstance(observed, (int, float))
+                or isinstance(observed, bool)
+                or not validator(identity, camera, float(observed))
+            ):
+                return
+        if health and camera is None:
+            account = await asyncio.to_thread(
+                User.get_or_none, User.username == notification.user
+            )
+            if account is None or account.role != "admin":
+                return
+        if camera is not None:
+            config = self.config.cameras.get(camera)
+            if (
+                config is None
+                or not config.enabled
+                or (not health and not config.notifications.enabled)
+                or self.is_camera_suspended(camera)
+            ):
+                return
+        outcomes = await transport.send(message, devices)
+        for outcome in outcomes:
+            if outcome.invalidated_at is not None:
+                device = next(
+                    item
+                    for item in devices
+                    if item.installation_id == outcome.installation_id
+                )
+                await asyncio.to_thread(
+                    registry.invalidate,
+                    notification.user,
+                    device,
+                    outcome.invalidated_at,
+                )
+
+    def _refresh_user_cameras(self) -> None:
+        """Rebuild the user-to-cameras access cache from the database."""
+        all_camera_names = set(self.config.cameras.keys())
+        roles_dict = self.config.auth.roles
+        updated: dict[str, set[str]] = {}
+        for user in User.select(User.username, User.role).dicts().iterator():
+            allowed = User.get_allowed_cameras(
+                user["role"], roles_dict, all_camera_names
+            )
+            updated[user["username"]] = set(allowed)
+            logger.debug(
+                "User %s has access to cameras: %s",
+                user["username"],
+                ", ".join(allowed),
+            )
+        self.user_cameras = updated
+
+    def _user_has_camera_access(self, username: str, camera: str) -> bool:
+        """Check if a user has access to a specific camera based on cached roles."""
+        allowed = self.user_cameras.get(username)
+        if allowed is None:
+            logger.debug(f"No camera access information found for user {username}")
+            return False
+        return camera in allowed
+
+    def _within_cooldown(self, camera: str) -> bool:
+        now = datetime.datetime.now().timestamp()
+        if now - self.last_notification_time < self.config.notifications.cooldown:
+            logger.debug(
+                f"Skipping notification for {camera} - in global cooldown period"
+            )
+            return True
+        if (
+            now - self.last_camera_notification_time[camera]
+            < self.config.cameras[camera].notifications.cooldown
+        ):
+            logger.debug(
+                f"Skipping notification for {camera} - in camera-specific cooldown period"
+            )
+            return True
+        return False
+
+    def send_notification_test(self) -> None:
+        if not self.config.notifications.email and not self._native_enabled():
+            return
+
+        logger.debug("Sending test notification")
+
+        for user in self._notification_users():
+            self.send_push_notification(
+                user=user,
+                payload={},
+                title="Test Notification",
+                message="This is a test notification from Frigate.",
+                direct_url="/",
+                notification_type="test",
+            )
+
+    def send_alert(self, payload: dict[str, Any]) -> None:
+        if (
+            not self.config.notifications.email and not self._native_enabled()
+        ) or payload["after"]["severity"] != "alert":
+            return
+
+        camera: str = payload["after"]["camera"]
+        from frigate.motion.native_person import defer_person_alert
+
+        if defer_person_alert(self.config.cameras[camera], payload):
+            return
+        camera_name: str = getattr(
+            self.config.cameras[camera], "friendly_name", None
+        ) or titlecase(camera.replace("_", " "))
+        current_time = datetime.datetime.now().timestamp()
+
+        if self._within_cooldown(camera):
+            return
+
+        state = payload["type"]
+
+        # Don't notify if message is an update and important fields don't have an update
+        if (
+            state == "update"
+            and payload["before"]["severity"] == payload["after"]["severity"]
+            and len(payload["before"]["data"]["objects"])
+            == len(payload["after"]["data"]["objects"])
+            and len(payload["before"]["data"]["zones"])
+            == len(payload["after"]["data"]["zones"])
+        ):
+            logger.debug(
+                f"Skipping notification for {camera} - message is an update and important fields don't have an update"
+            )
+            return
+
+        self.last_camera_notification_time[camera] = current_time
+        self.last_notification_time = current_time
+
+        reviewId = payload["after"]["id"]
+        sorted_objects: set[str] = set()
+
+        for obj in payload["after"]["data"]["objects"]:
+            if "-verified" not in obj:
+                sorted_objects.add(obj)
+
+        sorted_objects.update(payload["after"]["data"]["sub_labels"])
+
+        image = f"{payload['after']['thumb_path'].replace(BASE_DIR, '')}"
+        ended = state == "end" or state == "genai"
+
+        if state == "genai" and payload["after"]["data"]["metadata"]:
+            base_title = payload["after"]["data"]["metadata"]["title"]
+            threat_level = payload["after"]["data"]["metadata"].get(
+                "potential_threat_level", 0
+            )
+
+            # Add prefix for threat levels 1 and 2
+            if threat_level == 1:
+                title = f"Needs Review: {base_title}"
+            elif threat_level == 2:
+                title = f"Security Concern: {base_title}"
+            else:
+                title = base_title
+
+            if payload["after"]["data"]["metadata"].get("shortSummary"):
+                message = payload["after"]["data"]["metadata"]["shortSummary"]
+            else:
+                message = f"Detected on {camera_name}"
+        else:
+            zone_names = payload["after"]["data"]["zones"]
+            formatted_zone_names = []
+
+            for zone_name in zone_names:
+                if zone_name in self.config.cameras[camera].zones:
+                    formatted_zone_names.append(
+                        self.config.cameras[camera]
+                        .zones[zone_name]
+                        .get_formatted_name(zone_name)
+                    )
+                else:
+                    formatted_zone_names.append(titlecase(zone_name.replace("_", " ")))
+
+            title = f"{titlecase(', '.join(sorted_objects).replace('_', ' '))}{' was' if state == 'end' else ''} detected in {', '.join(formatted_zone_names)}"
+            message = f"Detected on {camera_name}"
+
+        if ended:
+            logger.debug(
+                f"Sending a notification with state {state} and message {message}"
+            )
+
+        # if event is ongoing open to live view otherwise open to recordings view
+        direct_url = f"/review?id={reviewId}" if ended else f"/#{camera}"
+        ttl = 3600 if ended else 0
+
+        logger.debug(f"Sending push notification for {camera}, review ID {reviewId}")
+
+        for user in self._notification_users():
+            if not self._user_has_camera_access(user, camera):
+                logger.debug(
+                    "Skipping notification for user %s - no access to camera %s",
+                    user,
+                    camera,
+                )
+                continue
+
+            self.send_push_notification(
+                user=user,
+                payload=payload,
+                title=title,
+                message=message,
+                direct_url=direct_url,
+                image=image,
+                ttl=ttl,
+            )
+
+        self.cleanup_registrations()
+
+    def send_trigger(self, payload: dict[str, Any]) -> None:
+        if not self.config.notifications.email and not self._native_enabled():
+            return
+
+        camera: str = payload["camera"]
+        camera_name: str = getattr(
+            self.config.cameras[camera], "friendly_name", None
+        ) or titlecase(camera.replace("_", " "))
+        current_time = datetime.datetime.now().timestamp()
+
+        if self._within_cooldown(camera):
+            return
+
+        self.last_camera_notification_time[camera] = current_time
+        self.last_notification_time = current_time
+
+        trigger_type = payload["type"]
+        event_id = payload["event_id"]
+        name = payload["name"]
+        score = payload["score"]
+
+        title = f"{name.replace('_', ' ')} triggered on {camera_name}"
+        message = f"{titlecase(trigger_type)} trigger fired for {camera_name} with score {score:.2f}"
+        image = f"clips/triggers/{camera}/{event_id}.webp"
+
+        direct_url = f"/explore?event_id={event_id}"
+        ttl = 0
+
+        logger.debug(
+            f"Sending push notification for {camera_name}, trigger name {name}"
+        )
+
+        for user in self._notification_users():
+            if not self._user_has_camera_access(user, camera):
+                logger.debug(
+                    "Skipping notification for user %s - no access to camera %s",
+                    user,
+                    camera,
+                )
+                continue
+
+            self.send_push_notification(
+                user=user,
+                payload=payload,
+                title=title,
+                message=message,
+                direct_url=direct_url,
+                image=image,
+                ttl=ttl,
+            )
+
+        self.cleanup_registrations()
+
+    def send_camera_monitoring(self, payload: dict[str, Any]) -> None:
+        camera: str = payload["camera"]
+        camera_name: str = getattr(
+            self.config.cameras[camera], "friendly_name", None
+        ) or titlecase(camera.replace("_", " "))
+
+        text: str = payload.get("message") or payload.get("reasoning", "")
+        title = f"{camera_name}: Monitoring Alert"
+        message = (text[:197] + "...") if len(text) > 200 else text
+
+        logger.debug(f"Sending camera monitoring push notification for {camera_name}")
+
+        for user in self._notification_users():
+            if not self._user_has_camera_access(user, camera):
+                logger.debug(
+                    "Skipping notification for user %s - no access to camera %s",
+                    user,
+                    camera,
+                )
+                continue
+
+            self.send_push_notification(
+                user=user,
+                payload=payload,
+                title=title,
+                message=message,
+            )
+
+        self.cleanup_registrations()
+
+    def stop(self) -> None:
+        logger.info("Closing notification queue")
+        if self.notification_thread is not None:
+            self.notification_thread.join()

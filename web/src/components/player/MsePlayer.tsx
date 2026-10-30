@@ -1,0 +1,1035 @@
+import { baseUrl } from "@/api/baseUrl";
+import { useUserPersistence } from "@/hooks/use-user-persistence";
+import {
+  LiveHealthSample,
+  LivePlayerError,
+  PlayerStatsType,
+  VideoResolutionType,
+} from "@/types/live";
+import {
+  SetStateAction,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { isIOS, isSafari } from "react-device-detect";
+import { playWithTemporaryMuteFallback } from "@/utils/videoUtil";
+import { useTranslation } from "react-i18next";
+
+type MSEPlayerProps = {
+  camera: string;
+  className?: string;
+  playbackEnabled?: boolean;
+  audioEnabled?: boolean;
+  volume?: number;
+  playInBackground?: boolean;
+  pip?: boolean;
+  getStats?: boolean;
+  setStats?: (stats: PlayerStatsType) => void;
+  onPlaying?: () => void;
+  setFullResolution?: React.Dispatch<SetStateAction<VideoResolutionType>>;
+  onError?: (error: LivePlayerError) => void;
+  onHealthSample?: (sample: LiveHealthSample) => void;
+};
+
+function MSEPlayer({
+  camera,
+  className,
+  playbackEnabled = true,
+  audioEnabled = false,
+  volume,
+  playInBackground = false,
+  pip = false,
+  getStats = false,
+  setStats,
+  onPlaying,
+  setFullResolution,
+  onError,
+  onHealthSample,
+}: MSEPlayerProps) {
+  const { t } = useTranslation("components/player");
+  const [audioUnavailable, setAudioUnavailable] = useState(false);
+  const negotiatedAudioRef = useRef(audioEnabled);
+  const audioFallbackRef = useRef(false);
+  useEffect(() => {
+    negotiatedAudioRef.current = audioEnabled && !audioUnavailable;
+  }, [audioEnabled, audioUnavailable]);
+  useEffect(() => {
+    audioFallbackRef.current = false;
+    setAudioUnavailable(false);
+  }, [audioEnabled]);
+  const RECONNECT_TIMEOUT: number = 10000;
+  const NEGOTIATION_TIMEOUT = 30000;
+  const BUFFERING_COOLDOWN_TIMEOUT: number = 5000;
+
+  const CODECS: string[] = [
+    "avc1.640029", // H.264 high 4.1 (Chromecast 1st and 2nd Gen)
+    "avc1.64002A", // H.264 high 4.2 (Chromecast 3rd Gen)
+    "avc1.640033", // H.264 high 5.1 (Chromecast with Google TV)
+    "hvc1.1.6.L153.B0", // H.265 main 5.1 (Chromecast Ultra)
+    "mp4a.40.2", // AAC LC
+    "mp4a.40.5", // AAC HE
+    "flac", // FLAC (PCM compatible)
+    "opus", // OPUS Chrome, Firefox
+  ];
+
+  const visibilityCheck: boolean = !pip;
+  const [isPlaying, setIsPlaying] = useState(false);
+  const lastJumpTimeRef = useRef(0);
+
+  const MAX_BUFFER_ENTRIES = 10; // Size of the rolling window  of buffered times
+  const bufferTimes = useRef<number[]>([]);
+  const bufferIndex = useRef(0);
+
+  const [wsState, setWsState] = useState<number>(WebSocket.CLOSED);
+  const [connectTS, setConnectTS] = useState<number>(0);
+  const bufferTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  const [errorCount, setErrorCount] = useState<number>(0);
+  const totalBytesLoaded = useRef(0);
+  const appendingRef = useRef(false);
+
+  const [fallbackTimeout] = useUserPersistence<number>(
+    "liveFallbackTimeout",
+    3,
+  );
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTIDRef = useRef<number | null>(null);
+  const intentionalDisconnectRef = useRef<boolean>(false);
+  const onCloseRef = useRef<(() => void) | null>(null);
+  const ondataRef = useRef<((data: ArrayBuffer) => void) | null>(null);
+  const onmessageRef = useRef<{
+    [key: string]: (msg: { value: string; type: string }) => void;
+  }>({});
+  const msRef = useRef<MediaSource | null>(null);
+  const mseCodecRef = useRef<string | null>(null);
+  const mseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mseResponseReceivedRef = useRef<boolean>(false);
+
+  const wsURL = useMemo(() => {
+    return `${baseUrl.replace(/^http/, "ws")}live/mse/api/ws?src=${camera}`;
+  }, [camera]);
+
+  // socket handlers are bound once per connection, so they reach the
+  // current onError through a ref
+  const onErrorRef = useRef(onError);
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
+
+  const handleError = useCallback(
+    (error: LivePlayerError, description: string = "Unknown error") => {
+      // eslint-disable-next-line no-console
+      console.error(
+        `${camera} - MSE error '${error}': ${description} See the documentation: https://docs.frigate.video/configuration/live/#live-player-error-messages`,
+      );
+
+      if (mseCodecRef.current) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `${camera} - Browser negotiated codecs: ${mseCodecRef.current}`,
+        );
+        // eslint-disable-next-line no-console
+        console.error(`${camera} - Supported codecs: ${CODECS.join(", ")}`);
+      }
+      onErrorRef.current?.(error);
+    },
+    // we know that these deps are correct
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [camera],
+  );
+
+  const handleLoadedMetadata = useCallback(() => {
+    if (videoRef.current && setFullResolution) {
+      setFullResolution({
+        width: videoRef.current.videoWidth,
+        height: videoRef.current.videoHeight,
+      });
+    }
+  }, [setFullResolution]);
+
+  const play = () => {
+    const currentVideo = videoRef.current;
+
+    if (currentVideo) {
+      const source = currentVideo.src;
+      const socket = wsRef.current;
+      const mediaSource = msRef.current;
+      void playWithTemporaryMuteFallback(currentVideo).catch(() => {
+        if (
+          currentVideo !== videoRef.current ||
+          intentionalDisconnectRef.current ||
+          source !== currentVideo.src ||
+          socket !== wsRef.current ||
+          mediaSource !== msRef.current ||
+          currentVideo.error
+        ) {
+          return;
+        }
+        onDisconnect();
+        handleError(
+          "mse-decode",
+          "Browser could not start live audio/video decoding.",
+        );
+      });
+    }
+  };
+
+  const send = useCallback(
+    (value: object) => {
+      if (wsRef.current) wsRef.current.send(JSON.stringify(value));
+    },
+    [wsRef],
+  );
+
+  const codecs = useCallback((isSupported: (type: string) => boolean) => {
+    return CODECS.filter(
+      (codec) =>
+        (negotiatedAudioRef.current ||
+          codec.startsWith("avc1.") ||
+          codec.startsWith("hvc1.")) &&
+        isSupported(`video/mp4; codecs="${codec}"`),
+    ).join();
+
+    // we know that these deps are correct
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onConnect = useCallback(() => {
+    if (!videoRef.current?.isConnected || !wsURL || wsRef.current) {
+      return false;
+    }
+
+    intentionalDisconnectRef.current = false;
+    setWsState(WebSocket.CONNECTING);
+
+    setConnectTS(Date.now());
+
+    wsRef.current = new WebSocket(wsURL);
+    wsRef.current.binaryType = "arraybuffer";
+    wsRef.current.addEventListener("open", onOpen);
+    // Capture current onClose identity so removeEventListener can find it later
+    onCloseRef.current = onClose;
+    wsRef.current.addEventListener("close", onClose);
+    // we know that these deps are correct
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsURL]);
+
+  const onDisconnect = useCallback(() => {
+    if (bufferTimeout.current) {
+      clearTimeout(bufferTimeout.current);
+      bufferTimeout.current = undefined;
+    }
+
+    // Clear any pending MSE timeout
+    if (mseTimeoutRef.current !== null) {
+      clearTimeout(mseTimeoutRef.current);
+      mseTimeoutRef.current = null;
+    }
+
+    // Clear any pending reconnect attempts
+    if (reconnectTIDRef.current !== null) {
+      clearTimeout(reconnectTIDRef.current);
+      reconnectTIDRef.current = null;
+    }
+
+    setIsPlaying(false);
+
+    if (wsRef.current) {
+      const ws = wsRef.current;
+      wsRef.current = null;
+      const currentReadyState = ws.readyState;
+
+      intentionalDisconnectRef.current = true;
+      setWsState(WebSocket.CLOSED);
+
+      // Remove event listeners to prevent them firing during close.
+      // Use onCloseRef to remove the exact function that was attached in onConnect,
+      // since onClose may have been recreated by React since then.
+      try {
+        ws.removeEventListener("open", onOpen);
+        if (onCloseRef.current) {
+          ws.removeEventListener("close", onCloseRef.current);
+          onCloseRef.current = null;
+        }
+      } catch {
+        // Ignore errors removing listeners
+      }
+
+      // Close the socket in any non-CLOSED state, including CONNECTING.
+      // A CONNECTING socket that is not closed will complete its handshake
+      // and remain open, leaking a browser connection.
+      if (currentReadyState !== WebSocket.CLOSED) {
+        try {
+          ws.close();
+        } catch {
+          // Ignore close errors
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handlePause = useCallback(() => {
+    // don't let the user pause the live stream
+    if (isPlaying && playbackEnabled) {
+      videoRef.current?.play();
+    }
+  }, [isPlaying, playbackEnabled]);
+
+  const onOpen = useCallback(() => {
+    // If we were marked for intentional disconnect while connecting, close immediately
+    if (intentionalDisconnectRef.current) {
+      wsRef.current?.close();
+      wsRef.current = null;
+      return;
+    }
+
+    const socket = wsRef.current;
+    if (!socket) {
+      return;
+    }
+    setWsState(WebSocket.OPEN);
+
+    socket.addEventListener("message", (ev) => {
+      if (wsRef.current !== socket) {
+        return;
+      }
+      if (typeof ev.data === "string") {
+        const msg = JSON.parse(ev.data);
+        for (const mode in onmessageRef.current) {
+          onmessageRef.current[mode](msg);
+        }
+      } else {
+        ondataRef.current?.(ev.data);
+      }
+    });
+
+    ondataRef.current = null;
+    onmessageRef.current = {};
+
+    // Reset the MSE response flag for this new connection
+    mseResponseReceivedRef.current = false;
+
+    // Create a fresh MediaSource for this connection to avoid stale sourceopen events
+    // from previous connections interfering with this one
+    const MediaSourceConstructor =
+      "ManagedMediaSource" in window ? window.ManagedMediaSource : MediaSource;
+    // @ts-expect-error for typing
+    msRef.current = new MediaSourceConstructor();
+
+    onMse();
+    // onMse is defined below and stable
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const reconnect = (timeout?: number) => {
+    // Don't reconnect if intentional disconnect was flagged
+    if (intentionalDisconnectRef.current) {
+      return;
+    }
+
+    setWsState(WebSocket.CONNECTING);
+    wsRef.current = null;
+
+    const delay =
+      timeout ?? Math.max(RECONNECT_TIMEOUT - (Date.now() - connectTS), 0);
+
+    reconnectTIDRef.current = window.setTimeout(() => {
+      reconnectTIDRef.current = null;
+      onConnect();
+    }, delay);
+  };
+
+  const onClose = useCallback(() => {
+    // Don't reconnect if this was an intentional disconnect
+    if (intentionalDisconnectRef.current) {
+      // Reset the flag so future connects are allowed
+      intentionalDisconnectRef.current = false;
+      return;
+    }
+
+    if (wsState === WebSocket.CLOSED) return;
+    reconnect();
+    // reconnect is defined below and stable
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsState]);
+
+  const sendWithTimeout = (value: object, timeout: number) => {
+    return new Promise<void>((resolve, reject) => {
+      // Don't start timeout if WS isn't connected - this can happen when
+      // sourceopen fires from a previous connection after we've already disconnected
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        // Reject so caller knows this didn't work
+        reject(new Error("WebSocket not connected"));
+        return;
+      }
+
+      // If we've already received an MSE response for this connection, don't start another timeout
+      if (mseResponseReceivedRef.current) {
+        resolve();
+        return;
+      }
+
+      // Clear any existing MSE timeout from a previous attempt
+      if (mseTimeoutRef.current !== null) {
+        clearTimeout(mseTimeoutRef.current);
+        mseTimeoutRef.current = null;
+      }
+
+      const timeoutId = setTimeout(() => {
+        // Only reject if we haven't received a response yet
+        if (!mseResponseReceivedRef.current) {
+          mseTimeoutRef.current = null;
+          reject(new Error("Timeout waiting for response"));
+        }
+      }, timeout);
+
+      mseTimeoutRef.current = timeoutId;
+
+      // Override the onmessageRef handler for mse type to resolve the promise on response
+      const originalHandler = onmessageRef.current["mse"];
+      onmessageRef.current["mse"] = (msg) => {
+        if (msg.type === "mse") {
+          // Mark that we've received the response
+          mseResponseReceivedRef.current = true;
+
+          // Clear the timeout (use ref to clear the current one, not closure)
+          if (mseTimeoutRef.current !== null) {
+            clearTimeout(mseTimeoutRef.current);
+            mseTimeoutRef.current = null;
+          }
+
+          if (originalHandler) {
+            try {
+              originalHandler(msg);
+            } catch (error) {
+              reject(error);
+              return;
+            }
+          }
+
+          resolve();
+        }
+      };
+
+      send(value);
+    });
+  };
+
+  const onMse = () => {
+    const socket = wsRef.current;
+    const mediaSource = msRef.current;
+    if (!socket || !mediaSource) {
+      return;
+    }
+    const isCurrentConnection = () =>
+      wsRef.current === socket &&
+      msRef.current === mediaSource &&
+      !intentionalDisconnectRef.current;
+
+    if ("ManagedMediaSource" in window) {
+      // safari
+      const MediaSource = window.ManagedMediaSource;
+
+      msRef.current?.addEventListener(
+        "sourceopen",
+        () => {
+          if (!isCurrentConnection()) {
+            return;
+          }
+          sendWithTimeout(
+            {
+              type: "mse",
+              // @ts-expect-error for typing
+              value: codecs(MediaSource.isTypeSupported),
+            },
+            NEGOTIATION_TIMEOUT,
+          ).catch(() => {
+            if (!isCurrentConnection()) {
+              return;
+            }
+            onDisconnect();
+            if (isIOS || isSafari) {
+              handleError("mse-decode", "Safari cannot open MediaSource.");
+            } else {
+              handleError("startup", "Error opening MediaSource.");
+            }
+          });
+        },
+        { once: true },
+      );
+
+      if (videoRef.current) {
+        videoRef.current.disableRemotePlayback = true;
+        videoRef.current.srcObject = msRef.current;
+      }
+    } else {
+      // non safari
+      msRef.current?.addEventListener(
+        "sourceopen",
+        () => {
+          if (!isCurrentConnection()) {
+            return;
+          }
+          URL.revokeObjectURL(videoRef.current?.src || "");
+          sendWithTimeout(
+            {
+              type: "mse",
+              value: codecs(MediaSource.isTypeSupported),
+            },
+            NEGOTIATION_TIMEOUT,
+          ).catch(() => {
+            if (!isCurrentConnection()) {
+              return;
+            }
+            onDisconnect();
+            if (isIOS || isSafari) {
+              handleError("mse-decode", "Safari cannot open MediaSource.");
+            } else {
+              handleError("startup", "Error opening MediaSource.");
+            }
+          });
+        },
+        { once: true },
+      );
+      if (videoRef.current && msRef.current) {
+        videoRef.current.src = URL.createObjectURL(msRef.current);
+        videoRef.current.srcObject = null;
+      }
+    }
+    play();
+
+    onmessageRef.current["mse"] = (msg) => {
+      if (msg.type !== "mse") return;
+
+      // Store the codec value for error logging
+      mseCodecRef.current = msg.value;
+
+      let sb: SourceBuffer | undefined;
+      try {
+        sb = mediaSource.addSourceBuffer(msg.value);
+        if (sb?.mode) {
+          sb.mode = "segments";
+        }
+      } catch {
+        onDisconnect();
+        handleError(
+          "mse-codec",
+          "Browser rejected the negotiated live media format.",
+        );
+        return;
+      }
+
+      const pending: ArrayBuffer[] = [];
+      let pendingBytes = 0;
+      const maximumPendingBytes = 8 * 1024 * 1024;
+      const appendPending = () => {
+        if (!isCurrentConnection() || !sb || sb.updating) return;
+
+        try {
+          const data = pending.shift();
+          if (data) {
+            pendingBytes -= data.byteLength;
+            sb.appendBuffer(data);
+            return;
+          }
+
+          appendingRef.current = false;
+
+          if (sb.buffered && sb.buffered.length) {
+            const end = sb.buffered.end(sb.buffered.length - 1) - 15;
+            const start = sb.buffered.start(0);
+            if (end - start > 1) {
+              sb.remove(start, end);
+              mediaSource.setLiveSeekableRange(end, end + 15);
+            }
+          }
+        } catch {
+          if (videoRef.current?.error) {
+            return;
+          }
+          onDisconnect();
+          handleError(
+            "mse-decode",
+            "Browser rejected a live media buffer update.",
+          );
+        }
+      };
+      sb.addEventListener("updateend", appendPending);
+
+      ondataRef.current = (data) => {
+        if (!isCurrentConnection()) return;
+        totalBytesLoaded.current += data.byteLength;
+        appendingRef.current = true;
+        if (pendingBytes + data.byteLength > maximumPendingBytes) {
+          onDisconnect();
+          handleError(
+            "stalled",
+            "Live media exceeded the bounded append queue.",
+          );
+          return;
+        }
+        pending.push(data);
+        pendingBytes += data.byteLength;
+        appendPending();
+      };
+    };
+
+    // go2rtc answers a codec it cannot provide with an error message
+    // instead of a negotiation reply
+    onmessageRef.current["error"] = (msg) => {
+      if (msg.type !== "error" || !msg.value?.includes("codecs not matched")) {
+        return;
+      }
+
+      if (wsRef.current) {
+        onDisconnect();
+      }
+      handleError("mse-codec", msg.value);
+    };
+  };
+
+  const getBufferedTime = (video: HTMLVideoElement | null) => {
+    if (!video || video.buffered.length === 0) return 0;
+    return video.buffered.end(video.buffered.length - 1) - video.currentTime;
+  };
+
+  const jumpToLive = () => {
+    if (!videoRef.current) return;
+
+    const buffered = videoRef.current.buffered;
+    if (buffered.length > 0) {
+      const liveEdge = buffered.end(buffered.length - 1);
+      const start = buffered.start(buffered.length - 1);
+      videoRef.current.currentTime = Math.max(start, liveEdge - 0.75);
+      lastJumpTimeRef.current = Date.now();
+      bufferTimes.current = [];
+      bufferIndex.current = 0;
+    }
+  };
+
+  const calculateAdaptiveBufferThreshold = () => {
+    const filledEntries = bufferTimes.current.length;
+    const sum = bufferTimes.current.reduce((a, b) => a + b, 0);
+    const averageBufferTime = filledEntries ? sum / filledEntries : 0;
+    return averageBufferTime * (isSafari || isIOS ? 3 : 1.5);
+  };
+
+  const calculateAdaptivePlaybackRate = (
+    bufferTime: number,
+    bufferThreshold: number,
+  ) => {
+    const alpha = 0.2; // aggressiveness of playback rate increase
+    const beta = 0.5; // steepness of exponential growth
+
+    // don't adjust playback rate if we're close enough to live
+    // or if we just started streaming
+    if (
+      ((bufferTime <= bufferThreshold && bufferThreshold < 3) ||
+        bufferTime < 3) &&
+      bufferTimes.current.length <= MAX_BUFFER_ENTRIES
+    ) {
+      return 1;
+    }
+    const rate = 1 + alpha * Math.exp(beta * bufferTime - bufferThreshold);
+    return Math.min(rate, 2);
+  };
+
+  const onProgress = useCallback(() => {
+    if (!playbackEnabled || (!playInBackground && document.hidden)) return;
+    let bufferTime = getBufferedTime(videoRef.current);
+
+    if (
+      videoRef.current &&
+      (videoRef.current.playbackRate === 1 || bufferTime < 3)
+    ) {
+      if (bufferTimes.current.length < MAX_BUFFER_ENTRIES) {
+        bufferTimes.current.push(bufferTime);
+      } else {
+        bufferTimes.current[bufferIndex.current] = bufferTime;
+        bufferIndex.current = (bufferIndex.current + 1) % MAX_BUFFER_ENTRIES;
+      }
+    }
+
+    const bufferThreshold = calculateAdaptiveBufferThreshold();
+
+    // if we have > 3 seconds of buffered data and we're still not playing,
+    // something might be wrong - maybe codec issue, no audio, etc
+    // Arm stall detection without claiming that any frame was decoded.
+    if (!isPlaying && playbackEnabled && bufferTime > 3) {
+      setIsPlaying(true);
+      lastJumpTimeRef.current = Date.now();
+    }
+
+    if (
+      isPlaying &&
+      playbackEnabled &&
+      bufferTime > 3 &&
+      (bufferTime > 10 ||
+        Date.now() - lastJumpTimeRef.current > BUFFERING_COOLDOWN_TIMEOUT)
+    ) {
+      jumpToLive();
+      bufferTime = getBufferedTime(videoRef.current);
+    }
+
+    const playbackRate = calculateAdaptivePlaybackRate(
+      bufferTime,
+      bufferThreshold,
+    );
+
+    // if we're above our rolling average threshold or have > 3 seconds of
+    // buffered data and we're playing, we may have drifted from actual live
+    // time
+    if (videoRef.current && isPlaying && playbackEnabled) {
+      if (
+        (isSafari || isIOS) &&
+        bufferTime > 3 &&
+        Date.now() - lastJumpTimeRef.current > BUFFERING_COOLDOWN_TIMEOUT
+      ) {
+        // Jump to live on Safari/iOS due to a change of playback rate causing re-buffering
+        jumpToLive();
+      } else {
+        // increase/decrease playback rate to compensate - non Safari/iOS only
+        if (videoRef.current.playbackRate !== playbackRate) {
+          videoRef.current.playbackRate = playbackRate;
+        }
+      }
+    }
+
+    if (onError != undefined) {
+      if (videoRef.current?.paused) {
+        return;
+      }
+
+      if (bufferTimeout.current) {
+        clearTimeout(bufferTimeout.current);
+        bufferTimeout.current = undefined;
+      }
+
+      const timeoutDuration =
+        bufferTime == 0
+          ? (fallbackTimeout ?? 3) * 2 * 1000
+          : (fallbackTimeout ?? 3) * 1000;
+      const socket = wsRef.current;
+      const source = msRef.current;
+      bufferTimeout.current = setTimeout(() => {
+        if (
+          document.visibilityState === "visible" &&
+          socket !== null &&
+          wsRef.current === socket &&
+          msRef.current === source &&
+          videoRef.current
+        ) {
+          onDisconnect();
+          handleError(
+            "stalled",
+            `Media playback has stalled after ${timeoutDuration / 1000} seconds due to insufficient buffering or a network interruption.`,
+          );
+        }
+      }, timeoutDuration);
+    }
+  }, [
+    isPlaying,
+    onDisconnect,
+    handleError,
+    onError,
+    playbackEnabled,
+    playInBackground,
+    fallbackTimeout,
+  ]);
+
+  useEffect(() => {
+    if (!playbackEnabled || (!playInBackground && document.hidden)) {
+      return;
+    }
+
+    onConnect();
+
+    return () => {
+      onDisconnect();
+    };
+    // we know that these deps are correct
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbackEnabled, playInBackground, audioEnabled, audioUnavailable]);
+
+  // check visibility
+
+  useEffect(() => {
+    if (!playbackEnabled || !visibilityCheck) {
+      return;
+    }
+
+    if (!("hidden" in document)) {
+      return;
+    }
+
+    const listener = () => {
+      if (document.hidden) {
+        onDisconnect();
+      } else if (videoRef.current?.isConnected) {
+        onConnect();
+      }
+    };
+
+    if (!playInBackground) {
+      document.addEventListener("visibilitychange", listener);
+    }
+
+    return () => {
+      if (!playInBackground) {
+        document.removeEventListener("visibilitychange", listener);
+      }
+    };
+  }, [
+    playbackEnabled,
+    visibilityCheck,
+    playInBackground,
+    onConnect,
+    onDisconnect,
+  ]);
+
+  // control pip
+
+  useEffect(() => {
+    if (!videoRef.current || !pip) {
+      return;
+    }
+
+    videoRef.current.requestPictureInPicture();
+  }, [pip, videoRef]);
+
+  // control volume
+
+  useEffect(() => {
+    if (!videoRef.current || volume == undefined) {
+      return;
+    }
+
+    videoRef.current.volume = volume;
+  }, [volume, videoRef]);
+
+  // stats and health samples
+
+  const onHealthSampleRef = useRef(onHealthSample);
+  useEffect(() => {
+    onHealthSampleRef.current = onHealthSample;
+  }, [onHealthSample]);
+  const sampleHealth = onHealthSample !== undefined;
+
+  useEffect(() => {
+    const video = videoRef.current;
+    let lastLoadedBytes = totalBytesLoaded.current;
+    let lastTimestamp = Date.now();
+    let healthBytes = lastLoadedBytes;
+    let healthTimestamp = lastTimestamp;
+    let lastQuality = video?.getVideoPlaybackQuality?.();
+    // a restart mid-stream must not count the existing buffer as new media
+    let lastBufferedEnd =
+      video && video.buffered.length > 0
+        ? video.buffered.end(video.buffered.length - 1)
+        : 0;
+    let deferred = false;
+    let healthStarted = false;
+
+    if (!getStats && !sampleHealth) return;
+
+    const update = () => {
+      if (!video) {
+        return;
+      }
+
+      const now = Date.now();
+      const bytesLoaded = totalBytesLoaded.current;
+
+      if (getStats) {
+        const timeElapsed = (now - lastTimestamp) / 1000; // seconds
+        const bandwidth = (bytesLoaded - lastLoadedBytes) / timeElapsed / 1000; // kBps
+
+        lastLoadedBytes = bytesLoaded;
+        lastTimestamp = now;
+
+        const videoQuality = video.getVideoPlaybackQuality();
+        const { totalVideoFrames, droppedVideoFrames } = videoQuality;
+        const droppedFrameRate = totalVideoFrames
+          ? (droppedVideoFrames / totalVideoFrames) * 100
+          : 0;
+
+        setStats?.({
+          streamType: "MSE",
+          bandwidth,
+          totalFrames: totalVideoFrames,
+          droppedFrames: droppedVideoFrames || undefined,
+          decodedFrames: totalVideoFrames - droppedVideoFrames,
+          droppedFrameRate,
+        });
+      }
+
+      if (!sampleHealth) {
+        return;
+      }
+
+      if (
+        !healthStarted ||
+        video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+      ) {
+        healthStarted = video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+        healthBytes = bytesLoaded;
+        healthTimestamp = now;
+        lastBufferedEnd =
+          video.buffered.length > 0
+            ? video.buffered.end(video.buffered.length - 1)
+            : 0;
+        lastQuality = video.getVideoPlaybackQuality?.();
+        return;
+      }
+
+      // a sample taken mid-append would count the bytes without their
+      // media, so it waits one tick for the append to land
+      if (appendingRef.current && !deferred) {
+        deferred = true;
+        return;
+      }
+      deferred = false;
+
+      // the buffered end tracks delivered media, so playback-rate
+      // catch-up does not skew it
+      const bufferedEnd =
+        video.buffered.length > 0
+          ? video.buffered.end(video.buffered.length - 1)
+          : 0;
+      const mediaSeconds = bufferedEnd - lastBufferedEnd;
+      const bytes = bytesLoaded - healthBytes;
+      const wallSeconds = (now - healthTimestamp) / 1000;
+      const quality = video.getVideoPlaybackQuality?.();
+      const totalFrames =
+        quality && lastQuality
+          ? quality.totalVideoFrames - lastQuality.totalVideoFrames
+          : undefined;
+      const droppedFrames =
+        quality && lastQuality
+          ? quality.droppedVideoFrames - lastQuality.droppedVideoFrames
+          : undefined;
+      lastQuality = quality;
+
+      lastBufferedEnd = bufferedEnd;
+      healthBytes = bytesLoaded;
+      healthTimestamp = now;
+
+      // a reconnect starts a new MediaSource timeline
+      if (mediaSeconds < 0) {
+        return;
+      }
+
+      if (
+        document.visibilityState !== "visible" ||
+        (video.paused && bufferedEnd > 0)
+      ) {
+        return;
+      }
+
+      onHealthSampleRef.current?.({
+        bytes,
+        mediaSeconds,
+        wallSeconds,
+        totalFrames,
+        droppedFrames,
+      });
+    };
+
+    const interval = setInterval(update, 1000);
+
+    return () => {
+      clearInterval(interval);
+      if (getStats) {
+        setStats?.({
+          streamType: "-",
+          bandwidth: 0,
+          totalFrames: 0,
+          droppedFrames: undefined,
+          decodedFrames: 0,
+          droppedFrameRate: 0,
+        });
+      }
+    };
+  }, [setStats, getStats, sampleHealth]);
+
+  return (
+    <>
+      <video
+        ref={videoRef}
+        className={className}
+        playsInline
+        preload="auto"
+        onResize={handleLoadedMetadata}
+        onLoadedData={() => {
+          handleLoadedMetadata?.();
+          if (getBufferedTime(videoRef.current) > 2) jumpToLive();
+          onPlaying?.();
+          setIsPlaying(true);
+          lastJumpTimeRef.current = Date.now();
+        }}
+        muted={!audioEnabled || audioUnavailable}
+        onPause={handlePause}
+        onProgress={onProgress}
+        onError={(e) => {
+          const error = e.currentTarget.error;
+          if (error?.code === MediaError.MEDIA_ERR_NETWORK) {
+            if (wsRef.current) {
+              onDisconnect();
+            }
+            handleError("startup", "Browser reported a network error.");
+          }
+
+          if (
+            error?.code === MediaError.MEDIA_ERR_DECODE ||
+            error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+          ) {
+            if (audioEnabled && !audioFallbackRef.current) {
+              audioFallbackRef.current = true;
+              negotiatedAudioRef.current = false;
+              onDisconnect();
+              setAudioUnavailable(true);
+              return;
+            }
+            if (wsRef.current) {
+              onDisconnect();
+            }
+            handleError(
+              "mse-decode",
+              "Browser reported a live audio/video decoding error.",
+            );
+            return;
+          }
+
+          setErrorCount((prevCount) => prevCount + 1);
+
+          if (wsRef.current) {
+            onDisconnect();
+            if (errorCount >= 3) {
+              // too many mse errors, try jsmpeg
+              handleError("startup", `Max error count ${errorCount} exceeded.`);
+            } else {
+              reconnect(5000);
+            }
+          }
+        }}
+      />
+      {audioUnavailable && audioEnabled && (
+        <div
+          role="status"
+          className="pointer-events-none absolute bottom-3 left-3 right-3 z-30 rounded bg-background/90 p-2 text-sm"
+        >
+          {t("liveAudioFallback")}
+        </div>
+      )}
+    </>
+  );
+}
+
+export default MSEPlayer;

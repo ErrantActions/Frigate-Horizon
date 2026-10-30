@@ -1,0 +1,10 @@
+{
+  "api_version": 1,
+  "id": "ring",
+  "name": "Ring",
+  "version": "0.1.0",
+  "description": "Ring cloud video, two-way audio, doorbell presses and motion. Continuous recording is best effort and can have cloud-session gaps.",
+  "entrypoint": "plugin.py",
+  "capabilities": ["camera", "motion", "doorbell", "two_way_audio"],
+  "actions": ["authenticate", "disconnect"]
+}

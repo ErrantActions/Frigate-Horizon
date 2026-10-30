@@ -1,0 +1,2 @@
+numpy
+openvino >= 2026.2.0

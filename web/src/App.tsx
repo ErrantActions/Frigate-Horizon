@@ -1,0 +1,178 @@
+import Providers from "@/context/providers";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import Wrapper from "@/components/Wrapper";
+import Sidebar from "@/components/navigation/Sidebar";
+import CommandMenu from "@/components/menu/CommandMenu";
+
+import { isDesktop, isMobile } from "react-device-detect";
+import Statusbar from "./components/Statusbar";
+import Bottombar from "./components/navigation/Bottombar";
+import { lazy, useContext, useEffect, useState } from "react";
+import { Redirect } from "./components/navigation/Redirect";
+import { cn } from "./lib/utils";
+import { isPWA } from "./utils/isPWA";
+import ProtectedRoute from "@/components/auth/ProtectedRoute";
+import useSWR from "swr";
+import { FrigateConfig } from "./types/frigateConfig";
+import ActivityIndicator from "@/components/indicators/activity-indicator";
+import { isRedirectingToLogin } from "@/api/auth-redirect";
+import { AuthContext } from "@/context/auth-context";
+import { useIsAdmin } from "@/hooks/use-is-admin";
+import { isSetupDismissed } from "@/utils/setupWizard";
+import { ChromeErrorBoundary, LazyPage } from "@/components/ErrorBoundaries";
+
+const Live = lazy(() => import("@/pages/Live"));
+const Events = lazy(() => import("@/pages/Events"));
+const Explore = lazy(() => import("@/pages/Explore"));
+const Exports = lazy(() => import("@/pages/Exports"));
+const ConfigEditor = lazy(() => import("@/pages/ConfigEditor"));
+const System = lazy(() => import("@/pages/System"));
+const Settings = lazy(() => import("@/pages/Settings"));
+const UIPlayground = lazy(() => import("@/pages/UIPlayground"));
+const FaceLibrary = lazy(() => import("@/pages/FaceLibrary"));
+const Classification = lazy(() => import("@/pages/ClassificationModel"));
+const Chat = lazy(() => import("@/pages/Chat"));
+const Logs = lazy(() => import("@/pages/Logs"));
+const AccessDenied = lazy(() => import("@/pages/AccessDenied"));
+const Replay = lazy(() => import("@/pages/Replay"));
+const SetupWizard = lazy(() => import("@/pages/SetupWizard"));
+const ProtectedMedia = lazy(
+  () => import("@/views/protected-media/ProtectedMediaView"),
+);
+
+function App() {
+  const { data: config } = useSWR<FrigateConfig>("config", {
+    revalidateOnFocus: false,
+  });
+
+  return (
+    <Providers>
+      <BrowserRouter basename={window.baseUrl} useTransitions={false}>
+        <Wrapper>
+          {config?.safe_mode ? <SafeAppView /> : <DefaultAppView />}
+        </Wrapper>
+      </BrowserRouter>
+    </Providers>
+  );
+}
+
+function DefaultAppView() {
+  const { data: config } = useSWR<FrigateConfig>("config", {
+    revalidateOnFocus: false,
+  });
+
+  // decided once per load: adding the first camera part way through the
+  // wizard must not pull the wizard out from under the user
+  const [showWizard, setShowWizard] = useState<boolean>();
+  const { auth } = useContext(AuthContext);
+  const isAdmin = useIsAdmin();
+
+  useEffect(() => {
+    // every step writes through admin only endpoints, and the role isn't
+    // known until the profile resolves
+    if (config && !auth.isLoading && showWizard === undefined) {
+      setShowWizard(
+        isAdmin &&
+          Object.keys(config.cameras ?? {}).length === 0 &&
+          !isSetupDismissed(),
+      );
+    }
+  }, [config, auth.isLoading, isAdmin, showWizard]);
+
+  // Compute required roles for main routes, ensuring we have config first
+  // to prevent race condition where custom roles are temporarily unavailable
+  const mainRouteRoles = config?.auth?.roles
+    ? Object.keys(config.auth.roles)
+    : undefined;
+
+  // Show loading indicator during redirect to prevent React from attempting to render
+  // lazy components, which would cause error #426 (suspension during synchronous navigation)
+  if (isRedirectingToLogin()) {
+    return (
+      <div className="size-full overflow-hidden">
+        <ActivityIndicator className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2" />
+      </div>
+    );
+  }
+
+  // Show setup wizard for first-time users
+  if (showWizard) {
+    return (
+      <div className="size-full overflow-hidden">
+        <LazyPage
+          fallback={
+            <ActivityIndicator className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2" />
+          }
+        >
+          <SetupWizard />
+        </LazyPage>
+      </div>
+    );
+  }
+
+  return (
+    <div className="size-full overflow-hidden">
+      <ChromeErrorBoundary>{isDesktop && <Sidebar />}</ChromeErrorBoundary>
+      <ChromeErrorBoundary>{isDesktop && <Statusbar />}</ChromeErrorBoundary>
+      <ChromeErrorBoundary>{isDesktop && <CommandMenu />}</ChromeErrorBoundary>
+      <ChromeErrorBoundary>{isMobile && <Bottombar />}</ChromeErrorBoundary>
+      <div
+        id="pageRoot"
+        className={cn(
+          "absolute right-0 top-0 overflow-hidden",
+          isMobile
+            ? isPWA
+              ? "bottom-[calc(3rem+env(safe-area-inset-bottom))] left-0 pt-[env(safe-area-inset-top)] md:bottom-[calc(4rem+env(safe-area-inset-bottom))] landscape:pl-[env(safe-area-inset-left)] landscape:pr-[env(safe-area-inset-right)]"
+              : "bottom-12 left-0 md:bottom-16"
+            : "bottom-8 left-[52px]",
+        )}
+      >
+        <LazyPage
+          fallback={
+            <ActivityIndicator className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2" />
+          }
+        >
+          <Routes>
+            <Route element={<ProtectedRoute requiredRoles={mainRouteRoles} />}>
+              <Route index element={<Live />} />
+              <Route path="/review" element={<Events />} />
+              <Route path="/explore" element={<Explore />} />
+              <Route path="/export" element={<Exports />} />
+              <Route path="/protected" element={<ProtectedMedia />} />
+              <Route path="/settings" element={<Settings />} />
+            </Route>
+            <Route element={<ProtectedRoute requiredRoles={["admin"]} />}>
+              <Route path="/system" element={<System />} />
+              <Route path="/config" element={<ConfigEditor />} />
+              <Route path="/logs" element={<Logs />} />
+              <Route path="/faces" element={<FaceLibrary />} />
+              <Route path="/classification" element={<Classification />} />
+              <Route path="/chat" element={<Chat />} />
+              <Route path="/playground" element={<UIPlayground />} />{" "}
+              <Route path="/replay" element={<Replay />} />{" "}
+            </Route>
+            <Route path="/unauthorized" element={<AccessDenied />} />
+            <Route path="*" element={<Redirect to="/" />} />
+          </Routes>
+        </LazyPage>
+      </div>
+    </div>
+  );
+}
+
+function SafeAppView() {
+  return (
+    <div className="size-full overflow-hidden">
+      <div
+        id="pageRoot"
+        className={cn("absolute bottom-0 left-0 right-0 top-0 overflow-hidden")}
+      >
+        <LazyPage>
+          <ConfigEditor />
+        </LazyPage>
+      </div>
+    </div>
+  );
+}
+
+export default App;

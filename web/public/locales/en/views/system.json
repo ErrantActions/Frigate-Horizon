@@ -1,0 +1,519 @@
+{
+  "diagnosticTools": "Diagnostic tools",
+  "detectionReports": {
+    "title": "Detection Reports",
+    "description": "Read-only camera detection health, native alarm reports, and recent recording progress. Viewing this page does not start a stream, decoder, or detector.",
+    "caveat": "Detection and recording are independent. A fresh segment does not prove gap-free recording history. Reolink reports camera-wide alarm states, not individual object counts or confidence scores. Motion is status/timing evidence only. Session counts reset on service restart; stale or unavailable reports must not be treated as quiet.",
+    "refresh": "Refresh reports",
+    "loading": "Loading camera reports...",
+    "adminRequired": "Administrator access is required to view camera detection reports.",
+    "unknown": "Unknown",
+    "source": "Detection source",
+    "lastPoll": "Last successful API report seen",
+    "lastStats": "Frigate statistics time",
+    "reportAge": "API report age",
+    "recording": "Recording progress",
+    "segmentAge": "Latest completed segment age",
+    "decoder": "Frigate video decoder",
+    "decoderOn": "Running",
+    "decoderOff": "Off",
+    "sessionCounts": "Worker-session alarms",
+    "counts": "{{opened}} opened / {{closed}} closed",
+    "inferenceRate": "Frigate inference regions/s",
+    "seconds": "{{value}} s",
+    "unavailable": "Detection reports are not current or could not be read. A working recording feed does not confirm detection health.",
+    "active": "active",
+    "clear": "clear",
+    "recentReports": "Recent camera state changes",
+    "noTransitions": "No state changes reported in the available history.",
+    "sources": {
+      "reolink": "Reolink HTTP API",
+      "frigate": "Frigate",
+      "none": "Detection paused",
+      "unknown": "Unknown"
+    },
+    "states": {
+      "reporting": "Reporting",
+      "stale": "Stale",
+      "starting": "Starting",
+      "connecting": "Connecting",
+      "error": "Unavailable",
+      "disabled": "Disabled",
+      "unknown": "Unknown"
+    },
+    "labels": {
+      "motion": "Motion",
+      "person": "Person",
+      "vehicle": "Vehicle",
+      "animal": "Animal"
+    }
+  },
+  "diagnostics": {
+    "title": "Diagnostics",
+    "description": "Interprets cached camera, detector, decoder, storage and pipeline measurements. Observations are separated from possible causes. This page does not change settings.",
+    "recordingCaveat": "Detection skips are not proof of missing recordings. Capture queue drops, downstream output drops and recording health are separate measurements.",
+    "refresh": "Refresh diagnostics",
+    "readFailed": "Diagnostics could not be loaded. Refresh to retry.",
+    "loading": "Loading measured diagnostics...",
+    "unknown": "Unknown",
+    "stale": "The stats snapshot is stale or its clock is invalid. Do not use it as evidence of current camera health.",
+    "truncated": "This report is limited to the first 100 of {{total}} active cameras.",
+    "findingsTitle": "Interpreted findings",
+    "severity": {
+      "info": "Information",
+      "warning": "Warning",
+      "error": "Error"
+    },
+    "confidence": {
+      "observed": "Measured observation",
+      "possible": "Possible cause, not proven"
+    },
+    "findings": {
+      "decoding_disabled_by_operator": "Legacy decoded capture is intentionally disabled. Pixel motion and object inference are paused. Native stream-copy recording and per-camera compressed learning run separately.",
+      "stale": "Measurements are not current enough to diagnose a live problem. Refresh and check whether stats collection is running.",
+      "warming_up": "The service is still in its startup grace period. Rates may fluctuate while workers initialize.",
+      "camera_unknown": "No usable capture-rate measurement is available for this enabled camera.",
+      "capture_offline": "The enabled camera is delivering essentially no capture frames. Check its source, decoder and connection logs; this does not identify a network failure by itself.",
+      "processor_stalled": "Capture is flowing but no tracker results are being published. Check the camera worker and downstream object-processing pipeline.",
+      "capture_queue_full": "The capture-to-tracker queue is filling faster than its consumer can drain it. These skipped detection frames are counted separately from recorded video.",
+      "output_queue_full": "The tracker is discarding results because the downstream object-processing queue is full. Reducing camera resolution alone may not fix this consumer bottleneck.",
+      "throughput_gap": "Published tracker results are substantially below capture rate, but a current downstream-drop counter is unavailable. Investigate worker and consumer pressure; rolling rates alone do not establish which stage is responsible.",
+      "analysis_floor": "Automatic AI analysis is already at its selected minimum while skips continue. Lowering an analysis copy does not reduce the source stream's decoding cost.",
+      "decoder_saturated": "A GPU decoder is at least 95% busy. There is little decode headroom. Check simultaneous source streams and hardware-decoder assignment before changing recording quality.",
+      "gpu_hot": "A GPU is reporting at least 85 °C. Check cooling and device-specific limits. Temperature alone does not establish thermal throttling.",
+      "inference_slow": "A detector is reporting at least 30 ms per inference. Each camera frame may require several region inferences, so camera FPS is not the inference request rate.",
+      "recordings_space_low": "The recording filesystem has less than 5% free space. Check archive health and headroom; do not delete protected footage as a diagnostic shortcut.",
+      "cache_space_low": "The recording cache has less than 5% free space. Check recording ingestion and cache growth.",
+      "shm_space_low": "Shared memory has less than 5% free space. Check actual allocation and configured camera geometry.",
+      "emergency_deletion": "Emergency recording deletion is enabled in your current policy. Low-space behavior can delete eligible footage. This page does not enable, disable or alter that policy.",
+      "no_thresholds": "No diagnostic thresholds were exceeded in the available measurements. This is not a guarantee that every subsystem is healthy."
+    },
+    "evidence": {
+      "age_seconds": "Stats age (s)",
+      "capture_fps": "Capture FPS",
+      "process_fps": "Published FPS",
+      "skipped_percent": "Capture skips (%)",
+      "skipped_fps": "Capture skips per second",
+      "tracker_fps": "Tracker FPS",
+      "output_dropped_fps": "Downstream drops per second",
+      "analysis_height": "AI analysis height (px)",
+      "source_height": "Capture-buffer height (px)",
+      "decoder_percent": "Decoder utilization (%)",
+      "temperature": "Temperature (°C)",
+      "inference_ms": "Inference time (ms)",
+      "free_percent": "Free space (%)"
+    },
+    "cameraTitle": "Camera pipeline measurements",
+    "columns": {
+      "camera": "Camera",
+      "capture": "Capture FPS",
+      "tracker": "Tracker FPS",
+      "published": "Published FPS",
+      "captureSkipped": "Capture skips/s",
+      "outputDropped": "Downstream drops/s",
+      "analysis": "Analysis height",
+      "source": "Capture height"
+    },
+    "ratesHelp": "Rates are rolling averages and may not add up exactly. Unknown means the stage has not reported a current measurement. The capture-buffer height is not necessarily the encoded camera stream's resolution.",
+    "hardwareTitle": "Decoder and detector evidence",
+    "gpu": "{{gpu}}: decoder {{decoder}}%, compute {{compute}}%, temperature {{temperature}} °C",
+    "detectors": "Detector inference times: {{values}} ms",
+    "aiTitle": "Optional GenAI explanation",
+    "aiHelp": "Uses the provider already assigned the chat role. Sends numeric measurements and finding codes with camera/GPU aliases, not camera names, images, logs, credentials, network addresses, private prompts or full configuration. At most 20 cameras are included. The explanation is advisory and cannot execute tools or change settings.",
+    "aiUnavailable": "No GenAI provider currently has the chat role. Deterministic diagnostics remain available.",
+    "consent": "Allow this sanitized metrics snapshot to be sent to my configured chat provider.",
+    "explain": "Explain this snapshot with AI",
+    "explaining": "Generating explanation...",
+    "aiFailed": "The AI explanation could not be completed. The provider may be busy, unavailable or timed out. Deterministic findings remain available; no settings were changed.",
+    "aiSnapshot": "AI interpretation of the snapshot from {{time}}. It may be incorrect; the measured facts above are authoritative. It does not automatically update with new measurements.",
+    "coverage": "Coverage: cached stats, configured camera state and measured pipeline counters. This is not a full log audit, network test, storage I/O profile, or visual image assessment. Missing measurements and unproven causes remain explicit."
+  },
+  "documentTitle": {
+    "detectionReports": "Detection Reports - Frigate Horizon",
+    "diagnostics": "Diagnostics - Frigate Horizon",
+    "cameras": "Cameras Stats - Frigate Horizon",
+    "storage": "Storage Stats - Frigate Horizon",
+    "general": "General Stats - Frigate Horizon",
+    "enrichments": "Enrichments Stats - Frigate Horizon",
+    "logs": {
+      "frigate": "Frigate Horizon Logs - Frigate Horizon",
+      "go2rtc": "Go2RTC Logs - Frigate Horizon",
+      "nginx": "Nginx Logs - Frigate Horizon",
+      "websocket": "Messages Logs - Frigate Horizon"
+    },
+    "health": "Health - Frigate Horizon"
+  },
+  "title": "System",
+  "metrics": "System metrics",
+  "showAllTabs": "Show all tabs",
+  "showLessTabs": "Show less",
+  "health": {
+    "title": "Health",
+    "notices": {
+      "title": "Notices",
+      "empty": "Your Frigate installation is healthy",
+      "acknowledge": "Acknowledge",
+      "acknowledgeHint": "Hide until this happens again",
+      "mute": "Mute",
+      "muteHint": "Never show this again",
+      "unmute": "Unmute",
+      "showAgain": "Show again",
+      "openSettings": "Open settings",
+      "openLink": "Open link",
+      "noMatches": "No notices match the filter",
+      "hiddenTitle": "Hidden",
+      "noneHidden": "No hidden notices",
+      "showAll": "Show all again",
+      "showAllTitle": "Show all hidden notices?",
+      "showAllDesc": "Every acknowledged and muted notice returns to the Notices list, including config and stream checks.",
+      "occurred_one": "Occurred {{time}}",
+      "occurred_other": "Last occurred {{lastTime}} · {{count}} times since {{time}}",
+      "acknowledgedAt": "Acknowledged {{time}}",
+      "mutedAt": "Muted {{time}}",
+      "filter": {
+        "showHidden": "Show hidden",
+        "severity": "Severity",
+        "error": "Error",
+        "warning": "Warning",
+        "info": "Info"
+      },
+      "historicalObjectProcessing": "Historical tracked-object processing warning. The latest camera statistics show no active Frigate video-detection pipeline; the earlier dropped-frame history is retained below.",
+      "kinds": {
+        "detector_stuck": "Detector {{detector}} was restarted after it stopped responding",
+        "model_download_failed": "Downloading {{file}} for {{model}} failed: {{error}}",
+        "skipped_detections": "Detection could not keep up and skipped {{pct}}% of frames for over a minute",
+        "ffmpeg_high_cpu": "FFmpeg CPU usage is high ({{cpu}}% average)",
+        "detect_high_cpu": "Detection CPU usage is high ({{cpu}}% average)",
+        "shm_too_low": "/dev/shm allocation ({{total}} MB) should be increased to at least {{min}} MB",
+        "object_processing_behind": "Tracked object processing could not keep up, so camera frames were dropped. Check CPU utilization, and whether CPU limits or pinning on the container or VM are leaving Frigate too little CPU",
+        "failed_login_one": "Failed login attempt for {{user}}",
+        "failed_login_other": "Failed login attempts for {{user}}",
+        "update_available": "Frigate {{version}} is available"
+      },
+      "streamPrefix": "Stream {{index}}: {{message}}",
+      "streamPrefixRestream": "Stream {{index}} (via go2rtc): {{message}}",
+      "streamProbeFailed": "Stream {{index}} could not be probed: {{error}}",
+      "cameraProbeFailed": "Streams could not be probed: {{error}}"
+    },
+    "hardware": {
+      "inferenceStandby": "Standby: enabled cameras are not using Frigate video inference",
+      "videoDecodeIdle": "No Frigate camera video decoder is in use. Live viewing has a separate pipeline.",
+      "nativeApi": "Native API",
+      "detectionStatus": "Detection",
+      "recordingProgress": "Recording",
+      "recordingOnlyExpected": "Recording-only: decoded FPS is not expected",
+      "detectionReports": "Open detailed detection reports",
+      "streamsOptional": "Optional input-stream diagnostics have not been run. This is not an offline status.",
+      "title": "Hardware",
+      "objectDetection": "Object detection",
+      "hardwareAcceleration": "Hardware acceleration",
+      "enrichments": {
+        "title": "Enrichments",
+        "semantic_search": "Semantic search",
+        "face_recognition": "Face recognition",
+        "lpr": "License plate recognition",
+        "audio_transcription": "Audio transcription"
+      },
+      "cameraConnections": "Camera connections",
+      "allCamerasExcellent": "All cameras have an excellent connection.",
+      "fps": "{{camera}} / {{expected}} fps",
+      "nothingConfigured": "Nothing configured",
+      "allCameras": "All cameras",
+      "probeUnavailable": "Hardware detection is unavailable",
+      "justStarted": "Frigate just started",
+      "deviceNotFound": "{{devices}} was not found on this system",
+      "detectorNotRunning": "Detector process is not running",
+      "inferenceVerySlow": "Inference is very slow ({{speed}} ms)",
+      "inferenceSlow": "Inference is slow ({{speed}} ms)",
+      "inferenceMs": "{{speed}} ms",
+      "customArgs": "Custom ffmpeg arguments",
+      "customArgsNotVerified": "Custom ffmpeg arguments, not verified",
+      "hwaccelNotConfigured": "No hardware decoding is in use, but {{family}} is available. Select it in the ffmpeg settings",
+      "hwaccelHardwareMissing": "{{family}} is configured, but the hardware probe did not report it",
+      "unrecognizedDevice": "Unrecognized device override, not verified",
+      "decoderUsage": "decoder {{usage}}",
+      "remoteProvider": "Remote provider",
+      "acceleratorMissing": "Configured for {{device}} but no compatible accelerator was found",
+      "modelNotRunYet": "Model has not run yet, the device is verified after first use",
+      "fellBackToCpu": "Configured for {{device}} but running on the CPU",
+      "cpuDespiteAccelerator": "Running on the CPU although an accelerator is available",
+      "probed": "Probed",
+      "probing": "Probing...",
+      "recheck": "Re-check hardware",
+      "cameraStreams": "Camera streams",
+      "streamsNotChecked": "Not checked yet",
+      "streamsChecking": "Checking {{done}} of {{total}}",
+      "streamsClean": "No stream problems",
+      "checked": "Checked",
+      "runAgain": "Run again",
+      "runStreamChecks": "Run stream checks",
+      "streamsChecked_one": "{{count}} camera checked",
+      "streamsChecked_other": "{{count}} cameras checked",
+      "streamsFlagged_one": "{{count}} with problems, listed under Notices",
+      "streamsFlagged_other": "{{count}} with problems, listed under Notices"
+    }
+  },
+  "logs": {
+    "websocket": {
+      "label": "Messages",
+      "pause": "Pause",
+      "resume": "Resume",
+      "clear": "Clear",
+      "filter": {
+        "all": "All topics",
+        "topics": "Topics",
+        "events": "Events",
+        "reviews": "Reviews",
+        "classification": "Classification",
+        "face_recognition": "Face Recognition",
+        "lpr": "LPR",
+        "camera_activity": "Camera activity",
+        "system": "System",
+        "camera": "Camera",
+        "all_cameras": "All cameras",
+        "cameras_count_one": "{{count}} Camera",
+        "cameras_count_other": "{{count}} Cameras"
+      },
+      "empty": "No messages captured yet",
+      "count_one": "{{count}} message",
+      "count_other": "{{count}} messages",
+      "expanded": {
+        "payload": "Payload"
+      }
+    },
+    "download": {
+      "label": "Download Logs"
+    },
+    "copy": {
+      "label": "Copy to Clipboard",
+      "success": "Copied logs to clipboard",
+      "error": "Could not copy logs to clipboard"
+    },
+    "type": {
+      "label": "Type",
+      "timestamp": "Timestamp",
+      "tag": "Tag",
+      "message": "Message"
+    },
+    "tips": "Logs are streaming from the server",
+    "toast": {
+      "error": {
+        "fetchingLogsFailed": "Error fetching logs: {{errorMessage}}",
+        "whileStreamingLogs": "Error while streaming logs: {{errorMessage}}"
+      }
+    }
+  },
+  "general": {
+    "title": "General",
+    "detector": {
+      "title": "Detectors",
+      "inferenceSpeed": "Detector Inference Speed",
+      "temperature": "Detector Temperature",
+      "cpuUsage": "Detector CPU Usage",
+      "cpuUsageInformation": "CPU used in preparing input and output data to/from detection models. This value does not measure inference usage, even if using a GPU or accelerator.",
+      "memoryUsage": "Detector Memory Usage"
+    },
+    "hardwareInfo": {
+      "title": "Hardware Info",
+      "gpuUsage": "GPU Usage",
+      "gpuMemory": "GPU Memory",
+      "gpuEncoder": "GPU Encoder",
+      "gpuCompute": "GPU Compute / Encode",
+      "gpuDecoder": "GPU Decoder",
+      "gpuTemperature": "GPU Temperature",
+      "gpuInfo": {
+        "vainfoOutput": {
+          "title": "Vainfo Output",
+          "returnCode": "Return Code: {{code}}",
+          "processOutput": "Process Output:",
+          "processError": "Process Error:"
+        },
+        "nvidiaSMIOutput": {
+          "title": "Nvidia SMI Output",
+          "name": "Name: {{name}}",
+          "driver": "Driver: {{driver}}",
+          "cudaComputerCapability": "CUDA Compute Capability: {{cuda_compute}}",
+          "vbios": "VBios Info: {{vbios}}"
+        },
+        "closeInfo": {
+          "label": "Close GPU info"
+        },
+        "copyInfo": {
+          "label": "Copy GPU info"
+        },
+        "toast": {
+          "success": "Copied GPU info to clipboard"
+        }
+      },
+      "npuUsage": "NPU Usage",
+      "npuMemory": "NPU Memory",
+      "npuTemperature": "NPU Temperature"
+    },
+    "otherProcesses": {
+      "title": "Other Processes",
+      "processCpuUsage": "Process CPU Usage",
+      "processMemoryUsage": "Process Memory Usage",
+      "series": {
+        "go2rtc": "go2rtc",
+        "recording": "recording",
+        "review_segment": "review segment",
+        "embeddings": "embeddings",
+        "audio_detector": "audio detector"
+      }
+    }
+  },
+  "storage": {
+    "title": "Storage",
+    "overview": "Overview",
+    "recordings": {
+      "title": "Recordings",
+      "tips": "This value represents the total storage used by the recordings in Frigate's database. Frigate does not track storage usage for all files on your disk.",
+      "earliestRecording": "Earliest recording available:"
+    },
+    "shm": {
+      "title": "SHM (shared memory) allocation",
+      "warning": "The current SHM size of {{total}}MB is too small. Increase it to at least {{min_shm}}MB.",
+      "frameLifetime": {
+        "title": "Frame lifetime",
+        "description": "Each camera has {{frames}} frame slots in shared memory. At the fastest camera's frame rate, each frame is available for approximately {{lifetime}}s before being overwritten."
+      }
+    },
+    "cameraStorage": {
+      "title": "Camera Storage",
+      "camera": "Camera",
+      "unusedStorageInformation": "Unused Storage Information",
+      "storageUsed": "Storage",
+      "percentageOfTotalUsed": "Percentage of Total",
+      "bandwidth": "Bandwidth",
+      "unused": {
+        "title": "Unused",
+        "tips": "This value may not accurately represent the free space available to Frigate if you have other files stored on your drive beyond Frigate's recordings. Frigate does not track storage usage outside of its recordings."
+      },
+      "subStream": {
+        "information": "Sub Stream Storage Information",
+        "tips": "Cameras that record a sub stream show their Original and Low quality usage separately, using the same names as the quality options in recording playback. Low quality recordings stay on disk until their retention period expires, so this breakdown can still appear for a camera after sub stream recording has been turned off."
+      }
+    }
+  },
+  "cameras": {
+    "title": "Cameras",
+    "overview": "Overview",
+    "info": {
+      "aspectRatio": "aspect ratio",
+      "cameraProbeInfo": "{{camera}} Camera Probe Info",
+      "streamDataFromFFPROBE": "Stream data is obtained with <code>ffprobe</code>.",
+      "fetching": "Fetching Camera Data",
+      "stream": "Stream {{idx}}",
+      "video": "Video:",
+      "codec": "Codec:",
+      "resolution": "Resolution:",
+      "fps": "FPS:",
+      "unknown": "Unknown",
+      "audio": "Audio:",
+      "error": "Error: {{error}}",
+      "tips": {
+        "title": "Camera Probe Info"
+      },
+      "keyframes": {
+        "title": "Keyframe analysis",
+        "analyzing": "Analyzing keyframes... {{seconds}} seconds remaining",
+        "stillAnalyzing": "Still analyzing keyframes...",
+        "recordStream": "Record stream:",
+        "keyframeCount": "Keyframes observed:",
+        "observedDuration": "Observed duration:",
+        "gap": "Keyframe gap (min / avg / max):",
+        "segmentLength": "Recording segment length:",
+        "ok": "Keyframes every ~{{seconds}}s, good for recording and playback.",
+        "warningFixed": "Keyframes are evenly spaced but sparse (every ~{{seconds}}s). Recording still works, but live playback and seeking start more slowly. Set the camera's I-frame (keyframe) interval to match its frame rate.",
+        "warningVariable": "Keyframe spacing is inconsistent ({{minSeconds}}s to {{maxSeconds}}s), which usually means a smart codec (H.264+/H.265+) is enabled. This is not recommended.",
+        "errorFixed": "Keyframes every ~{{seconds}}s is longer than the recording segment length ({{segmentTime}}s), so some segments have no keyframe and will not play back. Shorten the camera's I-frame (keyframe) interval to match its frame rate.",
+        "errorVariable": "Keyframe gaps reach ~{{seconds}}s, longer than the recording segment length ({{segmentTime}}s). Some segments will have no keyframe, which breaks playback. Disable the smart/+ codec on the camera or shorten its keyframe interval.",
+        "unknown": "Couldn't determine keyframe spacing.",
+        "recordDisabled": "Recording is disabled for this camera."
+      }
+    },
+    "framesAndDetections": "Frames / Detections",
+    "noCameras": {
+      "title": "No Cameras Found"
+    },
+    "label": {
+      "camera": "camera",
+      "detect": "detect",
+      "skipped": "skipped",
+      "ffmpeg": "FFmpeg",
+      "capture": "capture",
+      "overallFramesPerSecond": "overall frames per second",
+      "overallDetectionsPerSecond": "overall detections per second",
+      "overallSkippedDetectionsPerSecond": "overall skipped detections per second",
+      "cameraFfmpeg": "{{camName}} FFmpeg",
+      "cameraCapture": "{{camName}} capture",
+      "cameraDetect": "{{camName}} detect",
+      "cameraGpu": "{{camName}} GPU",
+      "cameraFramesPerSecond": "{{camName}} frames per second",
+      "cameraDetectionsPerSecond": "{{camName}} detections per second",
+      "cameraSkippedDetectionsPerSecond": "{{camName}} skipped detections per second"
+    },
+    "connectionQuality": {
+      "title": "Connection Quality",
+      "excellent": "Excellent",
+      "fair": "Fair",
+      "poor": "Poor",
+      "unusable": "Unusable",
+      "fps": "FPS",
+      "expectedFps": "Expected FPS",
+      "reconnectsLastHour": "Reconnects (last hour)",
+      "stallsLastHour": "Stalls (last hour)"
+    },
+    "toast": {
+      "success": {
+        "copyToClipboard": "Copied probe data to clipboard."
+      },
+      "error": {
+        "unableToProbeCamera": "Unable to probe camera: {{errorMessage}}"
+      }
+    }
+  },
+  "lastRefreshed": "Last refreshed: ",
+  "stats": {
+    "cameraSkippedDetections": "{{camera}} is skipping detection on {{pct}}% of frames",
+    "healthy": "System is healthy",
+    "systemNotices_one": "{{count}} system notice",
+    "systemNotices_other": "{{count}} system notices",
+    "moreMessages_one": "+{{count}}",
+    "moreMessages_other": "+{{count}}",
+    "reindexingEmbeddings": "Reindexing embeddings ({{processed}}% complete)",
+    "reindexEmbeddingsFailed": "Reindexing embeddings failed, check the logs",
+    "cameraIsOffline": "{{camera}} is offline",
+    "detectIsSlow": "{{detect}} is slow ({{speed}} ms)",
+    "detectIsVerySlow": "{{detect}} is very slow ({{speed}} ms)",
+    "retentionUnmet": "Recordings are being deleted before their retention period ends to free space",
+    "debugReplayActive": "Debug replay session is active"
+  },
+  "enrichments": {
+    "title": "Enrichments",
+    "infPerSecond": "Inferences Per Second",
+    "averageInf": "Average Inference Time",
+    "embeddings": {
+      "image_embedding": "Image Embedding",
+      "text_embedding": "Text Embedding",
+      "face_recognition": "Face Recognition",
+      "plate_recognition": "Plate Recognition",
+      "image_embedding_speed": "Image Embedding Speed",
+      "face_embedding_speed": "Face Embedding Speed",
+      "face_recognition_speed": "Face Recognition Speed",
+      "plate_recognition_speed": "Plate Recognition Speed",
+      "text_embedding_speed": "Text Embedding Speed",
+      "yolov9_plate_detection_speed": "YOLOv9 Plate Detection Speed",
+      "yolov9_plate_detection": "YOLOv9 Plate Detection",
+      "review_description": "Review Description",
+      "review_description_speed": "Review Description Speed",
+      "review_description_events_per_second": "Review Description",
+      "object_description": "Object Description",
+      "object_description_speed": "Object Description Speed",
+      "object_description_events_per_second": "Object Description",
+      "classification": "{{name}} Classification",
+      "classification_speed": "{{name}} Classification Speed",
+      "classification_events_per_second": "{{name}} Classification Events Per Second"
+    }
+  }
+}

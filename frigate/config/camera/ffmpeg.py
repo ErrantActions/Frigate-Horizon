@@ -1,0 +1,163 @@
+from enum import Enum
+
+from pydantic import Field, field_validator
+
+from frigate.util.config import resolve_ffmpeg_path
+from frigate.util.env import EnvString
+
+from ..base import FrigateBaseModel
+
+__all__ = [
+    "CameraFfmpegConfig",
+    "CameraInput",
+    "CameraRoleEnum",
+    "FfmpegConfig",
+    "FfmpegOutputArgsConfig",
+]
+
+# Note: Setting threads to less than 2 caused several issues with recording segments
+# https://github.com/blakeblackshear/frigate/issues/5659
+FFMPEG_GLOBAL_ARGS_DEFAULT = ["-hide_banner", "-loglevel", "warning", "-threads", "2"]
+FFMPEG_INPUT_ARGS_DEFAULT = "preset-rtsp-generic"
+
+RECORD_FFMPEG_OUTPUT_ARGS_DEFAULT = "preset-record-generic-audio-aac"
+DETECT_FFMPEG_OUTPUT_ARGS_DEFAULT = [
+    "-threads",
+    "2",
+    "-f",
+    "rawvideo",
+    "-pix_fmt",
+    "yuv420p",
+]
+
+
+class FfmpegOutputArgsConfig(FrigateBaseModel):
+    detect: str | list[str] = Field(
+        default=DETECT_FFMPEG_OUTPUT_ARGS_DEFAULT,
+        title="Detect output arguments",
+        description="Default output arguments for detect role streams.",
+    )
+    record: str | list[str] = Field(
+        default=RECORD_FFMPEG_OUTPUT_ARGS_DEFAULT,
+        title="Record output arguments",
+        description="Default output arguments for record role streams.",
+    )
+    record_sub: str | list[str] = Field(
+        default_factory=list,
+        title="Sub stream record output arguments",
+        description="Output arguments for record_sub role streams. The record output arguments are used when this is not set.",
+    )
+
+    @property
+    def effective_record_sub(self) -> str | list[str]:
+        """Output arguments used for the record_sub role.
+
+        Falls back to the record arguments rather than to the stock preset so
+        that a customized record value keeps applying to both recorded streams.
+        """
+        return self.record_sub or self.record
+
+
+class FfmpegConfig(FrigateBaseModel):
+    path: str = Field(
+        default="default",
+        title="FFmpeg path",
+        description='Path to the FFmpeg binary to use or a version alias ("7.0" or "8.0").',
+    )
+    global_args: str | list[str] = Field(
+        default=FFMPEG_GLOBAL_ARGS_DEFAULT,
+        title="FFmpeg global arguments",
+        description="Global arguments passed to FFmpeg processes.",
+    )
+    hwaccel_args: str | list[str] = Field(
+        default="auto",
+        title="Hardware acceleration arguments",
+        description="Hardware acceleration arguments for FFmpeg. Provider-specific presets are recommended.",
+    )
+    input_args: str | list[str] = Field(
+        default=FFMPEG_INPUT_ARGS_DEFAULT,
+        title="Input arguments",
+        description="Input arguments applied to FFmpeg input streams.",
+    )
+    output_args: FfmpegOutputArgsConfig = Field(
+        default_factory=FfmpegOutputArgsConfig,
+        title="Output arguments",
+        description="Default output arguments used for different FFmpeg roles such as detect and record.",
+    )
+    retry_interval: float = Field(
+        default=10.0,
+        title="FFmpeg retry time",
+        description="Seconds to wait before attempting to reconnect a camera stream after failure. Default is 10.",
+        gt=0.0,
+    )
+    apple_compatibility: bool = Field(
+        default=False,
+        title="Apple compatibility",
+        description="Enable HEVC tagging for better Apple player compatibility when recording H.265.",
+    )
+    gpu: int = Field(
+        default=0,
+        title="GPU index",
+        description="Default GPU index used for hardware acceleration if available.",
+    )
+
+    @property
+    def ffmpeg_path(self) -> str:
+        return resolve_ffmpeg_path(self.path, "ffmpeg")
+
+    @property
+    def ffprobe_path(self) -> str:
+        return resolve_ffmpeg_path(self.path, "ffprobe")
+
+
+class CameraRoleEnum(str, Enum):
+    audio = "audio"
+    record = "record"
+    record_sub = "record_sub"
+    detect = "detect"
+
+
+class CameraInput(FrigateBaseModel):
+    path: EnvString = Field(
+        title="Input path",
+        description="Camera input stream URL or path.",
+    )
+    roles: list[CameraRoleEnum] = Field(
+        title="Input roles",
+        description="Roles for this input stream.",
+    )
+    global_args: str | list[str] = Field(
+        default_factory=list,
+        title="FFmpeg global arguments",
+        description="FFmpeg global arguments for this input stream.",
+    )
+    hwaccel_args: str | list[str] = Field(
+        default_factory=list,
+        title="Hardware acceleration arguments",
+        description="Hardware acceleration arguments for this input stream.",
+    )
+    input_args: str | list[str] = Field(
+        default_factory=list,
+        title="Input arguments",
+        description="Input arguments specific to this stream.",
+    )
+
+
+class CameraFfmpegConfig(FfmpegConfig):
+    inputs: list[CameraInput] = Field(
+        title="Camera inputs",
+        description="List of input stream definitions (paths and roles) for this camera.",
+    )
+
+    @field_validator("inputs")
+    @classmethod
+    def validate_roles(cls, v):
+        roles = [role for input in v for role in input.roles]
+
+        if len(roles) != len(set(roles)):
+            raise ValueError("Each input role may only be used once.")
+
+        if "detect" not in roles:
+            raise ValueError("The detect role is required.")
+
+        return v

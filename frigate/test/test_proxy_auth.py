@@ -1,0 +1,263 @@
+import unittest
+
+from pydantic import ValidationError
+
+from frigate.api.auth import resolve_role
+from frigate.config import AuthConfig, HeaderMappingConfig, ProxyConfig
+from frigate.util.env import FRIGATE_ENV_VARS
+
+
+class TestProxyRoleResolution(unittest.TestCase):
+    def setUp(self):
+        self.proxy_config = ProxyConfig(
+            auth_secret=None,
+            default_role="viewer",
+            separator="|",
+            header_map=HeaderMappingConfig(
+                user="x-remote-user",
+                role="x-remote-role",
+                role_map={
+                    "admin": ["group_admin"],
+                    "viewer": ["group_viewer"],
+                },
+            ),
+        )
+        self.config_roles = list(["admin", "viewer"])
+
+    def test_role_map_single_group_match(self):
+        headers = {"x-remote-role": "group_admin"}
+        role = resolve_role(headers, self.proxy_config, self.config_roles)
+        self.assertEqual(role, "admin")
+
+    def test_role_map_multiple_groups(self):
+        headers = {"x-remote-role": "group_admin|group_viewer"}
+        role = resolve_role(headers, self.proxy_config, self.config_roles)
+        self.assertEqual(role, "admin")
+
+    def test_role_map_or_matching(self):
+        config = self.proxy_config
+        config.header_map.role_map = {
+            "admin": ["group_admin", "group_privileged"],
+        }
+
+        # OR semantics: a single matching group should map to the role
+        headers = {"x-remote-role": "group_admin"}
+        role = resolve_role(headers, config, self.config_roles)
+        self.assertEqual(role, "admin")
+
+        headers = {"x-remote-role": "group_admin|group_privileged"}
+        role = resolve_role(headers, config, self.config_roles)
+        self.assertEqual(role, "admin")
+
+    def test_direct_role_header_with_separator(self):
+        config = self.proxy_config
+        config.header_map.role_map = None  # disable role_map
+        headers = {"x-remote-role": "admin|viewer"}
+        role = resolve_role(headers, config, self.config_roles)
+        self.assertEqual(role, "admin")
+
+    def test_invalid_role_header(self):
+        config = self.proxy_config
+        config.header_map.role_map = None
+        headers = {"x-remote-role": "notarole"}
+        role = resolve_role(headers, config, self.config_roles)
+        self.assertEqual(role, config.default_role)
+
+    def test_missing_role_header(self):
+        headers = {}
+        role = resolve_role(headers, self.proxy_config, self.config_roles)
+        self.assertEqual(role, self.proxy_config.default_role)
+
+    def test_empty_role_header(self):
+        headers = {"x-remote-role": ""}
+        role = resolve_role(headers, self.proxy_config, self.config_roles)
+        self.assertEqual(role, self.proxy_config.default_role)
+
+    def test_whitespace_groups(self):
+        headers = {"x-remote-role": "   | group_admin |   "}
+        role = resolve_role(headers, self.proxy_config, self.config_roles)
+        self.assertEqual(role, "admin")
+
+    def test_mixed_valid_and_invalid_groups(self):
+        headers = {"x-remote-role": "bogus|group_viewer"}
+        role = resolve_role(headers, self.proxy_config, self.config_roles)
+        self.assertEqual(role, "viewer")
+
+    def test_case_insensitive_role_direct(self):
+        config = self.proxy_config
+        config.header_map.role_map = None
+        headers = {"x-remote-role": "AdMiN"}
+        role = resolve_role(headers, config, self.config_roles)
+        self.assertEqual(role, "admin")
+
+    def test_role_map_no_match_falls_back(self):
+        headers = {"x-remote-role": "group_unknown"}
+        role = resolve_role(headers, self.proxy_config, self.config_roles)
+        self.assertEqual(role, self.proxy_config.default_role)
+
+
+class TestDefaultRoleNone(unittest.TestCase):
+    def setUp(self):
+        self.proxy_config = ProxyConfig(
+            auth_secret=None,
+            default_role="none",
+            separator="|",
+            header_map=HeaderMappingConfig(
+                user="x-remote-user",
+                role="x-remote-role",
+                role_map={
+                    "admin": ["group_admin"],
+                    "viewer": ["group_viewer"],
+                },
+            ),
+        )
+        self.config_roles = list(["admin", "viewer"])
+
+    def test_default_role_none_no_match(self):
+        """Unmatched groups resolve to 'none' when default_role is 'none'."""
+        headers = {"x-remote-role": "group_unknown"}
+        role = resolve_role(headers, self.proxy_config, self.config_roles)
+        self.assertEqual(role, "none")
+
+    def test_default_role_none_with_match(self):
+        """Matched groups still resolve normally when default_role is 'none'."""
+        headers = {"x-remote-role": "group_admin"}
+        role = resolve_role(headers, self.proxy_config, self.config_roles)
+        self.assertEqual(role, "admin")
+
+    def test_default_role_none_missing_header(self):
+        """A missing role header resolves to 'none'."""
+        headers = {}
+        role = resolve_role(headers, self.proxy_config, self.config_roles)
+        self.assertEqual(role, "none")
+
+    def test_default_role_none_empty_header(self):
+        """An empty role header resolves to 'none'."""
+        headers = {"x-remote-role": ""}
+        role = resolve_role(headers, self.proxy_config, self.config_roles)
+        self.assertEqual(role, "none")
+
+    def test_default_role_none_no_role_map(self):
+        """An invalid direct role name resolves to 'none' without a role_map."""
+        config = ProxyConfig(
+            auth_secret=None,
+            default_role="none",
+            separator="|",
+            header_map=HeaderMappingConfig(
+                user="x-remote-user",
+                role="x-remote-role",
+                role_map=None,
+            ),
+        )
+        headers = {"x-remote-role": "notarole"}
+        role = resolve_role(headers, config, self.config_roles)
+        self.assertEqual(role, "none")
+
+    def test_default_role_none_no_role_header_configured(self):
+        """Proxy configs without a role header resolve to 'none'."""
+        config = ProxyConfig(
+            auth_secret=None,
+            default_role="none",
+            separator="|",
+            header_map=HeaderMappingConfig(user="x-remote-user"),
+        )
+        role = resolve_role({}, config, self.config_roles)
+        self.assertEqual(role, "none")
+
+    def test_default_role_none_no_roles_configured(self):
+        """'none' survives the empty config_roles edge case."""
+        headers = {"x-remote-role": "group_admin"}
+        role = resolve_role(headers, self.proxy_config, set())
+        self.assertEqual(role, "none")
+
+    def test_default_role_none_is_case_insensitive(self):
+        """Capitalized spellings must deny, not fall back to viewer."""
+        for spelling in ("None", "NONE", "nOnE", " none "):
+            with self.subTest(default_role=spelling):
+                config = ProxyConfig(
+                    auth_secret=None,
+                    default_role=spelling,
+                    separator="|",
+                    header_map=HeaderMappingConfig(
+                        user="x-remote-user",
+                        role="x-remote-role",
+                        role_map={"admin": ["group_admin"]},
+                    ),
+                )
+                self.assertEqual(config.default_role, "none")
+                role = resolve_role(
+                    {"x-remote-role": "group_unknown"}, config, self.config_roles
+                )
+                self.assertEqual(role, "none")
+
+    def test_other_role_names_stay_case_sensitive(self):
+        """Only the deny sentinel is normalized; role names are untouched."""
+        config = ProxyConfig(default_role="Operator")
+        self.assertEqual(config.default_role, "Operator")
+
+
+class TestReservedRoleNames(unittest.TestCase):
+    def test_reserved_names_rejected(self):
+        """admin, viewer, and the 'none' deny sentinel cannot be custom roles."""
+        for name in ("admin", "viewer", "none"):
+            with self.subTest(role=name):
+                with self.assertRaises(ValidationError):
+                    AuthConfig(roles={name: ["front_door"]})
+
+    def test_custom_role_still_allowed(self):
+        config = AuthConfig(roles={"operator": ["front_door"]})
+        self.assertEqual(config.roles["operator"], ["front_door"])
+
+    def test_error_names_the_offending_role(self):
+        """The message must say which name to rename, in a stable order."""
+        with self.assertRaises(ValidationError) as ctx:
+            AuthConfig(roles={"none": ["front_door"], "admin": ["front_door"]})
+        self.assertIn("admin, none", str(ctx.exception))
+
+    def test_none_reserved_in_every_casing(self):
+        """proxy.default_role folds case, so a 'None' role would be unreachable."""
+        for name in ("None", "NONE", "nOnE"):
+            with self.subTest(role=name):
+                with self.assertRaises(ValidationError):
+                    AuthConfig(roles={name: ["front_door"]})
+
+    def test_case_variant_of_a_normal_role_still_allowed(self):
+        """Only 'none' folds case; other role names are untouched."""
+        config = AuthConfig(roles={"Operator": ["front_door"]})
+        self.assertEqual(config.roles["Operator"], ["front_door"])
+
+
+class TestProxyAuthSecretEnvString(unittest.TestCase):
+    def setUp(self):
+        self._original_env_vars = dict(FRIGATE_ENV_VARS)
+
+    def tearDown(self):
+        FRIGATE_ENV_VARS.clear()
+        FRIGATE_ENV_VARS.update(self._original_env_vars)
+
+    def test_auth_secret_env_substitution(self):
+        """auth_secret resolves FRIGATE_ env vars via EnvString."""
+        FRIGATE_ENV_VARS["FRIGATE_PROXY_SECRET"] = "my_secret_value"
+        config = ProxyConfig(auth_secret="{FRIGATE_PROXY_SECRET}")
+        self.assertEqual(config.auth_secret, "my_secret_value")
+
+    def test_auth_secret_env_embedded_in_string(self):
+        """auth_secret resolves env vars embedded in a larger string."""
+        FRIGATE_ENV_VARS["FRIGATE_SECRET_PART"] = "abc123"
+        config = ProxyConfig(auth_secret="prefix-{FRIGATE_SECRET_PART}-suffix")
+        self.assertEqual(config.auth_secret, "prefix-abc123-suffix")
+
+    def test_auth_secret_plain_string(self):
+        """auth_secret accepts a plain string without substitution."""
+        config = ProxyConfig(auth_secret="literal_secret")
+        self.assertEqual(config.auth_secret, "literal_secret")
+
+    def test_auth_secret_none(self):
+        """auth_secret defaults to None."""
+        config = ProxyConfig()
+        self.assertIsNone(config.auth_secret)
+
+    def test_auth_secret_unknown_var_raises(self):
+        """auth_secret raises KeyError for unknown env var references."""
+        with self.assertRaises(Exception):
+            ProxyConfig(auth_secret="{FRIGATE_NONEXISTENT_VAR}")

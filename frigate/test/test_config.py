@@ -1,0 +1,2376 @@
+import json
+import os
+import tempfile
+import unittest
+from copy import deepcopy
+from unittest.mock import patch
+
+import numpy as np
+import requests
+from pydantic import ValidationError
+from ruamel.yaml.constructor import DuplicateKeyError
+
+from frigate.config import BirdseyeModeEnum, FrigateConfig, RetainModeEnum
+from frigate.const import MODEL_CACHE_DIR
+from frigate.detectors import DetectorTypeEnum
+from frigate.detectors.device import build_detector_config, runner_names
+from frigate.util.builtin import deep_merge
+
+
+class TestConfig(unittest.TestCase):
+    def setUp(self):
+        self.minimal = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        self.plus_model_info = {
+            "id": "e63b7345cc83a84ed79dedfc99c16616",
+            "name": "SSDLite Mobiledet",
+            "description": "Fine tuned model",
+            "trainDate": "2023-04-28T23:22:01.262Z",
+            "type": "ssd",
+            "supportedDetectors": ["cpu", "edgetpu"],
+            "width": 320,
+            "height": 320,
+            "inputShape": "nhwc",
+            "pixelFormat": "rgb",
+            "labelMap": {
+                "0": "amazon",
+                "1": "car",
+                "2": "cat",
+                "3": "deer",
+                "4": "dog",
+                "5": "face",
+                "6": "fedex",
+                "7": "license_plate",
+                "8": "package",
+                "9": "person",
+                "10": "ups",
+            },
+        }
+
+        if not os.path.exists(MODEL_CACHE_DIR) and not os.path.islink(MODEL_CACHE_DIR):
+            os.makedirs(MODEL_CACHE_DIR)
+
+    def test_config_class(self):
+        frigate_config = FrigateConfig(**self.minimal)
+        model = frigate_config.primary_model
+        assert model.scene == "default"
+        assert model.width == 320
+        assert frigate_config.devices_for_model(model)[0].detector == (
+            DetectorTypeEnum.cpu
+        )
+
+    def test_trusted_proxies_reject_invalid_networks(self):
+        config = {
+            "auth": {"trusted_proxies": ["172.18.0.0/16", "192.168.1.1/24", "fd00::/8"]}
+        }
+        FrigateConfig(**deep_merge(config, self.minimal))
+
+        config = {"auth": {"trusted_proxies": ["172.18.0.0/33"]}}
+        with self.assertRaises(ValidationError):
+            FrigateConfig(**deep_merge(config, self.minimal))
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_model_custom_path(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {
+            "models": [
+                # needs to be a file that will exist, doesn't matter what
+                {"path": "/etc/hosts", "width": 512, "devices": ["openvino:GPU"]},
+            ],
+        }
+
+        frigate_config = FrigateConfig(**(deep_merge(config, self.minimal)))
+        model = frigate_config.primary_model
+
+        assert model.path == "/etc/hosts"
+        assert model.width == 512
+
+        detector_config = build_detector_config(
+            frigate_config.devices_for_model(model)[0], model
+        )
+        assert detector_config.type == DetectorTypeEnum.openvino
+        assert detector_config.device == "GPU"
+        assert detector_config.model.path == "/etc/hosts"
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_model_default_paths_per_detector(self, mock_labels):
+        mock_labels.return_value = {}
+
+        for devices, expected in (
+            (["cpu"], "/cpu_model.tflite"),
+            (["edgetpu:pci:0"], "/edgetpu_model.tflite"),
+            (["openvino:CPU"], "/openvino-model/ssdlite_mobilenet_v2.xml"),
+        ):
+            config = {"models": [{"devices": devices}]}
+            frigate_config = FrigateConfig(**(deep_merge(config, self.minimal)))
+            assert frigate_config.primary_model.path == expected
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_camera_picks_model_by_scene(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {
+            "models": [
+                {"scene": "outdoor", "devices": ["cpu"], "width": 320},
+                {"scene": "indoor", "devices": ["openvino:CPU"], "width": 300},
+            ],
+            "cameras": {
+                "back": {
+                    "detect": {"scene": "outdoor"},
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]},
+                        ]
+                    },
+                },
+                "front": {
+                    "detect": {"scene": "indoor"},
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.2:554/video", "roles": ["detect"]},
+                        ]
+                    },
+                },
+            },
+        }
+
+        frigate_config = FrigateConfig(**(deep_merge(config, self.minimal)))
+
+        assert frigate_config.model_for_camera("back").scene == "outdoor"
+        assert frigate_config.model_for_camera("front").scene == "indoor"
+        assert frigate_config.model_for_camera("back").width == 320
+        assert frigate_config.model_for_camera("front").width == 300
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_camera_requires_a_scene_without_a_default(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {
+            "models": [
+                {"scene": "outdoor", "devices": ["cpu"]},
+                {"scene": "indoor", "devices": ["openvino:CPU"]},
+            ],
+        }
+
+        with self.assertRaises(ValidationError):
+            FrigateConfig(**(deep_merge(config, self.minimal)))
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_camera_scene_without_a_model_falls_back_to_all(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {
+            "models": [{"devices": ["cpu"]}],
+            "cameras": {
+                "back": {
+                    "detect": {"scene": "outdoor"},
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]},
+                        ]
+                    },
+                },
+            },
+        }
+
+        frigate_config = FrigateConfig(**(deep_merge(config, self.minimal)))
+
+        assert frigate_config.model_for_camera("back").scene == "default"
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_model_for_camera_resolves_camera_added_after_parse(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {
+            "models": [
+                {"devices": ["cpu"], "width": 320},
+                {"scene": "outdoor", "devices": ["openvino:CPU"], "width": 416},
+            ],
+        }
+
+        frigate_config = FrigateConfig(**(deep_merge(deepcopy(config), self.minimal)))
+
+        # runtime camera adds (wizard, clone, debug replay) insert an already
+        # resolved camera into the shared config without re-running parse
+        added = deepcopy(self.minimal)
+        added["cameras"]["new_cam"] = {
+            "detect": {"height": 1080, "width": 1920, "fps": 5, "scene": "outdoor"},
+            "ffmpeg": {
+                "inputs": [
+                    {"path": "rtsp://10.0.0.2:554/video", "roles": ["detect"]},
+                ]
+            },
+        }
+        new_config = FrigateConfig(**(deep_merge(deepcopy(config), added)))
+        frigate_config.cameras["new_cam"] = new_config.cameras["new_cam"]
+
+        assert frigate_config.model_for_camera("new_cam").scene == "outdoor"
+        assert frigate_config.model_for_camera("new_cam").width == 416
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_model_for_camera_unknown_camera_uses_default_model(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {
+            "models": [
+                {"devices": ["cpu"], "width": 320},
+                {"scene": "outdoor", "devices": ["openvino:CPU"], "width": 416},
+            ],
+        }
+
+        frigate_config = FrigateConfig(**(deep_merge(deepcopy(config), self.minimal)))
+
+        # a caller racing a runtime remove may still name the popped camera
+        assert frigate_config.model_for_camera("removed").scene == "default"
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_camera_scene_without_a_model_or_a_default(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {
+            "models": [{"scene": "indoor", "devices": ["cpu"]}],
+            "cameras": {
+                "back": {
+                    "detect": {"scene": "outdoor"},
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]},
+                        ]
+                    },
+                },
+            },
+        }
+
+        with self.assertRaises(ValidationError):
+            FrigateConfig(**(deep_merge(config, self.minimal)))
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_models_must_use_unique_scenes(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {
+            "models": [
+                {"scene": "outdoor", "devices": ["cpu"]},
+                {"scene": "outdoor", "devices": ["openvino:CPU"]},
+            ],
+        }
+
+        with self.assertRaises(ValidationError):
+            FrigateConfig(**(deep_merge(config, self.minimal)))
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_scene_names_are_not_a_fixed_list(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {
+            "models": [
+                {"devices": ["cpu"]},
+                {"scene": "garage_thermal", "devices": ["openvino:CPU"]},
+            ],
+            "cameras": {"back": {"detect": {"scene": "garage_thermal"}}},
+        }
+
+        frigate_config = FrigateConfig(**(deep_merge(config, self.minimal)))
+
+        assert frigate_config.model_for_camera("back").scene == "garage_thermal"
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_scene_names_must_be_simple_identifiers(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {"models": [{"scene": "front yard", "devices": ["cpu"]}]}
+
+        with self.assertRaises(ValidationError):
+            FrigateConfig(**(deep_merge(config, self.minimal)))
+
+    def _two_scene_config(self, default_path: str, outdoor_path: str) -> dict:
+        return {
+            "models": [
+                {"path": default_path, "devices": ["openvino:CPU"]},
+                {"scene": "outdoor", "path": outdoor_path, "devices": ["openvino:GPU"]},
+            ],
+            "cameras": {"back": {"detect": {"scene": "outdoor"}}},
+        }
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_models_with_the_same_path_are_combined(self, mock_labels):
+        mock_labels.return_value = {}
+        config = self._two_scene_config("/etc/hosts", "/etc/hosts")
+
+        with self.assertLogs("frigate.config.config", level="WARNING") as logs:
+            frigate_config = FrigateConfig(**(deep_merge(config, self.minimal)))
+
+        assert len(frigate_config.models) == 1
+        model = frigate_config.primary_model
+        assert model.devices == ["openvino:CPU", "openvino:GPU"]
+        assert [d.raw for d in frigate_config.devices_for_model(model)] == [
+            "openvino:CPU",
+            "openvino:GPU",
+        ]
+        assert frigate_config.model_for_camera("back") is model
+        assert frigate_config.cameras["back"].detect.scene == "default"
+        assert any("same model file" in line for line in logs.output)
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_models_with_the_same_file_contents_are_combined(self, mock_labels):
+        mock_labels.return_value = {}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = os.path.join(temp_dir, "model.onnx")
+            copy = os.path.join(temp_dir, "renamed.onnx")
+
+            for path in (first, copy):
+                with open(path, "wb") as f:
+                    f.write(b"same weights")
+
+            config = self._two_scene_config(first, copy)
+            frigate_config = FrigateConfig(**(deep_merge(config, self.minimal)))
+
+        assert len(frigate_config.models) == 1
+        assert frigate_config.model_for_camera("back").scene == "default"
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_models_with_different_files_are_kept_apart(self, mock_labels):
+        mock_labels.return_value = {}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = os.path.join(temp_dir, "model.onnx")
+            other = os.path.join(temp_dir, "thermal.onnx")
+
+            for path, contents in ((first, b"visible"), (other, b"thermal")):
+                with open(path, "wb") as f:
+                    f.write(contents)
+
+            config = self._two_scene_config(first, other)
+            frigate_config = FrigateConfig(**(deep_merge(config, self.minimal)))
+
+        assert len(frigate_config.models) == 2
+        assert frigate_config.model_for_camera("back").scene == "outdoor"
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_combined_models_keep_the_default_model(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {
+            "models": [
+                {"scene": "outdoor", "path": "/etc/hosts", "devices": ["openvino:GPU"]},
+                {"path": "/etc/hosts", "devices": ["openvino:CPU"]},
+            ],
+            "cameras": {"back": {"detect": {"scene": "outdoor"}}},
+        }
+
+        frigate_config = FrigateConfig(**(deep_merge(config, self.minimal)))
+
+        assert [model.scene for model in frigate_config.models] == ["default"]
+        assert frigate_config.primary_model.devices == ["openvino:CPU", "openvino:GPU"]
+        assert frigate_config.model_for_camera("back").scene == "default"
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_models_on_different_detectors_are_kept_apart(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {
+            "models": [
+                {"path": "/etc/hosts", "devices": ["openvino:CPU"]},
+                {"scene": "outdoor", "path": "/etc/hosts", "devices": ["onnx"]},
+            ],
+        }
+
+        frigate_config = FrigateConfig(**(deep_merge(config, self.minimal)))
+
+        assert len(frigate_config.models) == 2
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_model_devices_must_share_a_detector(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {"models": [{"devices": ["cpu", "openvino:CPU"]}]}
+
+        with self.assertRaises(ValidationError):
+            FrigateConfig(**(deep_merge(config, self.minimal)))
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_model_requires_a_known_detector(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {"models": [{"devices": ["not_a_detector:0"]}]}
+
+        with self.assertRaises(ValidationError):
+            FrigateConfig(**(deep_merge(config, self.minimal)))
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_model_requires_a_device(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {"models": [{"devices": []}]}
+
+        with self.assertRaises(ValidationError):
+            FrigateConfig(**(deep_merge(config, self.minimal)))
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_shareable_devices_may_repeat(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {"models": [{"devices": ["openvino:GPU", "openvino:GPU"]}]}
+
+        frigate_config = FrigateConfig(**(deep_merge(config, self.minimal)))
+        devices = frigate_config.devices_for_model(frigate_config.primary_model)
+
+        assert runner_names(devices) == ["openvino:GPU", "openvino:GPU#2"]
+
+    @patch("frigate.detectors.detector_config.load_labels")
+    def test_exclusive_devices_may_not_repeat(self, mock_labels):
+        mock_labels.return_value = {}
+        config = {"models": [{"devices": ["edgetpu:pci:0", "edgetpu:pci:0"]}]}
+
+        with self.assertRaises(ValidationError):
+            FrigateConfig(**(deep_merge(config, self.minimal)))
+
+    def test_invalid_mqtt_config(self):
+        config = {
+            "mqtt": {"host": "mqtt", "user": "test"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+        self.assertRaises(ValidationError, lambda: FrigateConfig(**config))
+
+    def test_inherit_tracked_objects(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "objects": {"track": ["person", "dog"]},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert "dog" in frigate_config.cameras["back"].objects.track
+
+    def test_deep_merge_override_replaces_list_values(self):
+        base = {"objects": {"track": ["person", "face"]}}
+        update = {"objects": {"track": ["person"]}}
+
+        merged = deep_merge(base, update, override=True)
+
+        assert merged["objects"]["track"] == ["person"]
+
+    def test_deep_merge_merge_lists_still_appends(self):
+        base = {"track": ["person"]}
+        update = {"track": ["face"]}
+
+        merged = deep_merge(base, update, override=True, merge_lists=True)
+
+        assert merged["track"] == ["person", "face"]
+
+    def test_override_birdseye(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "birdseye": {"enabled": True, "modes": ["continuous"]},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "birdseye": {
+                        "enabled": False,
+                        "modes": ["motion"],
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert not frigate_config.cameras["back"].birdseye.enabled
+        assert frigate_config.cameras["back"].birdseye.modes == [
+            BirdseyeModeEnum.motion
+        ]
+
+    def test_override_birdseye_non_inheritable(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "birdseye": {
+                "enabled": True,
+                "modes": ["continuous"],
+                "height": 1920,
+            },
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].birdseye.enabled
+
+    def test_inherit_birdseye(self):
+        config = {
+            **self.minimal,
+            "birdseye": {"enabled": True, "modes": ["continuous"]},
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].birdseye.enabled
+        assert frigate_config.cameras["back"].birdseye.modes == [
+            BirdseyeModeEnum.continuous
+        ]
+
+    def test_camera_modes_replace_the_global_list(self):
+        """A camera list fully replaces the global one, it does not merge into it."""
+        config = {
+            **self.minimal,
+            "birdseye": {"modes": ["motion", "all_objects"]},
+        }
+        config["cameras"]["back"]["birdseye"] = {"modes": ["alerts"]}
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].birdseye.modes == [
+            BirdseyeModeEnum.alerts
+        ]
+
+    def test_camera_can_select_no_modes(self):
+        config = {
+            **self.minimal,
+            "birdseye": {"modes": ["motion"]},
+        }
+        config["cameras"]["back"]["birdseye"] = {"modes": []}
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].birdseye.modes == []
+
+    def test_override_tracked_objects(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "objects": {"track": ["person", "dog"]},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "objects": {"track": ["cat"]},
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert "cat" in frigate_config.cameras["back"].objects.track
+
+    def test_default_object_filters(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "objects": {"track": ["person", "dog"]},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert "dog" in frigate_config.cameras["back"].objects.filters
+
+    def test_default_audio_filters(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "audio": {"listen": ["speech", "yell"]},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert set(frigate_config.cameras["back"].audio.filters.keys()) == {
+            "speech",
+            "yell",
+        }
+
+    def test_override_audio_filters(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "audio": {
+                        "listen": ["speech", "yell"],
+                        "filters": {"speech": {"threshold": 0.9}},
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert "speech" in frigate_config.cameras["back"].audio.filters
+        assert frigate_config.cameras["back"].audio.filters["speech"].threshold == 0.9
+        assert "yell" in frigate_config.cameras["back"].audio.filters
+        assert "babbling" not in frigate_config.cameras["back"].audio.filters
+
+    def test_inherit_object_filters(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "objects": {
+                "track": ["person", "dog"],
+                "filters": {"dog": {"threshold": 0.7}},
+            },
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert "dog" in frigate_config.cameras["back"].objects.filters
+        assert frigate_config.cameras["back"].objects.filters["dog"].threshold == 0.7
+
+    def test_override_object_filters(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "objects": {
+                        "track": ["person", "dog"],
+                        "filters": {"dog": {"threshold": 0.7}},
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert "dog" in frigate_config.cameras["back"].objects.filters
+        assert frigate_config.cameras["back"].objects.filters["dog"].threshold == 0.7
+
+    def test_unsupported_tracked_object_pruned_from_track_and_filters(self):
+        # "unicorn" is not in the model labelmap, so it must be removed from the
+        # tracked objects AND from the object filters, otherwise a stale filter
+        # entry lingers in the parsed config.
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "objects": {
+                        "track": ["person", "unicorn"],
+                        "filters": {
+                            "person": {"threshold": 0.7},
+                            "unicorn": {"threshold": 0.7},
+                        },
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        objects = frigate_config.cameras["back"].objects
+        assert "unicorn" not in objects.track
+        assert "unicorn" not in objects.filters
+        # supported entries are left untouched
+        assert "person" in objects.track
+        assert "person" in objects.filters
+
+    def test_global_object_mask(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "objects": {"track": ["person", "dog"]},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "objects": {
+                        "mask": {
+                            "global_mask_1": {
+                                "friendly_name": "Global Mask 1",
+                                "enabled": True,
+                                "coordinates": "0,0,1,1,0,1",
+                            }
+                        },
+                        "filters": {
+                            "dog": {
+                                "mask": {
+                                    "dog_mask_1": {
+                                        "friendly_name": "Dog Mask 1",
+                                        "enabled": True,
+                                        "coordinates": "1,1,1,1,1,1",
+                                    }
+                                }
+                            }
+                        },
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        back_camera = frigate_config.cameras["back"]
+        assert "dog" in back_camera.objects.filters
+        # dog filter has its own mask + global mask merged
+        assert len(back_camera.objects.filters["dog"].mask) == 2
+        # person filter only has the global mask
+        assert len(back_camera.objects.filters["person"].mask) == 1
+
+    def test_motion_mask_relative_matches_explicit(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "record": {"alerts": {"retain": {"days": 20}}},
+            "cameras": {
+                "explicit": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 400,
+                        "width": 800,
+                        "fps": 5,
+                    },
+                    "motion": {
+                        "mask": {
+                            "explicit_mask": {
+                                "friendly_name": "Explicit Mask",
+                                "enabled": True,
+                                "coordinates": "0,0,200,100,600,300,800,400",
+                            }
+                        }
+                    },
+                },
+                "relative": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 400,
+                        "width": 800,
+                        "fps": 5,
+                    },
+                    "motion": {
+                        "mask": {
+                            "relative_mask": {
+                                "friendly_name": "Relative Mask",
+                                "enabled": True,
+                                "coordinates": "0.0,0.0,0.25,0.25,0.75,0.75,1.0,1.0",
+                            }
+                        }
+                    },
+                },
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert np.array_equal(
+            frigate_config.cameras["explicit"].motion.rasterized_mask,
+            frigate_config.cameras["relative"].motion.rasterized_mask,
+        )
+
+    def test_default_input_args(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert "-rtsp_transport" in frigate_config.cameras["back"].ffmpeg_cmds[0]["cmd"]
+
+    def test_ffmpeg_params_global(self):
+        config = {
+            "ffmpeg": {"input_args": "-re"},
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "objects": {
+                        "track": ["person", "dog"],
+                        "filters": {"dog": {"threshold": 0.7}},
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert "-re" in frigate_config.cameras["back"].ffmpeg_cmds[0]["cmd"]
+
+    def test_ffmpeg_params_camera(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "ffmpeg": {"input_args": ["test"]},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ],
+                        "input_args": ["-re"],
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "objects": {
+                        "track": ["person", "dog"],
+                        "filters": {"dog": {"threshold": 0.7}},
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert "-re" in frigate_config.cameras["back"].ffmpeg_cmds[0]["cmd"]
+        assert "test" not in frigate_config.cameras["back"].ffmpeg_cmds[0]["cmd"]
+
+    def test_ffmpeg_params_input(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "ffmpeg": {"input_args": ["test2"]},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                                "input_args": "-re test",
+                            }
+                        ],
+                        "input_args": "test3",
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "objects": {
+                        "track": ["person", "dog"],
+                        "filters": {"dog": {"threshold": 0.7}},
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert "-re" in frigate_config.cameras["back"].ffmpeg_cmds[0]["cmd"]
+        assert "test" in frigate_config.cameras["back"].ffmpeg_cmds[0]["cmd"]
+        assert "test2" not in frigate_config.cameras["back"].ffmpeg_cmds[0]["cmd"]
+        assert "test3" not in frigate_config.cameras["back"].ffmpeg_cmds[0]["cmd"]
+
+    def test_inherit_clips_retention(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "record": {"alerts": {"retain": {"days": 20}}},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].record.alerts.retain.days == 20
+
+    def test_roles_listed_twice_throws_error(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "record": {
+                "alerts": {
+                    "retain": {
+                        "days": 20,
+                    }
+                }
+            },
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]},
+                            {"path": "rtsp://10.0.0.1:554/video2", "roles": ["detect"]},
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+        self.assertRaises(ValidationError, lambda: FrigateConfig(**config))
+
+    def test_zone_matching_camera_name_throws_error(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "record": {
+                "alerts": {
+                    "retain": {
+                        "days": 20,
+                    }
+                }
+            },
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "zones": {"back": {"coordinates": "1,1,1,1,1,1"}},
+                }
+            },
+        }
+        self.assertRaises(ValidationError, lambda: FrigateConfig(**config))
+
+    def test_zone_assigns_color_and_contour(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "record": {
+                "alerts": {
+                    "retain": {
+                        "days": 20,
+                    }
+                }
+            },
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "zones": {"test": {"coordinates": "1,1,1,1,1,1"}},
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert isinstance(
+            frigate_config.cameras["back"].zones["test"].contour, np.ndarray
+        )
+        assert frigate_config.cameras["back"].zones["test"].color != (0, 0, 0)
+
+    def test_zone_filter_area_percent_converts_to_pixels(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "record": {
+                "alerts": {
+                    "retain": {
+                        "days": 20,
+                    }
+                }
+            },
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "zones": {
+                        "notification": {
+                            "coordinates": "0.03,1,0.025,0,0.626,0,0.643,1",
+                            "objects": ["person"],
+                            "filters": {"person": {"min_area": 0.1}},
+                        }
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        expected_min_area = int(1080 * 1920 * 0.1)
+        assert (
+            frigate_config.cameras["back"]
+            .zones["notification"]
+            .filters["person"]
+            .min_area
+            == expected_min_area
+        )
+
+    def test_zone_relative_matches_explicit(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "record": {
+                "alerts": {
+                    "retain": {
+                        "days": 20,
+                    }
+                }
+            },
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 400,
+                        "width": 800,
+                        "fps": 5,
+                    },
+                    "zones": {
+                        "explicit": {
+                            "coordinates": "0,0,200,100,600,300,800,400",
+                        },
+                        "relative": {
+                            "coordinates": "0.0,0.0,0.25,0.25,0.75,0.75,1.0,1.0",
+                        },
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert np.array_equal(
+            frigate_config.cameras["back"].zones["explicit"].contour,
+            frigate_config.cameras["back"].zones["relative"].contour,
+        )
+
+    def test_role_assigned_but_not_enabled(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                            {"path": "rtsp://10.0.0.1:554/record", "roles": ["record"]},
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        ffmpeg_cmds = frigate_config.cameras["back"].ffmpeg_cmds
+        assert len(ffmpeg_cmds) == 1
+        assert "clips" not in ffmpeg_cmds[0]["roles"]
+
+    def test_record_sub_cmd_writes_sub_cache_path(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect", "record"],
+                            },
+                            {
+                                "path": "rtsp://10.0.0.1:554/video2",
+                                "roles": ["record_sub"],
+                            },
+                        ]
+                    },
+                    "record": {"enabled": True, "sub": {"enabled": True}},
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        cmds = frigate_config.cameras["back"].ffmpeg_cmds
+        sub_cmds = [c for c in cmds if "record_sub" in c["roles"]]
+        assert len(sub_cmds) == 1
+        joined = " ".join(sub_cmds[0]["cmd"])
+        assert "back@sub@" in joined
+
+    def test_record_sub_disabled_no_sub_cache_path(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect", "record"],
+                            },
+                        ]
+                    },
+                    "record": {"enabled": True, "sub": {"enabled": False}},
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        cmds = frigate_config.cameras["back"].ffmpeg_cmds
+        assert all("@sub@" not in " ".join(c["cmd"]) for c in cmds)
+
+    def _sub_record_config(self, ffmpeg_extra: dict | None = None) -> dict:
+        return {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect", "record"],
+                            },
+                            {
+                                "path": "rtsp://10.0.0.1:554/video2",
+                                "roles": ["record_sub"],
+                            },
+                        ],
+                        **(ffmpeg_extra or {}),
+                    },
+                    "record": {"enabled": True, "sub": {"enabled": True}},
+                }
+            },
+        }
+
+    def _sub_record_cmd(self, config: dict) -> str:
+        cmds = FrigateConfig(**config).cameras["back"].ffmpeg_cmds
+        sub_cmds = [c for c in cmds if "record_sub" in c["roles"]]
+        assert len(sub_cmds) == 1
+        return " ".join(sub_cmds[0]["cmd"])
+
+    def test_record_sub_output_args_inherit_record(self):
+        config = self._sub_record_config(
+            {"output_args": {"record": "preset-record-generic-audio-copy"}}
+        )
+
+        cmd = self._sub_record_cmd(config)
+        # the customized record args, not the stock aac default
+        assert "-c copy" in cmd
+        assert "-c:a aac" not in cmd
+
+    def test_record_sub_output_args_override_record(self):
+        config = self._sub_record_config(
+            {
+                "output_args": {
+                    "record": "preset-record-generic-audio-aac",
+                    "record_sub": "preset-record-generic",
+                }
+            }
+        )
+
+        cmd = self._sub_record_cmd(config)
+        assert "-c copy -an" in cmd
+        assert "-c:a aac" not in cmd
+
+    def test_record_output_args_unaffected_by_record_sub(self):
+        config = self._sub_record_config(
+            {
+                "output_args": {
+                    "record": "preset-record-generic-audio-aac",
+                    "record_sub": "preset-record-generic",
+                }
+            }
+        )
+
+        cmds = FrigateConfig(**config).cameras["back"].ffmpeg_cmds
+        record_cmd = " ".join(next(c for c in cmds if "record" in c["roles"])["cmd"])
+        assert "-c:a aac" in record_cmd
+
+    def test_record_sub_manual_output_args(self):
+        config = self._sub_record_config(
+            {
+                "output_args": {
+                    "record_sub": "-f segment -segment_time 10 -segment_format mp4 -reset_timestamps 1 -strftime 1 -c:v copy -c:a aac -ar 16000"
+                }
+            }
+        )
+
+        assert "-ar 16000" in self._sub_record_cmd(config)
+
+    def test_fails_on_bad_record_sub_segment_time(self):
+        config = self._sub_record_config(
+            {
+                "output_args": {
+                    "record_sub": "-f segment -segment_time 70 -segment_format mp4 -reset_timestamps 1 -strftime 1 -c copy -an"
+                }
+            }
+        )
+
+        self.assertRaisesRegex(
+            ValueError,
+            "segment_time",
+            lambda: FrigateConfig(**config).cameras,
+        )
+
+    def test_fails_on_record_and_record_sub_on_same_input(self):
+        config = self._sub_record_config()
+        config["cameras"]["back"]["ffmpeg"]["inputs"] = [
+            {
+                "path": "rtsp://10.0.0.1:554/video",
+                "roles": ["detect", "record", "record_sub"],
+            },
+            {"path": "rtsp://10.0.0.1:554/video2", "roles": ["audio"]},
+        ]
+
+        self.assertRaisesRegex(
+            ValueError,
+            "record and record_sub assigned to the same input",
+            lambda: FrigateConfig(**config).cameras,
+        )
+
+    def test_fails_on_record_sub_with_a_single_input(self):
+        # the single input case has record forced onto it, so record_sub can
+        # only ever duplicate that same stream
+        config = self._sub_record_config()
+        config["cameras"]["back"]["ffmpeg"]["inputs"] = [
+            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect", "record_sub"]},
+        ]
+
+        self.assertRaisesRegex(
+            ValueError,
+            "record and record_sub assigned to the same input",
+            lambda: FrigateConfig(**config).cameras,
+        )
+
+    def test_record_sub_segment_time_not_checked_when_disabled(self):
+        config = self._sub_record_config(
+            {
+                "output_args": {
+                    "record_sub": "-f segment -segment_time 70 -segment_format mp4 -reset_timestamps 1 -strftime 1 -c copy -an"
+                }
+            }
+        )
+        config["cameras"]["back"]["record"]["sub"]["enabled"] = False
+
+        FrigateConfig(**config).cameras
+
+    def test_max_disappeared_default(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "enabled": True,
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].detect.max_disappeared == 5 * 5
+
+    def test_motion_frame_height_wont_go_below_120(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].motion.frame_height == 100
+
+    def test_motion_contour_area_dynamic(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert round(frigate_config.cameras["back"].motion.contour_area) == 10
+
+    def test_merge_labelmap(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "models": [{"labelmap": {7: "truck"}, "devices": ["cpu"]}],
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.primary_model.merged_labelmap[7] == "truck"
+
+    def test_audio_labelmap_inheritance_is_separate_from_model_labelmap(self):
+        config = deep_merge(
+            {
+                "audio": {"labelmap": {69: "dogs", 70: "dogs"}},
+                "cameras": {
+                    "back": {
+                        "audio": {"labelmap": {75: "dogs"}},
+                    }
+                },
+            },
+            self.minimal,
+        )
+
+        frigate_config = FrigateConfig(**config)
+
+        assert frigate_config.cameras["back"].audio.labelmap == {
+            69: "dogs",
+            70: "dogs",
+            75: "dogs",
+        }
+        assert frigate_config.primary_model.merged_labelmap[69] != "dogs"
+
+    def test_default_labelmap_empty(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.primary_model.merged_labelmap[0] == "person"
+
+    def test_default_labelmap(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "models": [{"width": 320, "height": 320, "devices": ["cpu"]}],
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.primary_model.merged_labelmap[0] == "person"
+
+    def test_plus_labelmap(self):
+        with open(os.path.join(MODEL_CACHE_DIR, "test"), "w") as f:
+            json.dump(self.plus_model_info, f)
+        with open(os.path.join(MODEL_CACHE_DIR, "test.json"), "w") as f:
+            json.dump(self.plus_model_info, f)
+
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "models": [{"path": "plus://test", "devices": ["cpu"]}],
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.primary_model.merged_labelmap[0] == "amazon"
+
+    @patch(
+        "frigate.plus.PlusApi.get_model_download_url",
+        side_effect=requests.exceptions.ConnectionError,
+    )
+    def test_plus_unreachable_is_validation_error(self, _):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "models": [{"path": "plus://unreachable", "devices": ["cpu"]}],
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                }
+            },
+        }
+
+        with self.assertRaisesRegex(ValidationError, "Unable to connect to Frigate+"):
+            FrigateConfig(**config)
+
+    def test_fails_on_invalid_role(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                            {
+                                "path": "rtsp://10.0.0.1:554/video2",
+                                "roles": ["clips"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        self.assertRaises(ValidationError, lambda: FrigateConfig(**config))
+
+    def test_fails_on_missing_role(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                            {
+                                "path": "rtsp://10.0.0.1:554/video2",
+                                "roles": ["record"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "audio": {"enabled": True},
+                }
+            },
+        }
+
+        self.assertRaises(ValueError, lambda: FrigateConfig(**config))
+
+    def test_record_sub_config_defaults(self):
+        config = FrigateConfig(**self.minimal)
+        record = config.cameras["back"].record
+        assert record.sub.enabled is False
+        assert record.sub.continuous.days == 0
+        assert record.sub.alerts.mode == RetainModeEnum.motion
+
+    def test_record_sub_enabled_requires_role(self):
+        config = deepcopy(self.minimal)
+        config["cameras"]["back"]["ffmpeg"]["inputs"] = [
+            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect", "record"]},
+        ]
+        config["cameras"]["back"]["record"] = {
+            "enabled": True,
+            "sub": {"enabled": True},
+        }
+
+        # no record_sub role assigned -> must raise
+        self.assertRaisesRegex(
+            ValueError,
+            "record_sub is not assigned",
+            lambda: FrigateConfig(**config),
+        )
+
+    def test_record_sub_role_accepted(self):
+        config = deepcopy(self.minimal)
+        config["cameras"]["back"]["ffmpeg"]["inputs"] = [
+            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect", "record"]},
+            {"path": "rtsp://10.0.0.1:554/video2", "roles": ["record_sub"]},
+        ]
+        config["cameras"]["back"]["record"] = {
+            "enabled": True,
+            "sub": {"enabled": True, "continuous": {"days": 30}},
+        }
+
+        parsed = FrigateConfig(**config)
+        assert parsed.cameras["back"].record.sub.continuous.days == 30
+
+    def test_works_on_missing_role_multiple_cams(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                            {
+                                "path": "rtsp://10.0.0.1:554/video2",
+                                "roles": ["record"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                },
+                "cam2": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                            {
+                                "path": "rtsp://10.0.0.1:554/video2",
+                                "roles": ["record"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                },
+            },
+        }
+
+        FrigateConfig(**config)
+
+    def test_global_detect(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "detect": {"max_disappeared": 1},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].detect.max_disappeared == 1
+        assert frigate_config.cameras["back"].detect.height == 1080
+
+    def test_default_detect(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 720,
+                        "width": 1280,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].detect.max_disappeared == 25
+        assert frigate_config.cameras["back"].detect.height == 720
+
+    def test_global_detect_merge(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "detect": {"max_disappeared": 1, "height": 720, "width": 1280},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].detect.max_disappeared == 1
+        assert frigate_config.cameras["back"].detect.height == 1080
+        assert frigate_config.cameras["back"].detect.width == 1920
+
+    def test_global_snapshots(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "snapshots": {"enabled": True},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "snapshots": {
+                        "height": 100,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].snapshots.enabled
+        assert frigate_config.cameras["back"].snapshots.height == 100
+
+    def test_default_snapshots(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].snapshots.bounding_box
+        assert frigate_config.cameras["back"].snapshots.quality == 60
+
+    def test_global_snapshots_merge(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "snapshots": {"bounding_box": False, "height": 300},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "snapshots": {
+                        "height": 150,
+                        "enabled": True,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].snapshots.bounding_box is False
+        assert frigate_config.cameras["back"].snapshots.height == 150
+        assert frigate_config.cameras["back"].snapshots.enabled
+
+    def test_global_jsmpeg(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "live": {"quality": 4},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].live.quality == 4
+
+    def test_default_live(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].live.quality == 8
+
+    def test_global_live_merge(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "live": {"quality": 4, "height": 480},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "live": {
+                        "quality": 7,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].live.quality == 7
+        assert frigate_config.cameras["back"].live.height == 480
+
+    def test_global_timestamp_style(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "timestamp_style": {"position": "bl"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].timestamp_style.position == "bl"
+
+    def test_default_timestamp_style(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].timestamp_style.position == "tl"
+
+    def test_global_timestamp_style_merge(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "timestamp_style": {"position": "br", "thickness": 2},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "timestamp_style": {"position": "bl", "thickness": 4},
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].timestamp_style.position == "bl"
+        assert frigate_config.cameras["back"].timestamp_style.thickness == 4
+
+    def test_allow_retain_to_be_a_decimal(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "snapshots": {"retain": {"default": 1.5}},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].snapshots.retain.default == 1.5
+
+    def test_fails_on_bad_camera_name(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "snapshots": {"retain": {"default": 1.5}},
+            "cameras": {
+                "back camer#": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        self.assertRaises(ValidationError, lambda: FrigateConfig(**config).cameras)
+
+    def test_fails_on_bad_segment_time(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "record": {"enabled": True},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "output_args": {
+                            "record": "-f segment -segment_time 70 -segment_format mp4 -reset_timestamps 1 -strftime 1 -c copy -an"
+                        },
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ],
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        self.assertRaises(
+            ValueError,
+            lambda: FrigateConfig(**config).ffmpeg.output_args.record,
+        )
+
+    def test_fails_zone_defines_untracked_object(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "objects": {"track": ["person"]},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            },
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "zones": {
+                        "steps": {
+                            "coordinates": "0,0,0,0",
+                            "objects": ["car", "person"],
+                        },
+                    },
+                }
+            },
+        }
+
+        self.assertRaises(ValueError, lambda: FrigateConfig(**config).cameras)
+
+    def test_fails_duplicate_keys(self):
+        raw_config = """
+        cameras:
+          test:
+            ffmpeg:
+              inputs:
+                - one
+                - two
+              inputs:
+                - three
+                - four
+        """
+
+        self.assertRaises(
+            DuplicateKeyError, lambda: FrigateConfig.parse_yaml(raw_config)
+        )
+
+    def test_object_filter_ratios_work(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "objects": {
+                "track": ["person", "dog"],
+                "filters": {"dog": {"min_ratio": 0.2, "max_ratio": 10.1}},
+            },
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert "dog" in frigate_config.cameras["back"].objects.filters
+        assert frigate_config.cameras["back"].objects.filters["dog"].min_ratio == 0.2
+        assert frigate_config.cameras["back"].objects.filters["dog"].max_ratio == 10.1
+
+    def test_valid_movement_weights(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "onvif": {
+                        "autotracking": {
+                            "movement_weights": "0, 1, 1.23, 2.34, 0.50, 1"
+                        }
+                    },
+                }
+            },
+        }
+
+        frigate_config = FrigateConfig(**config)
+        assert frigate_config.cameras["back"].onvif.autotracking.movement_weights == [
+            "0.0",
+            "1.0",
+            "1.23",
+            "2.34",
+            "0.5",
+            "1.0",
+        ]
+
+    def test_fails_invalid_movement_weights(self):
+        config = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                    "onvif": {"autotracking": {"movement_weights": "1.234, 2.345a"}},
+                }
+            },
+        }
+
+        self.assertRaises(ValueError, lambda: FrigateConfig(**config))
+
+
+class TestAttributeFilterDefaults(unittest.TestCase):
+    """Verify attribute filter min_score handling at config load."""
+
+    def setUp(self):
+        self.minimal = {
+            "mqtt": {"host": "mqtt"},
+            "cameras": {
+                "back": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {"path": "rtsp://10.0.0.1:554/video", "roles": ["detect"]}
+                        ]
+                    },
+                    "detect": {
+                        "height": 1080,
+                        "width": 1920,
+                        "fps": 5,
+                    },
+                }
+            },
+        }
+
+    def _build_config(self, object_filters: dict | None = None) -> FrigateConfig:
+        config = deep_merge({}, self.minimal)
+        if object_filters is not None:
+            config.setdefault("objects", {})["filters"] = object_filters
+        return FrigateConfig(**config)
+
+    def test_attribute_with_no_filter_gets_default_min_score(self):
+        """Attribute with no user-provided filter gets created with min_score=0.7."""
+        config = self._build_config()
+        face_filter = config.objects.filters.get("face")
+        self.assertIsNotNone(face_filter)
+        self.assertEqual(face_filter.min_score, 0.7)
+
+    def test_attribute_filter_without_min_score_gets_bumped(self):
+        """If user sets some FilterConfig field but not min_score, min_score is bumped to 0.7."""
+        config = self._build_config({"face": {"min_area": 500}})
+        face_filter = config.objects.filters["face"]
+        self.assertEqual(face_filter.min_area, 500)
+        self.assertEqual(face_filter.min_score, 0.7)
+
+    def test_attribute_filter_explicit_min_score_half_is_preserved(self):
+        """User-provided min_score=0.5 must NOT be silently rewritten to 0.7."""
+        config = self._build_config({"face": {"min_score": 0.5}})
+        face_filter = config.objects.filters["face"]
+        self.assertEqual(face_filter.min_score, 0.5)
+
+    def test_attribute_filter_explicit_min_score_other_value_is_preserved(self):
+        """Sanity: explicit non-0.5 values pass through unchanged."""
+        config = self._build_config({"face": {"min_score": 0.3}})
+        face_filter = config.objects.filters["face"]
+        self.assertEqual(face_filter.min_score, 0.3)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

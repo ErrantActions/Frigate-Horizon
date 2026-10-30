@@ -1,0 +1,71 @@
+import multiprocessing as mp
+import queue
+from multiprocessing.managers import DictProxy, SyncManager, ValueProxy
+from multiprocessing.sharedctypes import Synchronized
+from multiprocessing.synchronize import Event
+
+
+class CameraMetrics:
+    camera_fps: ValueProxy[float]
+    detection_fps: ValueProxy[float]
+    detection_frame: ValueProxy[float]
+    process_fps: ValueProxy[float]
+    skipped_fps: ValueProxy[float]
+    dynamic_resolution: DictProxy
+    pipeline: DictProxy
+    read_start: ValueProxy[float]
+    audio_rms: ValueProxy[float]
+    audio_dBFS: ValueProxy[float]
+
+    frame_queue: queue.Queue
+
+    process_pid: ValueProxy[int]
+    capture_process_pid: ValueProxy[int]
+    ffmpeg_pid: ValueProxy[int]
+    reconnects_last_hour: ValueProxy[int]
+    stalls_last_hour: ValueProxy[int]
+
+    def __init__(self, manager: SyncManager):
+        self.camera_fps = manager.Value("d", 0)
+        self.detection_fps = manager.Value("d", 0)
+        self.detection_frame = manager.Value("d", 0)
+        self.process_fps = manager.Value("d", 0)
+        self.skipped_fps = manager.Value("d", 0)
+        self.dynamic_resolution = manager.dict({"snapshot": None})
+        self.pipeline = manager.dict({"snapshot": None})
+        self.read_start = manager.Value("d", 0)
+        self.audio_rms = manager.Value("d", 0)
+        self.audio_dBFS = manager.Value("d", 0)
+
+        self.frame_queue = manager.Queue(maxsize=2)
+
+        self.process_pid = manager.Value("i", 0)
+        self.capture_process_pid = manager.Value("i", 0)
+        self.ffmpeg_pid = manager.Value("i", 0)
+        self.reconnects_last_hour = manager.Value("i", 0)
+        self.stalls_last_hour = manager.Value("i", 0)
+
+
+class PTZMetrics:
+    start_time: Synchronized
+    stop_time: Synchronized
+    frame_time: Synchronized
+    zoom_level: Synchronized
+    max_zoom: Synchronized
+    min_zoom: Synchronized
+
+    motor_stopped: Event
+    reset: Event
+
+    def __init__(self) -> None:
+        self.start_time = mp.Value("d", 0)
+        self.stop_time = mp.Value("d", 0)
+        self.frame_time = mp.Value("d", 0)
+        self.zoom_level = mp.Value("d", 0)
+        self.max_zoom = mp.Value("d", 0)
+        self.min_zoom = mp.Value("d", 0)
+
+        self.motor_stopped = mp.Event()
+        self.reset = mp.Event()
+
+        self.motor_stopped.set()

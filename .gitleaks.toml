@@ -1,0 +1,12 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Exact base64 fixtures for 'this-is-a-token' and 'auth-secret', never runtime credentials"
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(?:^|[/\\])frigate[/\\]test[/\\](?:test_webpush_registration|http_api[/\\]test_http_notifications)\.py$''']
+regexes = ['''^(?:dGhpcy1pcy1hLXRva2Vu|YXV0aC1zZWNyZXQ)$''']

@@ -1,0 +1,1671 @@
+import ReviewCard from "@/components/card/ReviewCard";
+import ReviewFilterGroup from "@/components/filter/ReviewFilterGroup";
+import DebugReplayDialog from "@/components/overlay/DebugReplayDialog";
+import ExportDialog from "@/components/overlay/ExportDialog";
+import ActionsDropdown from "@/components/overlay/ActionsDropdown";
+import PreviewPlayer from "@/components/player/PreviewPlayer";
+import { PreviewController } from "@/components/player/PreviewController";
+import { DynamicVideoController } from "@/components/player/dynamic/DynamicVideoController";
+import DynamicVideoPlayer from "@/components/player/dynamic/DynamicVideoPlayer";
+import QualitySelector from "@/components/player/QualitySelector";
+import MotionReviewTimeline from "@/components/timeline/MotionReviewTimeline";
+import DetailStream from "@/components/timeline/DetailStream";
+import { Button } from "@/components/ui/button";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { useOverlayState } from "@/hooks/use-overlay-state";
+import { usePersistence } from "@/hooks/use-persistence";
+import { useUserPersistence } from "@/hooks/use-user-persistence";
+import { useResizeObserver } from "@/hooks/resize-observer";
+import { DEFAULT_DRAWER_FEATURES, ExportMode } from "@/types/filter";
+import { FrigateConfig } from "@/types/frigateConfig";
+import { Preview } from "@/types/preview";
+import {
+  MotionData,
+  RecordingsSummary,
+  REVIEW_PADDING,
+  ReviewFilter,
+  ReviewSegment,
+  ReviewSummary,
+  ZoomLevel,
+} from "@/types/review";
+import { findChunkIndex, getChunkedTimeDay } from "@/utils/timelineUtil";
+import {
+  MutableRefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  isDesktop,
+  isMobile,
+  isMobileOnly,
+  isTablet,
+} from "react-device-detect";
+import { IoMdArrowRoundBack } from "react-icons/io";
+import { useLocation, useNavigate } from "react-router-dom";
+import { Toaster } from "@/components/ui/sonner";
+import { useIsAdmin } from "@/hooks/use-is-admin";
+import useSWR from "swr";
+import { TimeRange, TimelineType } from "@/types/timeline";
+import MobileCameraDrawer from "@/components/overlay/MobileCameraDrawer";
+import MobileTimelineDrawer from "@/components/overlay/MobileTimelineDrawer";
+import MobileReviewSettingsDrawer from "@/components/overlay/MobileReviewSettingsDrawer";
+import { LuSkipBack, LuSkipForward } from "react-icons/lu";
+import { Skeleton } from "@/components/ui/skeleton";
+import { FaVideo } from "react-icons/fa";
+import { VideoResolutionType } from "@/types/live";
+import {
+  ASPECT_VERTICAL_LAYOUT,
+  ASPECT_WIDE_LAYOUT,
+  AutoQualityReason,
+  PlaybackQuality,
+  RecordingCoverage,
+  RecordingSegment,
+  RecordingStartingPoint,
+} from "@/types/record";
+import { isCodecFamilySupported } from "@/utils/codecSupport";
+import { cn } from "@/lib/utils";
+import { useFullscreen } from "@/hooks/use-fullscreen";
+import { useTimezone } from "@/hooks/use-date-utils";
+import { useTimelineZoom } from "@/hooks/use-timeline-zoom";
+import { useTranslation } from "react-i18next";
+import { useTimelineUtils } from "@/hooks/use-timeline-utils";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { CameraNameLabel } from "@/components/camera/FriendlyNameLabel";
+import { useAllowedCameras } from "@/hooks/use-allowed-cameras";
+import { DetailStreamProvider } from "@/context/detail-stream-context";
+import {
+  GenAISummaryDialog,
+  GenAISummaryChip,
+} from "@/components/overlay/chip/GenAISummaryChip";
+import ShareTimestampDialog from "@/components/overlay/ShareTimestampDialog";
+import { shareOrCopy } from "@/utils/browserUtil";
+import { createRecordingReviewUrl } from "@/utils/recordingReviewUrl";
+
+import {
+  adjacentPlaybackEvent,
+  mergePlaybackIntervals,
+  nextActivePlaybackTime,
+} from "@/utils/playbackNavigation";
+import InvestigationToolbar from "@/components/player/InvestigationToolbar";
+
+const DATA_REFRESH_TIME = 600000; // 10 minutes
+
+type RecordingViewProps = {
+  startCamera: string;
+  startTime: number;
+  reviewItems?: ReviewSegment[];
+  reviewSummary?: ReviewSummary;
+  timeRange: TimeRange;
+  allCameras: string[];
+  allPreviews?: Preview[];
+  filter?: ReviewFilter;
+  updateFilter: (newFilter: ReviewFilter) => void;
+  refreshData?: () => void;
+  onMotionSearch?: (camera: string) => void;
+};
+export function RecordingView({
+  startCamera,
+  startTime,
+  reviewItems,
+  reviewSummary,
+  timeRange,
+  allCameras,
+  allPreviews,
+  filter,
+  updateFilter,
+  refreshData,
+  onMotionSearch,
+}: RecordingViewProps) {
+  const { t } = useTranslation(["views/events", "components/dialog"]);
+  const { data: config } = useSWR<FrigateConfig>("config");
+  const isAdmin = useIsAdmin();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const contentRef = useRef<HTMLDivElement | null>(null);
+
+  // recordings summary
+
+  const timezone = useTimezone(config);
+
+  const allowedCameras = useAllowedCameras();
+  const effectiveCameras = useMemo(
+    () =>
+      allCameras.filter(
+        (camera) =>
+          allowedCameras.includes(camera) &&
+          config?.cameras[camera]?.ui?.review !== false,
+      ),
+    [allCameras, allowedCameras, config?.cameras],
+  );
+  const [mainCamera, setMainCamera] = useState(startCamera);
+  const [readyCamera, setReadyCamera] = useState<string>();
+
+  const { data: recordingsSummary } = useSWR<RecordingsSummary>([
+    "recordings/summary",
+    {
+      timezone: timezone,
+      cameras: mainCamera ?? null,
+    },
+  ]);
+
+  // feeds the quality selector's per-stream subtitles
+  const { data: coverage } = useSWR<RecordingCoverage>([
+    `${mainCamera}/recordings/coverage`,
+    {
+      before: timeRange.before,
+      after: timeRange.after,
+    },
+  ]);
+
+  // controller state
+
+  const mainControllerRef = useRef<DynamicVideoController | null>(null);
+  const mainLayoutRef = useRef<HTMLDivElement | null>(null);
+  const cameraLayoutRef = useRef<HTMLDivElement | null>(null);
+  const previewRowRef = useRef<HTMLDivElement | null>(null);
+  const previewRefs = useRef<{ [camera: string]: PreviewController }>({});
+
+  const [playbackStart, setPlaybackStart] = useState(
+    startTime >= timeRange.after && startTime <= timeRange.before
+      ? startTime
+      : timeRange.before - 60,
+  );
+
+  const mainCameraReviewItems = useMemo(
+    () => reviewItems?.filter((cam) => cam.camera == mainCamera) ?? [],
+    [reviewItems, mainCamera],
+  );
+  const navigationItems = useMemo(
+    () =>
+      mainCameraReviewItems.filter(
+        (item) =>
+          Number.isFinite(item.start_time) &&
+          (item.end_time == null || Number.isFinite(item.end_time)),
+      ),
+    [mainCameraReviewItems],
+  );
+  const navigationUnavailable =
+    navigationItems.length !== mainCameraReviewItems.length;
+
+  // timeline
+
+  const [recording] = useOverlayState<RecordingStartingPoint>(
+    "recording",
+    undefined,
+    false,
+  );
+
+  const [savedTimelineType, setSavedTimelineType] =
+    useUserPersistence<TimelineType>("recordingTimelineType");
+  const [timelineType, setOverlayTimelineType] = useOverlayState<TimelineType>(
+    "timelineType",
+    recording?.timelineType ?? savedTimelineType ?? "timeline",
+  );
+
+  const setTimelineType = useCallback(
+    (value: TimelineType, replace?: boolean) => {
+      setOverlayTimelineType(value, replace);
+      setSavedTimelineType(value);
+    },
+    [setOverlayTimelineType, setSavedTimelineType],
+  );
+
+  const chunkedTimeRange = useMemo(
+    () => getChunkedTimeDay(timeRange),
+    [timeRange],
+  );
+  const [selectedRangeIdx, setSelectedRangeIdx] = useState(
+    findChunkIndex(chunkedTimeRange, startTime),
+  );
+  const currentTimeRange = useMemo<TimeRange>(
+    () =>
+      chunkedTimeRange[selectedRangeIdx] ??
+      chunkedTimeRange[chunkedTimeRange.length - 1],
+    [selectedRangeIdx, chunkedTimeRange],
+  );
+
+  const reviewFilterList = useMemo(() => {
+    const uniqueLabels = new Set<string>();
+
+    reviewItems?.forEach((rev) => {
+      rev.data.objects.forEach((obj) =>
+        uniqueLabels.add(obj.replace("-verified", "")),
+      );
+      rev.data.audio.forEach((aud) => uniqueLabels.add(aud));
+    });
+
+    const uniqueZones = new Set<string>();
+
+    reviewItems?.forEach((rev) => {
+      rev.data.zones.forEach((zone) => uniqueZones.add(zone));
+    });
+
+    return { labels: [...uniqueLabels], zones: [...uniqueZones] };
+  }, [reviewItems]);
+
+  // export
+
+  const [exportMode, setExportMode] = useState<ExportMode>("none");
+  const [exportRange, setExportRange] = useState<TimeRange>();
+  const [showExportPreview, setShowExportPreview] = useState(false);
+  const [investigation, setInvestigation] = useState<{
+    camera: string;
+    inpoint?: number;
+    range?: TimeRange;
+    loop: boolean;
+    skip: boolean;
+  }>({ camera: startCamera, loop: false, skip: false });
+  const investigationActive = investigation.camera === mainCamera;
+  const activityIntervals = useMemo(
+    () =>
+      mergePlaybackIntervals(
+        navigationItems.map((item) => ({
+          after: item.start_time - 5,
+          before:
+            Math.max(item.start_time + 1, item.end_time ?? timeRange.before) +
+            5,
+        })),
+        timeRange,
+      ),
+    [navigationItems, timeRange],
+  );
+  const navigationTargetRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    navigationTargetRef.current = undefined;
+  }, [mainCamera, investigation]);
+
+  // debug replay
+
+  const [debugReplayMode, setDebugReplayMode] = useState<ExportMode>("none");
+  const [debugReplayRange, setDebugReplayRange] = useState<TimeRange>();
+
+  // while the range handles are up the player has to stay put: the
+  // timeline auto-scrolls to follow the playhead once the interaction
+  // timeout lapses, yanking the view out from under the drag
+  const selectingRange =
+    exportMode == "timeline" ||
+    exportMode == "timeline_multi" ||
+    debugReplayMode == "timeline";
+  const [shareTimestampOpen, setShareTimestampOpen] = useState(false);
+  const [shareTimestampAtOpen, setShareTimestampAtOpen] = useState(
+    Math.floor(startTime),
+  );
+  const [shareTimestampOption, setShareTimestampOption] = useState<
+    "current" | "custom"
+  >("current");
+  const [customShareTimestamp, setCustomShareTimestamp] = useState(
+    Math.floor(startTime),
+  );
+
+  // move to next clip
+
+  const onClipEnded = useCallback(() => {
+    if (!mainControllerRef.current) {
+      return;
+    }
+
+    if (investigationActive && investigation.loop && investigation.range) {
+      setPlaybackStart(investigation.range.after);
+      setSelectedRangeIdx(
+        findChunkIndex(chunkedTimeRange, investigation.range.after),
+      );
+      mainControllerRef.current.seekToTimestamp(
+        investigation.range.after,
+        true,
+      );
+      return;
+    }
+    if (selectedRangeIdx < chunkedTimeRange.length - 1) {
+      setSelectedRangeIdx(selectedRangeIdx + 1);
+    }
+  }, [selectedRangeIdx, chunkedTimeRange, investigationActive, investigation]);
+
+  // visibility tracking for refreshing stale data
+
+  const lastVisibilityTime = useRef<number>(Date.now());
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        const now = Date.now();
+        const timeSinceLastVisible = now - lastVisibilityTime.current;
+
+        // Only refresh if user was away for a while
+        // and the video is not currently playing
+        if (
+          timeSinceLastVisible >= DATA_REFRESH_TIME &&
+          refreshData &&
+          mainControllerRef.current &&
+          !mainControllerRef.current.isPlaying()
+        ) {
+          refreshData();
+        }
+
+        lastVisibilityTime.current = now;
+      } else {
+        lastVisibilityTime.current = Date.now();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [refreshData]);
+
+  // scrubbing and timeline state
+
+  const [scrubbing, setScrubbing] = useState(false);
+  const [currentTime, setCurrentTime] = useState<number>(startTime);
+  const [playerTime, setPlayerTime] = useState(startTime);
+
+  const updateSelectedSegment = useCallback(
+    (currentTime: number) => {
+      const index = findChunkIndex(chunkedTimeRange, currentTime);
+
+      if (index != -1) {
+        setPlaybackStart(currentTime);
+        // the outgoing chunk's player runs until the new source replaces
+        // it, reporting old positions while the new chunk loads
+        mainControllerRef.current?.suspend();
+        setSelectedRangeIdx(index);
+      }
+    },
+    [chunkedTimeRange],
+  );
+
+  useEffect(() => {
+    if (scrubbing || exportRange || debugReplayRange) {
+      if (
+        currentTime > currentTimeRange.before + 60 ||
+        currentTime < currentTimeRange.after - 60
+      ) {
+        // the player rebuilds its source against playbackStart, and a
+        // stale anchor resolves to no startPosition, dropping playback
+        // at the start of the hour instead of the drag target
+        updateSelectedSegment(currentTime);
+        return;
+      }
+
+      mainControllerRef.current?.scrubToTimestamp(currentTime);
+
+      Object.values(previewRefs.current).forEach((controller) => {
+        controller.scrubToTimestamp(currentTime);
+      });
+    }
+    // we only want to seek when current time updates
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    currentTime,
+    scrubbing,
+    timeRange,
+    currentTimeRange,
+    updateSelectedSegment,
+  ]);
+
+  const wasPlayingBeforeSelectRef = useRef(false);
+
+  useEffect(() => {
+    if (selectingRange) {
+      wasPlayingBeforeSelectRef.current =
+        mainControllerRef.current?.isPlaying() ?? false;
+      mainControllerRef.current?.pause();
+    } else if (wasPlayingBeforeSelectRef.current) {
+      wasPlayingBeforeSelectRef.current = false;
+      mainControllerRef.current?.play();
+    }
+  }, [selectingRange]);
+
+  const manuallySetCurrentTime = useCallback(
+    (time: number, play: boolean = false) => {
+      if (!currentTimeRange) {
+        return;
+      }
+      const controller =
+        mainControllerRef.current?.camera === mainCamera
+          ? mainControllerRef.current
+          : undefined;
+      const buffered = controller?.canSeekBuffered(time) ?? false;
+      setCurrentTime(time);
+      controller?.seekToTimestamp(time, play);
+
+      if (currentTimeRange.after <= time && currentTimeRange.before >= time) {
+        // a source reload mid-seek resumes from playbackStart, so the
+        // anchor has to follow explicit seeks
+        if (!buffered) {
+          setPlaybackStart(time);
+        }
+      } else {
+        updateSelectedSegment(time);
+      }
+    },
+    [currentTimeRange, updateSelectedSegment, mainCamera],
+  );
+
+  const onClipPrevious = useCallback(
+    (diff: number) => {
+      manuallySetCurrentTime(
+        currentTime + diff,
+        mainControllerRef.current?.isPlaying() ?? false,
+      );
+    },
+    [currentTime, manuallySetCurrentTime],
+  );
+
+  const onShareReviewLink = useCallback(
+    (timestamp: number) => {
+      const reviewUrl = createRecordingReviewUrl(location.pathname, {
+        camera: mainCamera,
+        timestamp: Math.floor(timestamp),
+      });
+
+      shareOrCopy(
+        reviewUrl,
+        t("recording.shareTimestamp.shareTitle", {
+          ns: "components/dialog",
+          camera: mainCamera,
+        }),
+      );
+    },
+    [location.pathname, mainCamera, t],
+  );
+
+  const handleBack = useCallback(() => {
+    // if we came from a direct share link, there is no history to go back to, so navigate to the homepage instead
+    if (recording?.navigationSource === "shared-link") {
+      navigate("/");
+      return;
+    }
+
+    navigate(-1);
+  }, [navigate, recording?.navigationSource]);
+
+  useEffect(() => {
+    if (!scrubbing && !selectingRange) {
+      if (Math.abs(currentTime - playerTime) > 10) {
+        if (
+          currentTimeRange.after <= currentTime &&
+          currentTimeRange.before >= currentTime
+        ) {
+          if (mainControllerRef.current != undefined) {
+            if (mainControllerRef.current.camera !== mainCamera) {
+              setPlaybackStart(currentTime);
+              return;
+            }
+            let shouldPlayback = true;
+
+            if (timelineType == "detail") {
+              shouldPlayback = mainControllerRef.current.isPlaying();
+            }
+
+            // see manuallySetCurrentTime
+            if (
+              mainControllerRef.current.camera !== mainCamera ||
+              !mainControllerRef.current.canSeekBuffered(currentTime)
+            ) {
+              setPlaybackStart(currentTime);
+            }
+            mainControllerRef.current.seekToTimestamp(
+              currentTime,
+              shouldPlayback,
+            );
+          }
+        } else {
+          updateSelectedSegment(currentTime);
+        }
+      } else if (playerTime != currentTime && timelineType != "detail") {
+        mainControllerRef.current?.play();
+      }
+    }
+    // we only want to seek when current time doesn't match the player update
+    // time, and once more on the way out of a range selection
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTime, scrubbing, selectingRange]);
+
+  const [fullResolution, setFullResolution] = useState<VideoResolutionType>({
+    width: 0,
+    height: 0,
+  });
+
+  // playback quality
+
+  const [quality, setQuality] = usePersistence<PlaybackQuality>(
+    "recordingQuality",
+    "auto",
+  );
+
+  // lets the selector surface a downswitch instead of a mysterious drop
+  const [autoQualityLow, setAutoQualityLow] = useState<{
+    low: boolean;
+    reason?: AutoQualityReason;
+  }>({ low: false });
+
+  // the player re-notifies on every mount and quality reset, so keep the
+  // same state object when nothing changed
+  const onAutoQualityChange = useCallback(
+    (low: boolean, reason: AutoQualityReason | undefined) =>
+      setAutoQualityLow((prev) =>
+        prev.low === low && prev.reason === reason ? prev : { low, reason },
+      ),
+    [],
+  );
+
+  // shown on the Original pin so a doomed selection is labeled
+  const mainCodecUnsupported = useMemo(
+    () =>
+      coverage?.streams?.main
+        ? !isCodecFamilySupported(coverage.streams.main.video_codec)
+        : false,
+    [coverage],
+  );
+
+  // the pin is persisted globally, but the selector is hidden on cameras
+  // without a sub stream, leaving an inherited "sub" pin unable to unpin
+  const playerQuality = useMemo<PlaybackQuality | undefined>(
+    () =>
+      config && !config.cameras[mainCamera]?.record.sub.enabled
+        ? "auto"
+        : quality,
+    [config, mainCamera, quality],
+  );
+
+  // a quality change swaps the playlist source, so anchor playback start
+  // the same way camera switching does to resume in place
+  const onSetQuality = useCallback(
+    (newQuality: PlaybackQuality) => {
+      setPlaybackStart(currentTime);
+      setQuality(newQuality);
+    },
+    [currentTime, setQuality],
+  );
+
+  const onSelectCamera = useCallback(
+    (newCam: string) => {
+      if (allowedCameras.includes(newCam)) {
+        setMainCamera(newCam);
+        setFullResolution({
+          width: 0,
+          height: 0,
+        });
+        setPlaybackStart(currentTime);
+      }
+    },
+    [currentTime, allowedCameras],
+  );
+
+  // fullscreen
+
+  const { fullscreen, toggleFullscreen, supportsFullScreen } =
+    useFullscreen(mainLayoutRef);
+
+  // layout
+
+  const getCameraAspect = useCallback(
+    (cam: string) => {
+      if (!config) {
+        return undefined;
+      }
+
+      if (cam == mainCamera && fullResolution.width && fullResolution.height) {
+        return fullResolution.width / fullResolution.height;
+      }
+
+      const camera = config.cameras[cam];
+
+      if (!camera) {
+        return undefined;
+      }
+
+      return camera.detect.width / camera.detect.height;
+    },
+    [config, fullResolution, mainCamera],
+  );
+
+  const mainCameraAspect = useMemo(() => {
+    const aspectRatio = getCameraAspect(mainCamera);
+
+    if (!aspectRatio) {
+      return "normal";
+    } else if (aspectRatio > ASPECT_WIDE_LAYOUT) {
+      return "wide";
+    } else if (aspectRatio < ASPECT_VERTICAL_LAYOUT) {
+      return "tall";
+    } else {
+      return "normal";
+    }
+  }, [getCameraAspect, mainCamera]);
+
+  const grow = useMemo(() => {
+    if (mainCameraAspect == "wide") {
+      return "w-full aspect-wide";
+    } else if (mainCameraAspect == "tall") {
+      if (isDesktop) {
+        return "size-full aspect-tall flex flex-col justify-center";
+      } else {
+        return "size-full";
+      }
+    } else {
+      return "w-full aspect-video";
+    }
+  }, [mainCameraAspect]);
+
+  // use a resize observer to determine whether to use w-full or h-full based on container aspect ratio
+  const [{ width: containerWidth, height: containerHeight }] =
+    useResizeObserver(cameraLayoutRef);
+  const [{ width: previewRowWidth, height: previewRowHeight }] =
+    useResizeObserver(previewRowRef);
+
+  const useHeightBased = useMemo(() => {
+    if (!containerWidth || !containerHeight) {
+      return false;
+    }
+
+    const cameraAspectRatio = getCameraAspect(mainCamera);
+    if (!cameraAspectRatio) {
+      return false;
+    }
+
+    // Calculate available space for camera after accounting for preview row
+    // For tall cameras: preview row is side-by-side (takes width)
+    // For wide/normal cameras: preview row is stacked (takes height)
+    const availableWidth =
+      mainCameraAspect == "tall" && previewRowWidth
+        ? containerWidth - previewRowWidth
+        : containerWidth;
+    const availableHeight =
+      mainCameraAspect != "tall" && previewRowHeight
+        ? containerHeight - previewRowHeight
+        : containerHeight;
+
+    const availableAspectRatio = availableWidth / availableHeight;
+
+    // If available space is wider than camera aspect, constrain by height (h-full)
+    // If available space is taller than camera aspect, constrain by width (w-full)
+    return availableAspectRatio >= cameraAspectRatio;
+  }, [
+    containerWidth,
+    containerHeight,
+    previewRowWidth,
+    previewRowHeight,
+    getCameraAspect,
+    mainCamera,
+    mainCameraAspect,
+  ]);
+
+  const previewRowOverflows = useMemo(() => {
+    if (!previewRowRef.current) {
+      return false;
+    }
+
+    return (
+      previewRowRef.current.scrollWidth > previewRowRef.current.clientWidth ||
+      previewRowRef.current.scrollHeight > previewRowRef.current.clientHeight
+    );
+    // we only want to update when the scroll size changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewRowRef.current?.scrollWidth, previewRowRef.current?.scrollHeight]);
+
+  // visibility listener for lazy loading
+
+  const [visiblePreviews, setVisiblePreviews] = useState<string[]>([]);
+  const visiblePreviewObserver = useRef<IntersectionObserver | null>(null);
+  useEffect(() => {
+    const visibleCameras = new Set<string>();
+    visiblePreviewObserver.current = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          const camera = (entry.target as HTMLElement).dataset.camera;
+
+          if (!camera) {
+            return;
+          }
+
+          if (entry.isIntersecting) {
+            visibleCameras.add(camera);
+          } else {
+            visibleCameras.delete(camera);
+          }
+
+          setVisiblePreviews([...visibleCameras]);
+        });
+      },
+      { threshold: 0.1 },
+    );
+
+    return () => {
+      visiblePreviewObserver.current?.disconnect();
+    };
+  }, []);
+
+  const previewRef = useCallback(
+    (node: HTMLElement | null) => {
+      if (!visiblePreviewObserver.current) {
+        return;
+      }
+
+      try {
+        if (node) visiblePreviewObserver.current.observe(node);
+      } catch {
+        // no op
+      }
+    },
+    // we need to listen on the value of the ref
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visiblePreviewObserver.current],
+  );
+
+  const metadataReviewItem = useMemo(
+    () =>
+      mainCameraReviewItems.find(
+        (review) =>
+          review.camera === mainCamera &&
+          Number.isFinite(review.start_time) &&
+          review.start_time <= currentTime &&
+          (review.end_time == null ||
+            (Number.isFinite(review.end_time) &&
+              currentTime < review.end_time)),
+      ),
+    [currentTime, mainCameraReviewItems, mainCamera],
+  );
+
+  const activeReviewItem = useMemo(() => {
+    if (!config?.cameras?.[mainCamera].review.genai?.enabled_in_config) {
+      return undefined;
+    }
+
+    return mainCameraReviewItems.find(
+      (rev) =>
+        rev.start_time - REVIEW_PADDING < currentTime &&
+        rev.end_time &&
+        currentTime < rev.end_time + REVIEW_PADDING,
+    );
+  }, [config, currentTime, mainCameraReviewItems, mainCamera]);
+  const onAnalysisOpen = useCallback(
+    (open: boolean) => {
+      if (open) {
+        mainControllerRef.current?.pause();
+      } else {
+        mainControllerRef.current?.play();
+      }
+    },
+    [mainControllerRef],
+  );
+
+  const investigationToolbar = (
+    <InvestigationToolbar
+      camera={mainCamera}
+      review={metadataReviewItem}
+      timestamp={currentTime}
+      timezone={timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone}
+      bounds={timeRange}
+      selection={investigationActive ? investigation.range : undefined}
+      inpoint={investigationActive ? investigation.inpoint : undefined}
+      loop={investigationActive && investigation.loop}
+      skipQuiet={investigationActive && investigation.skip}
+      hasActivity={activityIntervals.length > 0}
+      navigationUnavailable={navigationUnavailable}
+      onMarkIn={() =>
+        setInvestigation({
+          camera: mainCamera,
+          inpoint: currentTime,
+          loop: false,
+          skip: false,
+        })
+      }
+      onMarkOut={() =>
+        setInvestigation((current) =>
+          current.camera === mainCamera &&
+          current.inpoint !== undefined &&
+          currentTime > current.inpoint
+            ? {
+                ...current,
+                range: { after: current.inpoint, before: currentTime },
+                loop: false,
+              }
+            : current,
+        )
+      }
+      onLoop={(loop) => {
+        setInvestigation((current) => ({ ...current, loop, skip: false }));
+        if (loop && investigation.range)
+          manuallySetCurrentTime(investigation.range.after, true);
+      }}
+      onSkipQuiet={(skip) =>
+        setInvestigation({ camera: mainCamera, skip, loop: false })
+      }
+      onClear={() =>
+        setInvestigation({ camera: mainCamera, skip: false, loop: false })
+      }
+      onExport={() => {
+        if (!investigationActive || !investigation.range) return;
+        setExportRange({ ...investigation.range });
+        setExportMode("select");
+      }}
+      onShare={() => {
+        void onShareReviewLink(currentTime);
+      }}
+      onSeek={(timestamp) =>
+        manuallySetCurrentTime(
+          timestamp,
+          mainControllerRef.current?.wantsPlayback() ?? false,
+        )
+      }
+    />
+  );
+
+  return (
+    <DetailStreamProvider
+      isDetailMode={timelineType === "detail"}
+      currentTime={currentTime}
+      camera={mainCamera}
+    >
+      <div ref={contentRef} className="flex size-full flex-col pt-2">
+        <Toaster closeButton={true} />
+        <div className="relative mb-2 flex h-11 w-full shrink-0 items-center justify-between px-2">
+          <div className={cn("flex items-center gap-2")}>
+            <Button
+              className="flex items-center gap-2.5 rounded-lg"
+              aria-label={t("label.back", { ns: "common" })}
+              size="sm"
+              onClick={handleBack}
+            >
+              <IoMdArrowRoundBack className="size-5 text-secondary-foreground" />
+              {isDesktop && (
+                <div className="text-primary">
+                  {t("button.back", { ns: "common" })}
+                </div>
+              )}
+            </Button>
+            <Button
+              className="flex items-center gap-2.5 rounded-lg"
+              aria-label="Go to the main camera live view"
+              size="sm"
+              onClick={() => {
+                navigate(`/#${mainCamera}`);
+              }}
+            >
+              <FaVideo className="size-5 text-secondary-foreground" />
+              {isDesktop && (
+                <div className="text-primary">
+                  {t("menu.live.title", { ns: "common" })}
+                </div>
+              )}
+            </Button>
+          </div>
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label={t("navigation.previousEvent", {
+                ns: "components/player",
+              })}
+              disabled={
+                adjacentPlaybackEvent(
+                  navigationItems,
+                  currentTime,
+                  "previous",
+                ) === undefined
+              }
+              onClick={() => {
+                const target = adjacentPlaybackEvent(
+                  navigationItems,
+                  currentTime,
+                  "previous",
+                );
+                if (target !== undefined)
+                  manuallySetCurrentTime(
+                    target,
+                    mainControllerRef.current?.wantsPlayback() ?? false,
+                  );
+              }}
+            >
+              {isDesktop ? (
+                t("navigation.previousEvent", { ns: "components/player" })
+              ) : (
+                <LuSkipBack className="size-4" />
+              )}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label={t("navigation.nextEvent", {
+                ns: "components/player",
+              })}
+              disabled={
+                adjacentPlaybackEvent(navigationItems, currentTime, "next") ===
+                undefined
+              }
+              onClick={() => {
+                const target = adjacentPlaybackEvent(
+                  navigationItems,
+                  currentTime,
+                  "next",
+                );
+                if (target !== undefined)
+                  manuallySetCurrentTime(
+                    target,
+                    mainControllerRef.current?.wantsPlayback() ?? false,
+                  );
+              }}
+            >
+              {isDesktop ? (
+                t("navigation.nextEvent", { ns: "components/player" })
+              ) : (
+                <LuSkipForward className="size-4" />
+              )}
+            </Button>
+            <MobileCameraDrawer
+              allCameras={effectiveCameras}
+              selected={mainCamera}
+              onSelectCamera={onSelectCamera}
+            />
+            {isDesktop && (
+              <DebugReplayDialog
+                camera={mainCamera}
+                currentTime={currentTime}
+                latestTime={timeRange.before}
+                mode={debugReplayMode}
+                range={debugReplayRange}
+                setRange={setDebugReplayRange}
+                setMode={setDebugReplayMode}
+              />
+            )}
+            {isDesktop && (
+              <ExportDialog
+                camera={mainCamera}
+                currentTime={currentTime}
+                latestTime={timeRange.before}
+                earliestTime={timeRange.after}
+                mode={exportMode}
+                range={exportRange}
+                showPreview={showExportPreview}
+                setRange={setExportRange}
+                setMode={setExportMode}
+                setShowPreview={setShowExportPreview}
+              />
+            )}
+            {isDesktop && (
+              <ReviewFilterGroup
+                filters={["cameras", "date", "general"]}
+                reviewSummary={reviewSummary}
+                recordingsSummary={recordingsSummary}
+                filter={filter}
+                motionOnly={false}
+                filterList={reviewFilterList}
+                showReviewed
+                setShowReviewed={() => {}}
+                mainCamera={mainCamera}
+                onUpdateFilter={(newFilter: ReviewFilter) => {
+                  const updatedCameras =
+                    newFilter.cameras === undefined
+                      ? undefined // Respect undefined as "all cameras"
+                      : newFilter.cameras
+                        ? Array.from(
+                            new Set([mainCamera, ...(newFilter.cameras || [])]),
+                          ) // Include mainCamera if specific cameras are selected
+                        : [mainCamera];
+                  const adjustedFilter: ReviewFilter = {
+                    ...newFilter,
+                    cameras: updatedCameras,
+                  };
+                  updateFilter(adjustedFilter);
+                }}
+                setMotionOnly={() => {}}
+              />
+            )}
+            {isDesktop && (
+              <ShareTimestampDialog
+                currentTime={shareTimestampAtOpen}
+                open={shareTimestampOpen}
+                onOpenChange={setShareTimestampOpen}
+                selectedOption={shareTimestampOption}
+                setSelectedOption={setShareTimestampOption}
+                customTimestamp={customShareTimestamp}
+                setCustomTimestamp={setCustomShareTimestamp}
+                onShareTimestamp={onShareReviewLink}
+              />
+            )}
+            {isDesktop && (
+              <ActionsDropdown
+                onShareTimestampClick={() => {
+                  const initialTimestamp = Math.floor(currentTime);
+
+                  setShareTimestampAtOpen(initialTimestamp);
+                  setShareTimestampOption("current");
+                  setCustomShareTimestamp(initialTimestamp);
+                  setShareTimestampOpen(true);
+                }}
+                onMotionSearchClick={
+                  onMotionSearch ? () => onMotionSearch(mainCamera) : undefined
+                }
+                onDebugReplayClick={
+                  isAdmin
+                    ? () => {
+                        setDebugReplayRange({
+                          after: timeRange.before - 60,
+                          before: timeRange.before,
+                        });
+                        setDebugReplayMode("select");
+                      }
+                    : undefined
+                }
+                onExportClick={() => {
+                  const now = new Date(timeRange.before * 1000);
+                  now.setHours(now.getHours() - 1);
+                  setExportRange({
+                    before: timeRange.before,
+                    after: now.getTime() / 1000,
+                  });
+                  setExportMode("select");
+                }}
+              />
+            )}
+            {!isMobileOnly &&
+              config?.cameras[mainCamera]?.record.enabled &&
+              config?.cameras[mainCamera]?.record.sub.enabled && (
+                <QualitySelector
+                  quality={quality ?? "auto"}
+                  onSetQuality={onSetQuality}
+                  streams={coverage?.streams}
+                  autoLow={(quality ?? "auto") === "auto" && autoQualityLow.low}
+                  autoLowReason={autoQualityLow.reason}
+                  mainUnsupported={mainCodecUnsupported}
+                />
+              )}
+            {isDesktop ? (
+              <ToggleGroup
+                className="*:rounded-md *:px-3 *:py-4"
+                type="single"
+                size="sm"
+                value={timelineType}
+                onValueChange={(value: TimelineType) =>
+                  value ? setTimelineType(value, true) : null
+                } // don't allow the severity to be unselected
+              >
+                <ToggleGroupItem
+                  className={`${timelineType == "timeline" ? "" : "text-muted-foreground"}`}
+                  value="timeline"
+                  aria-label={t("timeline.aria")}
+                >
+                  <div className="">{t("timeline.label")}</div>
+                </ToggleGroupItem>
+                <ToggleGroupItem
+                  className={`${timelineType == "events" ? "" : "text-muted-foreground"}`}
+                  value="events"
+                  aria-label={t("events.aria")}
+                >
+                  <div className="">{t("events.label")}</div>
+                </ToggleGroupItem>
+                <ToggleGroupItem
+                  className={`${timelineType == "detail" ? "" : "text-muted-foreground"}`}
+                  value="detail"
+                  aria-label="Detail Stream"
+                >
+                  <div className="">{t("detail.label")}</div>
+                </ToggleGroupItem>
+              </ToggleGroup>
+            ) : (
+              <MobileTimelineDrawer
+                selected={timelineType ?? "timeline"}
+                onSelect={setTimelineType}
+              />
+            )}
+            <MobileReviewSettingsDrawer
+              // tablets keep the header selector, so only phones get
+              // quality in the drawer
+              features={
+                isMobileOnly &&
+                config?.cameras[mainCamera]?.record.enabled &&
+                config?.cameras[mainCamera]?.record.sub.enabled
+                  ? [...DEFAULT_DRAWER_FEATURES, "quality"]
+                  : DEFAULT_DRAWER_FEATURES
+              }
+              quality={quality ?? "auto"}
+              onSetQuality={onSetQuality}
+              qualityStreams={coverage?.streams}
+              qualityAutoLow={
+                (quality ?? "auto") === "auto" && autoQualityLow.low
+              }
+              qualityAutoLowReason={autoQualityLow.reason}
+              qualityMainUnsupported={mainCodecUnsupported}
+              camera={mainCamera}
+              filter={filter}
+              currentTime={currentTime}
+              latestTime={timeRange.before}
+              earliestTime={timeRange.after}
+              recordingsSummary={recordingsSummary}
+              mode={exportMode}
+              range={exportRange}
+              showExportPreview={showExportPreview}
+              allLabels={reviewFilterList.labels}
+              allZones={reviewFilterList.zones}
+              debugReplayMode={debugReplayMode}
+              debugReplayRange={debugReplayRange}
+              setDebugReplayMode={setDebugReplayMode}
+              setDebugReplayRange={setDebugReplayRange}
+              onShareTimestamp={onShareReviewLink}
+              onMotionSearch={
+                onMotionSearch ? () => onMotionSearch(mainCamera) : undefined
+              }
+              onUpdateFilter={updateFilter}
+              setRange={setExportRange}
+              setMode={setExportMode}
+              setShowExportPreview={setShowExportPreview}
+            />
+          </div>
+        </div>
+
+        <div
+          ref={mainLayoutRef}
+          className={cn(
+            "flex min-h-0 flex-1 overflow-hidden",
+            isDesktop ? "flex-row" : "flex-col gap-2 landscape:flex-row",
+          )}
+        >
+          <div
+            className={cn(
+              "flex min-h-0 min-w-0 flex-1 flex-col gap-2",
+              isDesktop
+                ? "px-4"
+                : "portrait:max-h-[70dvh] portrait:shrink-0 portrait:grow-0 portrait:basis-auto",
+            )}
+          >
+            <div
+              ref={cameraLayoutRef}
+              className="flex min-h-0 min-w-0 flex-1 flex-wrap overflow-hidden"
+            >
+              <div
+                className={cn(
+                  "flex size-full items-center",
+                  mainCameraAspect == "tall"
+                    ? "flex-row justify-evenly"
+                    : "flex-col justify-center gap-2",
+                )}
+              >
+                <div
+                  key={mainCamera}
+                  className={cn(
+                    "relative flex max-h-full min-h-0 min-w-0 max-w-full items-center justify-center",
+                    isDesktop
+                      ? // Desktop: dynamically switch between w-full and h-full based on
+                        // container vs camera aspect ratio to ensure proper fitting
+                        useHeightBased
+                        ? "h-full"
+                        : "w-full"
+                      : cn(
+                          "flex-shrink-0 portrait:w-full landscape:h-full",
+                          mainCameraAspect == "wide"
+                            ? "aspect-wide"
+                            : mainCameraAspect == "tall"
+                              ? "aspect-tall portrait:h-full"
+                              : "aspect-video",
+                        ),
+                  )}
+                  style={{
+                    aspectRatio: getCameraAspect(mainCamera),
+                  }}
+                >
+                  {(isDesktop || isTablet) && (
+                    <GenAISummaryDialog
+                      review={activeReviewItem}
+                      onOpen={onAnalysisOpen}
+                    >
+                      <GenAISummaryChip review={activeReviewItem} />
+                    </GenAISummaryDialog>
+                  )}
+
+                  <DynamicVideoPlayer
+                    className={grow}
+                    camera={mainCamera}
+                    timeRange={currentTimeRange}
+                    cameraPreviews={allPreviews ?? []}
+                    startTimestamp={playbackStart}
+                    hotKeys={
+                      exportMode != "select" && debugReplayMode != "select"
+                    }
+                    fullscreen={fullscreen}
+                    onTimestampUpdate={(timestamp) => {
+                      setReadyCamera(mainCamera);
+                      if (
+                        investigationActive &&
+                        !selectingRange &&
+                        !scrubbing &&
+                        mainControllerRef.current?.wantsPlayback()
+                      ) {
+                        let target: number | undefined;
+                        if (
+                          investigation.loop &&
+                          investigation.range &&
+                          (timestamp >= investigation.range.before ||
+                            timestamp < investigation.range.after - 0.25)
+                        ) {
+                          target = investigation.range.after;
+                        } else if (investigation.skip && !investigation.loop) {
+                          target = nextActivePlaybackTime(
+                            timestamp,
+                            activityIntervals,
+                          );
+                          if (target === undefined) {
+                            mainControllerRef.current?.pause();
+                          } else if (Math.abs(target - timestamp) < 0.25)
+                            target = undefined;
+                        }
+                        if (target !== undefined) {
+                          if (navigationTargetRef.current !== target) {
+                            navigationTargetRef.current = target;
+                            manuallySetCurrentTime(target, true);
+                          }
+                          return;
+                        }
+                        navigationTargetRef.current = undefined;
+                      }
+                      setPlayerTime(timestamp);
+                      setCurrentTime(timestamp);
+                      Object.values(previewRefs.current ?? {}).forEach((prev) =>
+                        prev.scrubToTimestamp(timestamp),
+                      );
+                    }}
+                    onClipEnded={onClipEnded}
+                    onClipPrevious={onClipPrevious}
+                    onSeekToTime={manuallySetCurrentTime}
+                    onControllerReady={(controller) => {
+                      mainControllerRef.current = controller;
+                    }}
+                    isScrubbing={
+                      scrubbing ||
+                      exportMode == "timeline" ||
+                      exportMode == "timeline_multi" ||
+                      debugReplayMode == "timeline"
+                    }
+                    supportsFullscreen={supportsFullScreen}
+                    setFullResolution={setFullResolution}
+                    toggleFullscreen={toggleFullscreen}
+                    containerRef={mainLayoutRef}
+                    quality={playerQuality}
+                    onAutoQualityChange={onAutoQualityChange}
+                  />
+                </div>
+                {isDesktop && effectiveCameras.length > 1 && (
+                  <div
+                    ref={previewRowRef}
+                    className={cn(
+                      "scrollbar-container flex flex-shrink-0 gap-2 overflow-auto",
+                      mainCameraAspect == "tall"
+                        ? "ml-2 h-full w-72 min-w-72 flex-col"
+                        : "h-28 min-h-28 w-full",
+                      previewRowOverflows ? "" : "items-center justify-center",
+                      timelineType == "detail" && isDesktop && "mt-4",
+                    )}
+                  >
+                    <div className="w-2" />
+                    {effectiveCameras.map((cam) => {
+                      if (cam == mainCamera || cam == "birdseye") {
+                        return;
+                      }
+
+                      return (
+                        <Tooltip key={cam}>
+                          <TooltipTrigger asChild>
+                            <div
+                              className={
+                                mainCameraAspect == "tall" ? "w-full" : "h-full"
+                              }
+                              style={{
+                                aspectRatio: getCameraAspect(cam),
+                              }}
+                            >
+                              <PreviewPlayer
+                                previewRef={previewRef}
+                                className="size-full"
+                                camera={cam}
+                                timeRange={currentTimeRange}
+                                cameraPreviews={allPreviews ?? []}
+                                startTime={startTime}
+                                isScrubbing={scrubbing}
+                                isVisible={
+                                  readyCamera === mainCamera &&
+                                  visiblePreviews.includes(cam)
+                                }
+                                onControllerReady={(controller) => {
+                                  previewRefs.current[cam] = controller;
+                                  controller.scrubToTimestamp(currentTime);
+                                }}
+                                onClick={() => onSelectCamera(cam)}
+                              />
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent className="smart-capitalize">
+                            <CameraNameLabel camera={cam} />
+                          </TooltipContent>
+                        </Tooltip>
+                      );
+                    })}
+                    <div className="w-2" />
+                  </div>
+                )}
+              </div>
+            </div>
+            {investigationToolbar}
+          </div>
+          <Timeline
+            contentRef={contentRef}
+            mainCamera={mainCamera}
+            timelineType={
+              (exportRange == undefined && debugReplayRange == undefined
+                ? timelineType
+                : "timeline") ?? "timeline"
+            }
+            timeRange={timeRange}
+            mainCameraReviewItems={mainCameraReviewItems}
+            activeReviewItem={activeReviewItem}
+            currentTime={currentTime}
+            exportRange={
+              exportMode == "timeline" || exportMode == "timeline_multi"
+                ? exportRange
+                : debugReplayMode == "timeline"
+                  ? debugReplayRange
+                  : undefined
+            }
+            setCurrentTime={setCurrentTime}
+            manuallySetCurrentTime={manuallySetCurrentTime}
+            setScrubbing={setScrubbing}
+            setExportRange={
+              debugReplayMode == "timeline"
+                ? setDebugReplayRange
+                : setExportRange
+            }
+            onAnalysisOpen={onAnalysisOpen}
+            isPlaying={mainControllerRef?.current?.isPlaying() ?? false}
+          />
+        </div>
+      </div>
+    </DetailStreamProvider>
+  );
+}
+
+type TimelineProps = {
+  contentRef: MutableRefObject<HTMLDivElement | null>;
+  timelineRef?: MutableRefObject<HTMLDivElement | null>;
+  mainCamera: string;
+  timelineType: TimelineType;
+  timeRange: TimeRange;
+  mainCameraReviewItems: ReviewSegment[];
+  activeReviewItem?: ReviewSegment;
+  currentTime: number;
+  exportRange?: TimeRange;
+  isPlaying?: boolean;
+  setCurrentTime: React.Dispatch<React.SetStateAction<number>>;
+  manuallySetCurrentTime: (time: number, force: boolean) => void;
+  setScrubbing: React.Dispatch<React.SetStateAction<boolean>>;
+  setExportRange: React.Dispatch<React.SetStateAction<TimeRange | undefined>>;
+  onAnalysisOpen: (open: boolean) => void;
+};
+function Timeline({
+  contentRef,
+  timelineRef,
+  mainCamera,
+  timelineType,
+  timeRange,
+  mainCameraReviewItems,
+  activeReviewItem,
+  currentTime,
+  exportRange,
+  isPlaying,
+  setCurrentTime,
+  manuallySetCurrentTime,
+  setScrubbing,
+  setExportRange,
+  onAnalysisOpen,
+}: TimelineProps) {
+  const { t } = useTranslation(["views/events"]);
+  const internalTimelineRef = useRef<HTMLDivElement>(null);
+  const selectedTimelineRef = timelineRef || internalTimelineRef;
+
+  // timeline interaction
+
+  const [zoomSettings, setZoomSettings] = useState({
+    segmentDuration: 30,
+    timestampSpread: 15,
+  });
+
+  const possibleZoomLevels: ZoomLevel[] = useMemo(
+    () => [
+      { segmentDuration: 30, timestampSpread: 15 },
+      { segmentDuration: 15, timestampSpread: 5 },
+      { segmentDuration: 5, timestampSpread: 1 },
+    ],
+    [],
+  );
+
+  const handleZoomChange = useCallback(
+    (newZoomLevel: number) => {
+      setZoomSettings(possibleZoomLevels[newZoomLevel]);
+    },
+    [possibleZoomLevels],
+  );
+
+  const currentZoomLevel = useMemo(
+    () =>
+      possibleZoomLevels.findIndex(
+        (level) => level.segmentDuration === zoomSettings.segmentDuration,
+      ),
+    [possibleZoomLevels, zoomSettings.segmentDuration],
+  );
+
+  const { isZooming, zoomDirection } = useTimelineZoom({
+    zoomSettings,
+    zoomLevels: possibleZoomLevels,
+    onZoomChange: handleZoomChange,
+    timelineRef: selectedTimelineRef,
+    timelineDuration: timeRange.after - timeRange.before,
+  });
+
+  // motion data
+  const { alignStartDateToTimeline, alignEndDateToTimeline } = useTimelineUtils(
+    {
+      segmentDuration: zoomSettings.segmentDuration,
+    },
+  );
+
+  const alignedAfter = alignStartDateToTimeline(timeRange.after);
+  const alignedBefore = alignEndDateToTimeline(timeRange.before);
+
+  const { data: motionData, isLoading } = useSWR<MotionData[]>([
+    "review/activity/motion",
+    {
+      before: alignedBefore,
+      after: alignedAfter,
+      scale: Math.round(zoomSettings.segmentDuration / 2),
+      cameras: mainCamera,
+    },
+  ]);
+
+  const { data: noRecordings } = useSWR<RecordingSegment[]>([
+    "recordings/unavailable",
+    {
+      before: alignedBefore,
+      after: alignedAfter,
+      scale: Math.round(zoomSettings.segmentDuration),
+      cameras: mainCamera,
+    },
+  ]);
+
+  const { data: coverage } = useSWR<RecordingCoverage>([
+    `${mainCamera}/recordings/coverage`,
+    {
+      before: alignedBefore,
+      after: alignedAfter,
+    },
+  ]);
+
+  const subOnlyRanges = useMemo(
+    () =>
+      coverage?.spans?.filter((span) => !span.streams.includes("main")) ?? [],
+    [coverage],
+  );
+
+  // a local mirror of the range fights a reseed: the position effect
+  // echoes it back and the two rewrite each other forever
+  const setExportStartTime = useCallback(
+    (value: React.SetStateAction<number>) => {
+      if (!exportRange) {
+        return;
+      }
+
+      const next =
+        typeof value === "function" ? value(exportRange.after) : value;
+
+      // the position effect re-reports the current time on every reposition
+      if (next == exportRange.after) {
+        return;
+      }
+
+      setCurrentTime(next);
+      setExportRange((prev) =>
+        prev ? { after: next, before: prev.before } : prev,
+      );
+    },
+    [exportRange, setExportRange, setCurrentTime],
+  );
+
+  const setExportEndTime = useCallback(
+    (value: React.SetStateAction<number>) => {
+      if (!exportRange) {
+        return;
+      }
+
+      const next =
+        typeof value === "function" ? value(exportRange.before) : value;
+
+      if (next == exportRange.before) {
+        return;
+      }
+
+      setCurrentTime(next);
+      setExportRange((prev) =>
+        prev ? { after: prev.after, before: next } : prev,
+      );
+    },
+    [exportRange, setExportRange, setCurrentTime],
+  );
+
+  return (
+    <div
+      className={cn(
+        "relative overflow-hidden",
+        isDesktop
+          ? cn(
+              timelineType == "timeline"
+                ? "w-[100px] flex-shrink-0"
+                : timelineType == "detail"
+                  ? "min-w-[20rem] max-w-[30%] flex-shrink-0 flex-grow-0 basis-[30rem] md:min-w-[20rem] md:max-w-[25%] lg:min-w-[30rem] lg:max-w-[33%]"
+                  : "w-80 flex-shrink-0",
+            )
+          : cn(
+              timelineType == "timeline"
+                ? "portrait:flex-grow landscape:w-[100px] landscape:flex-shrink-0"
+                : timelineType == "detail"
+                  ? "portrait:flex-grow landscape:w-[19rem] landscape:flex-shrink-0"
+                  : "portrait:flex-grow landscape:w-[19rem] landscape:flex-shrink-0",
+            ),
+      )}
+    >
+      {isMobileOnly && timelineType == "timeline" && (
+        <GenAISummaryDialog review={activeReviewItem} onOpen={onAnalysisOpen}>
+          <GenAISummaryChip review={activeReviewItem} />
+        </GenAISummaryDialog>
+      )}
+
+      {timelineType != "detail" && (
+        <>
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-[30px] w-full bg-gradient-to-b from-secondary to-transparent"></div>
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-[30px] w-full bg-gradient-to-t from-secondary to-transparent"></div>
+        </>
+      )}
+      {timelineType == "timeline" ? (
+        !isLoading ? (
+          <MotionReviewTimeline
+            timelineRef={selectedTimelineRef}
+            segmentDuration={zoomSettings.segmentDuration}
+            timestampSpread={zoomSettings.timestampSpread}
+            timelineStart={timeRange.before}
+            timelineEnd={timeRange.after}
+            showHandlebar={exportRange == undefined}
+            showExportHandles={exportRange != undefined}
+            exportStartTime={exportRange?.after}
+            exportEndTime={exportRange?.before}
+            setExportStartTime={setExportStartTime}
+            setExportEndTime={setExportEndTime}
+            handlebarTime={currentTime}
+            setHandlebarTime={setCurrentTime}
+            events={mainCameraReviewItems}
+            motion_events={motionData ?? []}
+            noRecordingRanges={noRecordings ?? []}
+            subOnlyRanges={subOnlyRanges}
+            contentRef={contentRef}
+            onHandlebarDraggingChange={setScrubbing}
+            isZooming={isZooming}
+            zoomDirection={zoomDirection}
+            onZoomChange={handleZoomChange}
+            possibleZoomLevels={possibleZoomLevels}
+            currentZoomLevel={currentZoomLevel}
+          />
+        ) : (
+          <Skeleton className="size-full" />
+        )
+      ) : timelineType == "detail" ? (
+        <DetailStream
+          currentTime={currentTime}
+          onSeek={(timestamp, play) =>
+            manuallySetCurrentTime(timestamp, play ?? true)
+          }
+          reviewItems={mainCameraReviewItems}
+          isPlaying={isPlaying}
+        />
+      ) : (
+        <div className="scrollbar-container h-full overflow-auto bg-secondary">
+          <div
+            className={cn(
+              "scrollbar-container grid h-auto grid-cols-1 gap-4 overflow-auto p-4",
+              isMobile && "sm:portrait:grid-cols-2",
+            )}
+          >
+            {mainCameraReviewItems.length === 0 ? (
+              <div className="mt-5 text-center text-primary">
+                {t("events.noFoundForTimePeriod")}
+              </div>
+            ) : (
+              mainCameraReviewItems.map((review) => {
+                if (review.severity === "significant_motion") {
+                  return;
+                }
+
+                return (
+                  <ReviewCard
+                    key={review.id}
+                    event={review}
+                    activeReviewItem={activeReviewItem}
+                    onClick={() => {
+                      manuallySetCurrentTime(
+                        review.start_time - REVIEW_PADDING,
+                        true,
+                      );
+                    }}
+                  />
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

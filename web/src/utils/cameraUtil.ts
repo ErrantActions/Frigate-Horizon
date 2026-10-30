@@ -1,0 +1,302 @@
+import { baseUrl } from "@/api/baseUrl";
+import { generateFixedHash, isValidId } from "./stringUtil";
+import type { LiveStreamMetadata } from "@/types/live";
+import type { StreamConfig } from "@/types/cameraWizard";
+import type { FrigateStats } from "@/types/stats";
+
+export function isCameraOffline(
+  stats: FrigateStats | undefined,
+  cameraName: string | undefined,
+): boolean {
+  if (!stats?.cameras || !cameraName) {
+    return false;
+  }
+
+  return (
+    stats.cameras[cameraName]?.capture_mode !== "recording_only" &&
+    stats.cameras[cameraName]?.camera_fps == 0 &&
+    stats.service.uptime > 60
+  );
+}
+
+/**
+ * Processes a user-entered camera name and returns both the final camera name
+ * and friendly name for Frigate configuration.
+ *
+ * @param userInput - The name entered by the user (could be display name)
+ * @returns Object with finalCameraName and friendlyName
+ */
+export function processCameraName(userInput: string): {
+  finalCameraName: string;
+  friendlyName?: string;
+} {
+  const normalizedInput = userInput.replace(/\s+/g, "_").toLowerCase();
+
+  if (isValidId(normalizedInput)) {
+    return {
+      finalCameraName: normalizedInput,
+      friendlyName: userInput.includes(" ") ? userInput : undefined,
+    };
+  }
+
+  return {
+    finalCameraName: generateFixedHash(userInput, "cam"),
+    friendlyName: userInput,
+  };
+}
+
+/**
+ * Detect Reolink camera capabilities and recommend optimal protocol
+ *
+ * Calls the Frigate backend API which queries the Reolink camera to determine
+ * its resolution and recommends either http-flv (for 5MP and below) or rtsp
+ * (for higher resolutions).
+ *
+ * @param host - Camera IP address or hostname
+ * @param username - Camera username
+ * @param password - Camera password
+ * @returns The recommended protocol key ("http-flv" or "rtsp"), or null if detection failed
+ */
+export async function detectReolinkCamera(
+  host: string,
+  username: string,
+  password: string,
+): Promise<"http-flv" | "rtsp" | null> {
+  try {
+    const params = new URLSearchParams({
+      host,
+      username,
+      password,
+    });
+
+    const response = await fetch(
+      `${baseUrl}api/reolink/detect?${params.toString()}`,
+      {
+        method: "GET",
+      },
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = await response.json();
+
+    if (data.success && data.protocol) {
+      return data.protocol;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mask credentials in RTSP URIs for display
+ */
+export function maskUri(uri: string): string {
+  try {
+    // Handle RTSP URLs with user:pass@host format
+    // Use greedy match for password to handle passwords with @
+    const rtspMatch = uri.match(/rtsp:\/\/([^:]+):(.+)@(.+)/);
+    if (rtspMatch) {
+      return `rtsp://${rtspMatch[1]}:${"*".repeat(4)}@${rtspMatch[3]}`;
+    }
+
+    // Handle HTTP/HTTPS URLs with password query parameter
+    const urlObj = new URL(uri);
+    if (urlObj.searchParams.has("password")) {
+      urlObj.searchParams.set("password", "*".repeat(4));
+      return urlObj.toString();
+    }
+  } catch {
+    // ignore
+  }
+  return uri;
+}
+
+/**
+ * Represents the audio features supported by a camera stream
+ */
+export type CameraAudioFeatures = {
+  twoWayAudio: boolean;
+  audioOutput: boolean;
+};
+
+/**
+ * Detects camera audio features from go2rtc stream metadata.
+ * Checks for two-way audio (backchannel) and audio output capabilities.
+ *
+ * @param metadata - The LiveStreamMetadata from go2rtc stream
+ * @param requireSecureContext - If true, two-way audio requires secure context (default: true)
+ * @returns CameraAudioFeatures object with detected capabilities
+ */
+/**
+ * Calculates optimal detect dimensions from stream resolution.
+ *
+ * Scales dimensions to an efficient size for object detection while
+ * preserving the stream's aspect ratio. Does not upscale.
+ *
+ * @param streamWidth - Native stream width in pixels
+ * @param streamHeight - Native stream height in pixels
+ * @returns Detect dimensions with even values, or null if inputs are invalid
+ */
+
+// Target size for the smaller dimension (width or height) for detect streams
+export const DETECT_TARGET_PX = 720;
+
+export function calculateDetectDimensions(
+  streamWidth: number,
+  streamHeight: number,
+): { width: number; height: number } | null {
+  if (
+    !Number.isFinite(streamWidth) ||
+    !Number.isFinite(streamHeight) ||
+    streamWidth <= 0 ||
+    streamHeight <= 0
+  ) {
+    return null;
+  }
+
+  const smallerDim = Math.min(streamWidth, streamHeight);
+  const target = Math.min(DETECT_TARGET_PX, smallerDim);
+  const scale = target / smallerDim;
+
+  let width = Math.round(streamWidth * scale);
+  let height = Math.round(streamHeight * scale);
+
+  // Round down to even numbers (required for video processing)
+  width = width - (width % 2);
+  height = height - (height % 2);
+
+  if (width < 2 || height < 2) {
+    return null;
+  }
+
+  return { width, height };
+}
+
+export function detectCameraAudioFeatures(
+  metadata: LiveStreamMetadata | null | undefined,
+  requireSecureContext: boolean = true,
+): CameraAudioFeatures {
+  if (!metadata) {
+    return {
+      twoWayAudio: false,
+      audioOutput: false,
+    };
+  }
+
+  const twoWayAudio =
+    (!requireSecureContext || window.isSecureContext) &&
+    (metadata.producers ?? []).find(
+      (prod) =>
+        prod.medias &&
+        prod.medias.find((media) => media.includes("audio, sendonly")) !=
+          undefined,
+    ) != undefined;
+
+  const audioOutput =
+    (metadata.producers ?? []).find(
+      (prod) =>
+        prod.medias &&
+        prod.medias.find((media) => media.includes("audio, recvonly")) !=
+          undefined,
+    ) != undefined;
+
+  return {
+    twoWayAudio: !!twoWayAudio,
+    audioOutput: !!audioOutput,
+  };
+}
+
+const MEDIA_DIRECTIONS = new Set(["sendonly", "recvonly", "sendrecv"]);
+
+// "sendonly" is the two-way-talk backchannel, not playback audio.
+const PLAYBACK_DIRECTIONS = new Set(["recvonly", "sendrecv"]);
+
+// Parses a go2rtc media line: "audio, recvonly, OPUS/48000/2" -> ["OPUS"],
+// stripping the "/clockrate[/channels]" suffix.
+function codecsFromMedia(media: string): string[] {
+  const parts = media.split(",").map((p) => p.trim());
+  return parts
+    .slice(1)
+    .filter((p) => !MEDIA_DIRECTIONS.has(p.toLowerCase()))
+    .map((p) => p.split("/")[0].toUpperCase());
+}
+
+function mediaDirection(media: string): string | undefined {
+  return media
+    .split(",")
+    .map((p) => p.trim().toLowerCase())
+    .find((p) => MEDIA_DIRECTIONS.has(p));
+}
+
+function codecsForKind(
+  metadata: LiveStreamMetadata | null | undefined,
+  kind: "video" | "audio",
+  directions?: Set<string>,
+): string[] {
+  if (!metadata) return [];
+  const codecs = new Set<string>();
+  for (const producer of metadata.producers ?? []) {
+    for (const media of producer.medias ?? []) {
+      if (!media.trim().toLowerCase().startsWith(kind)) continue;
+      if (directions) {
+        const direction = mediaDirection(media);
+        if (!direction || !directions.has(direction)) continue;
+      }
+      codecsFromMedia(media).forEach((c) => codecs.add(c));
+    }
+  }
+  return Array.from(codecs);
+}
+
+export function getStreamVideoCodecs(
+  metadata: LiveStreamMetadata | null | undefined,
+): string[] {
+  return codecsForKind(metadata, "video");
+}
+
+// go2rtc exposes a WebRTC-capable playback codec only when one is configured
+// (e.g. an opus transcode) or the camera streams G.711 natively.
+export function getPlaybackAudioCodecs(
+  metadata: LiveStreamMetadata | null | undefined,
+): string[] {
+  return codecsForKind(metadata, "audio", PLAYBACK_DIRECTIONS);
+}
+
+const REPLAY_CAMERA_PREFIX = "_replay_";
+
+/**
+ * Check if a camera name is a debug replay camera.
+ *
+ * @param name - The camera name to check
+ * @returns true if the camera is a replay camera
+ */
+export function isReplayCamera(name: string): boolean {
+  return name.startsWith(REPLAY_CAMERA_PREFIX);
+}
+
+const HEVC_CODEC_NAMES = ["hevc", "h265"];
+
+function isHevcCodec(codec?: string): boolean {
+  return HEVC_CODEC_NAMES.includes((codec ?? "").trim().toLowerCase());
+}
+
+function isRecordingStream(stream: StreamConfig): boolean {
+  return stream.roles.includes("record") || stream.roles.includes("record_sub");
+}
+
+/**
+ * First recording stream probed as H.265. The other record output's codec
+ * doesn't matter: ffmpeg drops `-tag:v hvc1` on anything that isn't HEVC.
+ */
+export function hevcRecordingStreamId(
+  streams: StreamConfig[],
+): string | undefined {
+  return streams.find(
+    (s) => isRecordingStream(s) && isHevcCodec(s.testResult?.videoCodec),
+  )?.id;
+}

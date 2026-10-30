@@ -1,0 +1,135 @@
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class ExportModel(BaseModel):
+    """Model representing a single export."""
+
+    id: str = Field(description="Unique identifier for the export")
+    camera: str = Field(description="Camera name associated with this export")
+    name: str = Field(description="Friendly name of the export")
+    date: float = Field(description="Unix timestamp when the export was created")
+    video_path: str = Field(description="File path to the exported video")
+    thumb_path: str = Field(description="File path to the export thumbnail")
+    in_progress: bool = Field(
+        description="Whether the export is currently being processed"
+    )
+    export_case_id: str | None = Field(
+        default=None, description="ID of the export case this export belongs to"
+    )
+    retain_indefinitely: bool = Field(
+        default=False,
+        description="Whether this exported asset is permanently protected",
+    )
+
+
+class ProtectedExportResponse(BaseModel):
+    """A real protected exported asset, not a navigation bookmark."""
+
+    success: bool
+    message: str | None = None
+    protected_id: str
+
+
+class StartExportResponse(BaseModel):
+    """Response model for starting an export."""
+
+    success: bool = Field(description="Whether the export was started successfully")
+    message: str = Field(description="Status or error message")
+    export_id: str | None = Field(
+        default=None, description="The export ID if successfully started"
+    )
+    status: str | None = Field(
+        default=None,
+        description="Queue status for the export job",
+    )
+
+
+class BatchExportResultModel(BaseModel):
+    """Per-item result for a batch export request."""
+
+    camera: str = Field(description="Camera name for this export attempt")
+    export_id: str | None = Field(
+        default=None,
+        description="The export ID when the export was successfully queued",
+    )
+    success: bool = Field(description="Whether the export was successfully queued")
+    status: str | None = Field(
+        default=None,
+        description="Queue status for this camera export",
+    )
+    error: str | None = Field(
+        default=None,
+        description="Validation or queueing error for this item, if any",
+    )
+    item_index: int | None = Field(
+        default=None,
+        description="Zero-based index of this result within the request items list",
+    )
+    client_item_id: str | None = Field(
+        default=None,
+        description="Opaque client-supplied item identifier echoed from the request",
+    )
+
+
+class BatchExportResponse(BaseModel):
+    """Response model for starting an export batch."""
+
+    export_case_id: str | None = Field(
+        default=None,
+        description="Export case ID associated with the batch",
+    )
+    export_ids: list[str] = Field(description="Export IDs successfully queued")
+    results: list[BatchExportResultModel] = Field(
+        description="Per-item batch export results"
+    )
+
+
+class ExportJobModel(BaseModel):
+    """Model representing a queued or running export job."""
+
+    id: str = Field(description="Unique identifier for the export job")
+    job_type: str = Field(description="Job type")
+    status: str = Field(description="Current job status")
+    camera: str = Field(description="Camera associated with this export job")
+    name: str | None = Field(
+        default=None,
+        description="Friendly name for the export",
+    )
+    export_case_id: str | None = Field(
+        default=None,
+        description="ID of the export case this export belongs to",
+    )
+    request_start_time: float = Field(description="Requested export start time")
+    request_end_time: float = Field(description="Requested export end time")
+    start_time: float | None = Field(
+        default=None,
+        description="Unix timestamp when execution started",
+    )
+    end_time: float | None = Field(
+        default=None,
+        description="Unix timestamp when execution completed",
+    )
+    error_message: str | None = Field(
+        default=None,
+        description="Error message for failed jobs",
+    )
+    results: dict[str, Any] | None = Field(
+        default=None,
+        description="Result metadata for completed jobs",
+    )
+    current_step: str = Field(
+        default="queued",
+        description="Current execution step (queued, preparing, encoding, encoding_retry, finalizing)",
+    )
+    progress_percent: float = Field(
+        default=0.0,
+        description="Progress percentage of the current step (0.0 - 100.0)",
+    )
+
+
+ExportJobsResponse = list[ExportJobModel]
+
+
+ExportsResponse = list[ExportModel]

@@ -1,0 +1,57 @@
+﻿[
+    {
+        "url":  "https://www.onvif.org/ver20/media/wsdl/media.wsdl",
+        "path":  "www.onvif.org\\ver20\\media\\wsdl\\media.wsdl",
+        "sha256":  "0a1d59636910074ec4fb80b9a43f398ce208f4e38a6c7dff414eb6ddba3a1613"
+    },
+    {
+        "url":  "https://www.onvif.org/ver10/schema/onvif.xsd",
+        "path":  "www.onvif.org\\ver10\\schema\\onvif.xsd",
+        "sha256":  "1de6e9dd31a18a6773b611c4f7eaa0528f219098ddfc883b380802aa9a7ff647"
+    },
+    {
+        "url":  "https://www.onvif.org/ver10/schema/common.xsd",
+        "path":  "www.onvif.org\\ver10\\schema\\common.xsd",
+        "sha256":  "d945394fe823febcd873ed8444ccfd73f3b5234d6dfbf0e151a33f5e611b5077"
+    },
+    {
+        "url":  "http://docs.oasis-open.org/wsn/b-2.xsd",
+        "path":  "docs.oasis-open.org\\wsn\\b-2.xsd",
+        "sha256":  "26f0c7aa9a3719412e2e3275bc80320edb4b2dc9783bf2bb08c6378f4ca681fe"
+    },
+    {
+        "url":  "http://www.w3.org/2005/08/addressing/ws-addr.xsd",
+        "path":  "www.w3.org\\2005\\08\\addressing\\ws-addr.xsd",
+        "sha256":  "af806cc9af2514e9b0b07efe4e4dc42a32dad8ac08473dc025136207779d5ee9"
+    },
+    {
+        "url":  "http://docs.oasis-open.org/wsrf/bf-2.xsd",
+        "path":  "docs.oasis-open.org\\wsrf\\bf-2.xsd",
+        "sha256":  "7863ccf5b21105c374a405968266fa18ecd0ebe0f7b9b19cd9378656229ff468"
+    },
+    {
+        "url":  "http://docs.oasis-open.org/wsn/t-1.xsd",
+        "path":  "docs.oasis-open.org\\wsn\\t-1.xsd",
+        "sha256":  "ad5db0432a3885d1c8a574ba6b4058193af29bc971232c4bb6b31f8295fe3329"
+    },
+    {
+        "url":  "http://www.w3.org/2001/xml.xsd",
+        "path":  "www.w3.org\\2001\\xml.xsd",
+        "sha256":  "61960fb3131e38022caad5360e2f33a3382578ab3c80cd58bd74320ede61b20c"
+    },
+    {
+        "url":  "https://www.w3.org/2005/05/xmlmime",
+        "path":  "www.w3.org\\2005\\05\\xmlmime",
+        "sha256":  "330ab79ecdd3a8628f12ef4cbe34351e448f9b9231bacad339881ce1a61237a2"
+    },
+    {
+        "url":  "https://www.w3.org/2003/05/soap-envelope",
+        "path":  "www.w3.org\\2003\\05\\soap-envelope",
+        "sha256":  "3ae8caa9a74e83528cc0e1a59fc12784435e8e0086e890d0e1b04d881c079bec"
+    },
+    {
+        "url":  "https://www.w3.org/2004/08/xop/include",
+        "path":  "www.w3.org\\2004\\08\\xop\\include",
+        "sha256":  "dff9100efce4afb21de0cf673fb7fad103672a169862ab0f12e34c312b20e60d"
+    }
+]

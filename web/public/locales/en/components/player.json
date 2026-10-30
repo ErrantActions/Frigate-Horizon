@@ -1,0 +1,228 @@
+{
+  "liveWarning": {
+    "notLive": "Not live",
+    "notLiveDescription": "Live playback is unavailable, has stopped updating, or is showing a still image.",
+    "delayed": "Delayed",
+    "delayedDescription": "Playback is more than 10 seconds behind the received video."
+  },
+  "adaptive": {
+    "minimumUnavailable": "Live video could not be played at the minimum allowed quality. Retry or check the connection."
+  },
+  "resolutionBadge": {
+    "value": "{{width}} x {{height}}",
+    "label": "Live video resolution: {{width}} x {{height}}",
+    "hide": "Hide live resolution badges"
+  },
+  "metadata": {
+    "title": "Review metadata",
+    "camera": "Camera",
+    "reviewId": "Review ID",
+    "severity": "Severity",
+    "severities": {
+      "alert": "Alert",
+      "detection": "Detection",
+      "significant_motion": "Significant motion"
+    },
+    "timezone": "Time zone",
+    "start": "Start time",
+    "end": "End time",
+    "ongoing": "Ongoing or end time not recorded",
+    "labels": "Labels",
+    "audio": "Audio labels",
+    "identities": "Stored identities",
+    "zones": "Zones",
+    "summary": "Stored review summary",
+    "storage": "Indexed recording storage",
+    "tiers": {
+      "local": "Local",
+      "archive": "Archive",
+      "mixed": "Local + archive"
+    },
+    "storageHint": "Storage is based on indexed review metadata, not a guarantee of file availability or complete coverage.",
+    "events": "Retained event metadata",
+    "limit_one": "{{count}} linked event ID; requesting {{requested}} (limit {{limit}}).",
+    "limit_other": "{{count}} linked event IDs; requesting {{requested}} (limit {{limit}}).",
+    "noEvents": "This review has no linked event IDs.",
+    "noReview": "No loaded review event overlaps this camera's playback time.",
+    "unknown": "Not available",
+    "loading": "Loading retained event metadata...",
+    "failed": "Retained event metadata could not be loaded. Check connectivity and camera permissions.",
+    "retry": "Retry metadata",
+    "missing_one": "{{count}} requested event is not available in the retained, camera-authorized results.",
+    "missing_other": "{{count}} requested events are not available in the retained, camera-authorized results.",
+    "event": "Retained event {{id}}",
+    "eventId": "Event ID",
+    "confidence": "Stored detection confidence",
+    "identityConfidence": "Stored identity confidence",
+    "plate": "Stored license plate",
+    "box": "Stored bounding box",
+    "region": "Stored detection region",
+    "area": "Stored area",
+    "source": "Event source type",
+    "model": "Model hash",
+    "detector": "Detector type",
+    "modelType": "Model type",
+    "geometryHint": "Geometry is stored event data, not a live overlay. Coordinates and area retain their original units and may differ by event source or model version.",
+    "timingHint": "Times are inferred from Frigate's recording and event timeline. They are not a verified camera clock or proof of capture-time clock accuracy.",
+    "weather": "Capture-time weather",
+    "adaptive": "Capture-time adaptive-grid history",
+    "notRecorded": "Unavailable: historical context is not yet recorded. Current conditions are not historical evidence."
+  },
+  "bookmarks": {
+    "title": "Bookmarks and incident notes",
+    "sharing": "Shared with users authorized for this camera. Only the creator and administrators can edit or delete.",
+    "retention": "Bookmarks do not protect video from retention. An indexed recording may be unavailable if storage is offline; range coverage is not guaranteed. Save evidence separately when it must be retained.",
+    "add": "Add bookmark",
+    "name": "Bookmark title",
+    "notes": "Incident notes",
+    "save": "Save bookmark",
+    "cancel": "Cancel",
+    "loadFailed": "Bookmarks could not be loaded. Check connectivity, permissions, and backend support.",
+    "saveFailed": "Bookmark saving could not be confirmed. Your draft has been kept; refresh the list before retrying.",
+    "deleteFailed": "Bookmark deletion could not be confirmed. Refresh the list before retrying.",
+    "refreshFailed": "The bookmark list could not be refreshed. Check the connection and try again.",
+    "conflict": "This bookmark changed or was deleted elsewhere. Refresh the list and reopen the current bookmark before editing or deleting.",
+    "retry": "Refresh bookmarks",
+    "loading": "Loading bookmarks...",
+    "empty": "No bookmarks in this camera's selected range.",
+    "author": "Created by {{owner}}",
+    "range": "{{start}} to {{end}}",
+    "indexed": "Recording metadata exists at the bookmark time.",
+    "missing": "No retained recording metadata at this bookmark time.",
+    "open": "Go to bookmark",
+    "edit": "Edit bookmark",
+    "delete": "Delete bookmark",
+    "confirmDelete": "Confirm bookmark deletion",
+    "deleteHint": "Delete this note only. Recording files and protection are unchanged.",
+    "previous": "Previous bookmarks",
+    "next": "Next bookmarks"
+  },
+  "investigation": {
+    "tools": "Investigation tools",
+    "active": "Active investigation",
+    "invalidActivity": "Some review items have invalid timestamps and cannot be used for activity navigation. Recording playback remains available.",
+    "title": "Recording investigation controls",
+    "share": "Copy timestamp link",
+    "markIn": "Mark In",
+    "markOut": "Mark Out",
+    "loop": "Loop selection",
+    "export": "Export selection",
+    "clear": "Clear selection",
+    "range": "Selected: {{start}} to {{end}}",
+    "inpoint": "In point: {{time}}",
+    "navigation": "Activity navigation and exact time",
+    "skip": "Skip between loaded review events",
+    "skipHint": "Uses only loaded review items for this camera, with five seconds of context. Missing or filtered events may be skipped. Original footage is unchanged. Playback stops after the last loaded event. Looping disables this mode.",
+    "jump": "Go to capture date/time",
+    "go": "Go",
+    "jumpExample": "2026-10-20T12:30:00-05:00",
+    "jumpHint": "Enter an ISO date/time with an explicit UTC offset or Z, within the selected date range.",
+    "invalidTime": "Enter a valid date/time with a time-zone offset inside the selected range."
+  },
+  "navigation": {
+    "previousEvent": "Previous event",
+    "nextEvent": "Next event"
+  },
+  "controls": {
+    "play": "Play recording",
+    "pause": "Pause recording",
+    "rewind": "Rewind 10 seconds",
+    "forward": "Forward 10 seconds"
+  },
+  "diagnostics": {
+    "title": "Playback diagnostics",
+    "mode": "Playback: {{mode}}",
+    "modes": { "original": "Original", "compatibility": "Compatible copy" },
+    "tier": "Recording location: {{tier}}",
+    "tiers": { "local": "Local", "archive": "Archive", "unknown": "Unknown" },
+    "firstFrame": "Source to first frame: {{value}}",
+    "seek": "Latest seek to frame: {{value}}",
+    "stalls_one": "{{count}} stall, {{seconds}} seconds stalled",
+    "stalls_other": "{{count}} stalls, {{seconds}} seconds stalled",
+    "buffer": "Buffered: {{seconds}} s; target: {{target}}",
+    "seconds": "{{value}} s",
+    "frames": "Dropped frames: {{dropped}} / {{total}}",
+    "loads_one": "{{count}} source load",
+    "loads_other": "{{count}} source loads",
+    "timingHint": "Startup measures media-source setup to a presented frame, excluding suspended time. Browsers without frame callbacks use decoded-frame events. Metadata lookup is not included. Buffer targets are bounded, but complete segments can exceed the target.",
+    "background": "Keep recorded video playing in background",
+    "pending": "Not measured",
+    "ms": "{{value}} ms"
+  },
+  "noRecordingsFoundForThisTime": "No recordings found for this time",
+  "storage": {
+    "archived": "Archived",
+    "archiveDescription": "This recording is stored on archive storage."
+  },
+  "audioFallback": "Your browser could not decode the recorded audio. Playing the original video without sound instead of converting it to H.264. Recording audio repair can normalize eligible older audio, but some browsers may still need a different player. The original recording is unchanged.",
+  "liveAudioFallback": "This browser could not initialize live audio. Playing the original video without sound. Toggle audio off and on to retry.",
+  "playbackFailed": "Recording playback failed. Try another time or open the original recording in a compatible player.",
+  "compatibility": {
+    "disabled": "Review compatibility playback is disabled by an administrator. This recording must play in its original format.",
+    "liveDisabled": "The original Live stream could not play. Live compatibility fallback is disabled by an administrator.",
+    "preparing": "Preparing browser-compatible playback. Original recordings are unchanged.",
+    "playing": "Compatible playback: H.264/AAC, up to 720p and 15 fps. Original recordings are unchanged.",
+    "statusWarning": "Playback status could not be refreshed. Buffered playback may continue.",
+    "metadataFailed": "Recording information could not be loaded. Check the server connection and try again.",
+    "cleanupFailed": "Playback cleanup could not be confirmed. The temporary session has a bounded expiry.",
+    "retry": "Retry playback"
+  },
+  "noPreviewFound": "No Preview Found",
+  "noPreviewFoundFor": "No Preview Found for {{cameraName}}",
+  "submitFrigatePlus": {
+    "title": "Submit this frame to Frigate+?",
+    "submit": "Submit",
+    "previewError": "Could not load snapshot preview. The recording may not be available at this time."
+  },
+  "livePlayerRequiredIOSVersion": "iOS 17.1 or greater is required for this live stream type.",
+  "streamOffline": {
+    "title": "Stream Offline",
+    "desc": "No frames have been received on the {{cameraName}} <code>detect</code> stream, check error logs"
+  },
+  "cameraOff": "Camera is off",
+  "quality": {
+    "auto": "Auto",
+    "autoLow": "Playing low quality (limited bandwidth)",
+    "autoLowCodec": "Playing low quality (Original not supported by this browser)",
+    "autoLowSaveData": "Playing low quality (data saver)",
+    "main": "Original",
+    "sub": "Low",
+    "notSupportedBrowser": "Not supported by this browser",
+    "label": "Quality",
+    "noAudio": "No audio",
+    "audioRate": "{{rate}} kHz audio",
+    "audioCodecRate": "{{codec}} {{rate}} kHz",
+    "noRecordings": "No recordings in this time range"
+  },
+  "stats": {
+    "streamType": {
+      "title": "Stream Type:",
+      "short": "Type"
+    },
+    "bandwidth": {
+      "title": "Bandwidth:",
+      "short": "Bandwidth"
+    },
+    "totalFrames": "Total Frames:",
+    "droppedFrames": {
+      "title": "Dropped Frames:",
+      "short": {
+        "title": "Dropped",
+        "value": "{{droppedFrames}} frames"
+      }
+    },
+    "decodedFrames": "Decoded Frames:",
+    "droppedFrameRate": "Dropped Frame Rate:",
+    "stream": "Stream:",
+    "streamAuto": "{{stream}} (auto)"
+  },
+  "toast": {
+    "success": {
+      "submittedFrigatePlus": "Successfully submitted frame to Frigate+"
+    },
+    "error": {
+      "submitFrigatePlusFailed": "Failed to submit frame to Frigate+",
+      "playRecordingsFailed": "Failed to play recordings (error {{code}}): {{message}}"
+    }
+  }
+}

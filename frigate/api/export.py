@@ -1,0 +1,1397 @@
+"""Export apis."""
+
+import asyncio
+import datetime
+import logging
+import os
+import random
+import string
+import time
+import zipfile
+from collections import deque
+from collections.abc import Iterator
+from pathlib import Path
+from urllib.parse import quote
+
+import psutil
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from pathvalidate import sanitize_filename
+from peewee import DatabaseError, DoesNotExist, IntegrityError
+from playhouse.shortcuts import model_to_dict
+
+from frigate.api.auth import (
+    allow_any_authenticated,
+    get_allowed_cameras_for_filter,
+    get_current_user,
+    require_camera_access,
+    require_role,
+)
+from frigate.api.defs.request.batch_export_body import (
+    BatchExportBody,
+    BatchExportItem,
+)
+from frigate.api.defs.request.export_bulk_body import (
+    ExportBulkDeleteBody,
+    ExportBulkReassignBody,
+)
+from frigate.api.defs.request.export_case_body import (
+    ExportCaseCreateBody,
+    ExportCaseUpdateBody,
+)
+from frigate.api.defs.request.export_recordings_body import (
+    ExportRecordingsBody,
+    ExportRecordingsCustomBody,
+)
+from frigate.api.defs.request.export_rename_body import ExportRenameBody
+from frigate.api.defs.response.export_case_response import (
+    ExportCaseModel,
+    ExportCasesResponse,
+)
+from frigate.api.defs.response.export_response import (
+    BatchExportResponse,
+    ExportJobModel,
+    ExportJobsResponse,
+    ExportModel,
+    ExportsResponse,
+    ProtectedExportResponse,
+    StartExportResponse,
+)
+from frigate.api.defs.response.generic_response import GenericResponse
+from frigate.api.defs.tags import Tags
+from frigate.api.media_auth import deny_response_for_media_uri
+from frigate.api.notification import _native_image_account, native_image_user
+from frigate.const import CLIPS_DIR, EXPORT_DIR
+from frigate.jobs.export import (
+    ExportJob,
+    ExportQueueFullError,
+    available_export_queue_slots,
+    cancel_queued_export_jobs_for_case,
+    get_export_job,
+    list_active_export_jobs,
+    start_export_job,
+)
+from frigate.models import Export, ExportCase, Previews, Recordings, User
+from frigate.record.archive import storage_lock
+from frigate.record.export import (
+    DEFAULT_TIME_LAPSE_FFMPEG_ARGS,
+    DEFAULT_TIME_LAPSE_FFMPEG_INPUT_ARGS,
+    ChaptersEnum,
+    ExportStreamEnum,
+    PlaybackSourceEnum,
+    export_video_path,
+    validate_ffmpeg_args,
+)
+from frigate.record.export_metadata import ExportMetadataCategory
+from frigate.record.export_protection import (
+    ExportProtectionConflict,
+    ExportProtectionDenied,
+    protect_export_asset,
+    protected_export_exists,
+)
+from frigate.record.export_timestamps import ExportTimestampMode
+from frigate.util.path import sanitize_contained_path
+from frigate.util.recording_coverage import recording_overlap
+from frigate.util.time import is_current_hour
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=[Tags.export])
+
+
+def _generate_id(length: int = 12) -> str:
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
+
+
+def _generate_export_id(camera_name: str) -> str:
+    return f"{camera_name}_{_generate_id(6)}"
+
+
+def _create_export_case_record(
+    name: str,
+    description: str | None,
+) -> ExportCase:
+    now = datetime.datetime.fromtimestamp(time.time())
+    return ExportCase.create(
+        id=_generate_id(),
+        name=name,
+        description=description,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _validate_camera_name(request: Request, camera_name: str) -> JSONResponse | None:
+    if camera_name and request.app.frigate_config.cameras.get(camera_name):
+        return None
+
+    return JSONResponse(
+        content={"success": False, "message": f"{camera_name} is not a valid camera."},
+        status_code=404,
+    )
+
+
+def _validate_export_case(export_case_id: str | None) -> JSONResponse | None:
+    if export_case_id is None:
+        return None
+
+    try:
+        ExportCase.get(ExportCase.id == export_case_id)
+    except DoesNotExist:
+        return JSONResponse(
+            content={"success": False, "message": "Export case not found"},
+            status_code=404,
+        )
+
+    return None
+
+
+def _sanitize_existing_image(
+    request: Request,
+    image_path: str | None,
+) -> tuple[str | None, JSONResponse | None]:
+    if not image_path:
+        return None, None
+
+    existing_image = sanitize_contained_path(image_path, CLIPS_DIR)
+
+    # CLIPS_DIR is shared by every camera, so the caller must also be allowed
+    # to read the image.
+    if existing_image is not None and deny_response_for_media_uri(
+        f"/clips/{quote(os.path.relpath(existing_image, CLIPS_DIR))}",
+        request.headers.get("remote-role"),
+        request.app.frigate_config,
+    ):
+        existing_image = None
+
+    if existing_image is None:
+        return None, JSONResponse(
+            content={"success": False, "message": "Invalid image path"},
+            status_code=400,
+        )
+
+    return existing_image, None
+
+
+def _no_recordings_message(stream: ExportStreamEnum) -> str:
+    if stream == ExportStreamEnum.auto:
+        return "No recordings found for time range"
+
+    return f"No {stream.value} stream recordings found for time range"
+
+
+def _validate_export_source(
+    camera_name: str,
+    start_time: float,
+    end_time: float,
+    playback_source: PlaybackSourceEnum,
+    stream: ExportStreamEnum = ExportStreamEnum.auto,
+) -> str | None:
+    if playback_source == PlaybackSourceEnum.recordings:
+        query = Recordings.select().where(
+            recording_overlap(start_time, end_time) & (Recordings.camera == camera_name)
+        )
+
+        # a pinned export reads only that stream, so the other stream's
+        # coverage must not make the range look exportable
+        if stream != ExportStreamEnum.auto:
+            query = query.where(Recordings.stream_type == stream.value)
+
+        if query.count() <= 0:
+            return _no_recordings_message(stream)
+
+        return None
+
+    previews_count = (
+        Previews.select()
+        .where(
+            Previews.start_time.between(start_time, end_time)
+            | Previews.end_time.between(start_time, end_time)
+            | ((start_time > Previews.start_time) & (end_time < Previews.end_time))
+        )
+        .where(Previews.camera == camera_name)
+        .count()
+    )
+
+    if not is_current_hour(start_time) and previews_count <= 0:
+        return "No previews found for time range"
+
+    return None
+
+
+def _get_item_recording_export_errors(
+    request: Request,
+    items: list[BatchExportItem],
+    stream: ExportStreamEnum = ExportStreamEnum.auto,
+) -> dict[int, str]:
+    """Return {item_index: error message} for items with invalid state.
+
+    Checks camera configuration and recording presence per item. Groups by
+    camera and issues one query per unique camera covering that camera's
+    full requested range, then checks each item's range against the returned
+    rows in Python. This avoids O(N) DB round-trips on large batches.
+    """
+    configured_cameras = request.app.frigate_config.cameras
+    errors: dict[int, str] = {}
+
+    # Validate camera configuration first
+    item_ranges_by_camera: dict[str, list[tuple[int, float, float]]] = {}
+    for index, item in enumerate(items):
+        if not configured_cameras.get(item.camera):
+            errors[index] = f"{item.camera} is not a valid camera."
+            continue
+        item_ranges_by_camera.setdefault(item.camera, []).append(
+            (index, item.start_time, item.end_time)
+        )
+
+    if not item_ranges_by_camera:
+        return errors
+
+    # For each camera, fetch recordings that cover the union of ranges
+    for camera_name, indexed_ranges in item_ranges_by_camera.items():
+        min_start = min(r[1] for r in indexed_ranges)
+        max_end = max(r[2] for r in indexed_ranges)
+
+        query = Recordings.select(Recordings.start_time, Recordings.end_time).where(
+            Recordings.camera == camera_name,
+            recording_overlap(min_start, max_end),
+        )
+
+        # a pinned batch reads only that stream, so the other stream's
+        # coverage must not make an item look exportable
+        if stream != ExportStreamEnum.auto:
+            query = query.where(Recordings.stream_type == stream.value)
+
+        recording_ranges = list(query.iterator())
+
+        for index, start_time, end_time in indexed_ranges:
+            has_recording = any(
+                (
+                    start_time <= rec.start_time <= end_time
+                    or start_time <= rec.end_time <= end_time
+                    or (start_time > rec.start_time and end_time < rec.end_time)
+                )
+                for rec in recording_ranges
+            )
+            if not has_recording:
+                errors[index] = _no_recordings_message(stream)
+
+    return errors
+
+
+def _build_export_job(
+    camera_name: str,
+    start_time: float,
+    end_time: float,
+    friendly_name: str | None,
+    existing_image: str | None,
+    playback_source: PlaybackSourceEnum,
+    export_case_id: str | None,
+    ffmpeg_input_args: str | None = None,
+    ffmpeg_output_args: str | None = None,
+    cpu_fallback: bool = False,
+    chapters: ChaptersEnum | None = None,
+    stream: ExportStreamEnum = ExportStreamEnum.auto,
+    timestamp: ExportTimestampMode = ExportTimestampMode.none,
+    metadata_categories: tuple[ExportMetadataCategory, ...] = (),
+) -> ExportJob:
+    return ExportJob(
+        id=_generate_export_id(camera_name),
+        camera=camera_name,
+        name=friendly_name,
+        image_path=existing_image,
+        export_case_id=export_case_id,
+        request_start_time=int(start_time),
+        request_end_time=int(end_time),
+        playback_source=playback_source.value,
+        ffmpeg_input_args=ffmpeg_input_args,
+        ffmpeg_output_args=ffmpeg_output_args,
+        cpu_fallback=cpu_fallback,
+        chapters=chapters,
+        stream=stream,
+        timestamp=timestamp,
+        metadata_categories=metadata_categories,
+    )
+
+
+def _export_case_to_dict(case: ExportCase) -> dict[str, object]:
+    case_dict = model_to_dict(case)
+
+    for field in ("created_at", "updated_at"):
+        value = case_dict.get(field)
+        if isinstance(value, datetime.datetime):
+            case_dict[field] = value.timestamp()
+
+    return case_dict
+
+
+@router.get(
+    "/exports",
+    response_model=ExportsResponse,
+    dependencies=[Depends(allow_any_authenticated())],
+    summary="Get exports",
+    description="""Gets all exports from the database for cameras the user has access to.
+    Returns a list of exports ordered by date (most recent first).""",
+)
+def get_exports(
+    allowed_cameras: list[str] = Depends(get_allowed_cameras_for_filter),
+    export_case_id: str | None = None,
+    cameras: str | None = Query(default="all"),
+    start_date: float | None = None,
+    end_date: float | None = None,
+):
+    query = Export.select().where(Export.camera << allowed_cameras)
+
+    if export_case_id is not None:
+        if export_case_id == "unassigned":
+            query = query.where(Export.export_case.is_null(True))
+        else:
+            query = query.where(Export.export_case == export_case_id)
+
+    if cameras and cameras != "all":
+        requested = set(cameras.split(","))
+        filtered_cameras = list(requested.intersection(allowed_cameras))
+        if not filtered_cameras:
+            return JSONResponse(content=[])
+        query = query.where(Export.camera << filtered_cameras)
+
+    if start_date is not None:
+        query = query.where(Export.date >= start_date)
+
+    if end_date is not None:
+        query = query.where(Export.date <= end_date)
+
+    exports = query.order_by(Export.date.desc()).dicts().iterator()
+    return JSONResponse(content=[e for e in exports])
+
+
+@router.get(
+    "/cases",
+    response_model=ExportCasesResponse,
+    dependencies=[Depends(allow_any_authenticated())],
+    summary="Get export cases",
+    description="Gets all export cases from the database.",
+)
+def get_export_cases():
+    cases = ExportCase.select().order_by(ExportCase.created_at.desc()).iterator()
+    return JSONResponse(content=[_export_case_to_dict(case) for case in cases])
+
+
+@router.post(
+    "/cases",
+    response_model=ExportCaseModel,
+    dependencies=[Depends(require_role(["admin"]))],
+    summary="Create export case",
+    description="Creates a new export case.",
+)
+def create_export_case(body: ExportCaseCreateBody):
+    case = _create_export_case_record(body.name, body.description)
+    return JSONResponse(content=_export_case_to_dict(case))
+
+
+@router.get(
+    "/cases/{case_id}",
+    response_model=ExportCaseModel,
+    dependencies=[Depends(allow_any_authenticated())],
+    summary="Get a single export case",
+    description="Gets a specific export case by ID.",
+)
+def get_export_case(case_id: str):
+    try:
+        case = ExportCase.get(ExportCase.id == case_id)
+        return JSONResponse(content=_export_case_to_dict(case))
+    except DoesNotExist:
+        return JSONResponse(
+            content={"success": False, "message": "Export case not found"},
+            status_code=404,
+        )
+
+
+_ZIP_STREAM_CHUNK_SIZE = 1024 * 1024  # 1 MiB
+
+
+class _StreamingZipBuffer:
+    """File-like sink for ZipFile that exposes written bytes via drain().
+
+    ZipFile writes synchronously into this buffer; the generator drains the
+    queue between writes so StreamingResponse can yield bytes without
+    materializing the whole archive in memory.
+    """
+
+    def __init__(self) -> None:
+        self._queue: deque[bytes] = deque()
+        self._offset = 0
+
+    def write(self, data: bytes) -> int:
+        if data:
+            self._queue.append(bytes(data))
+            self._offset += len(data)
+        return len(data)
+
+    def tell(self) -> int:
+        return self._offset
+
+    def flush(self) -> None:
+        pass
+
+    def drain(self) -> Iterator[bytes]:
+        while self._queue:
+            yield self._queue.popleft()
+
+
+def _unique_archive_name(export: Export, used: set[str]) -> str:
+    """Zip entry name for an export, de-duplicated within the archive.
+
+    The on-disk name is the one the user sees either way: renaming an export
+    renames its file, so a zip entry and an individual download can't drift.
+    """
+    source = Path(export.video_path)
+    candidate = source.name
+
+    counter = 1
+    while candidate in used:
+        candidate = f"{source.stem}_{counter}{source.suffix}"
+        counter += 1
+
+    used.add(candidate)
+    return candidate
+
+
+def _stream_case_archive(exports: list[Export]) -> Iterator[bytes]:
+    """Yield bytes of a zip archive built from the given exports' mp4 files."""
+    buffer = _StreamingZipBuffer()
+    used_names: set[str] = set()
+
+    # ZIP_STORED: mp4 is already compressed, recompressing wastes CPU for ~0% size win.
+    with zipfile.ZipFile(
+        buffer,
+        mode="w",
+        compression=zipfile.ZIP_STORED,
+        allowZip64=True,
+    ) as archive:
+        for export in exports:
+            source = Path(export.video_path)
+            if not source.exists():
+                continue
+
+            arcname = _unique_archive_name(export, used_names)
+
+            with (
+                archive.open(arcname, mode="w", force_zip64=True) as entry,
+                source.open("rb") as src,
+            ):
+                while True:
+                    chunk = src.read(_ZIP_STREAM_CHUNK_SIZE)
+                    if not chunk:
+                        break
+
+                    entry.write(chunk)
+                    yield from buffer.drain()
+
+            yield from buffer.drain()
+
+    yield from buffer.drain()
+
+
+def _content_disposition(filename: str, ascii_fallback: str) -> str:
+    """Build an attachment Content-Disposition that survives non-ASCII names.
+
+    Header values are encoded as latin-1, so a name outside that range cannot
+    go in filename at all. RFC 6266 handles this with a pair: a plain ASCII
+    filename for old clients, plus a percent-encoded UTF-8 filename* that
+    every current browser prefers.
+    """
+    ascii_name = filename if filename.isascii() else ascii_fallback
+
+    return (
+        f'attachment; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    )
+
+
+@router.get(
+    "/cases/{case_id}/download",
+    dependencies=[Depends(allow_any_authenticated())],
+    summary="Download export case as zip",
+    description="Streams a zip archive containing every completed export's mp4 for the given case.",
+)
+def download_export_case(
+    case_id: str,
+    allowed_cameras: list[str] = Depends(get_allowed_cameras_for_filter),
+):
+    try:
+        case = ExportCase.get(ExportCase.id == case_id)
+    except DoesNotExist:
+        return JSONResponse(
+            content={"success": False, "message": "Export case not found"},
+            status_code=404,
+        )
+
+    exports = list(
+        Export.select()
+        .where(
+            Export.export_case == case_id,
+            ~Export.in_progress,
+            Export.camera << allowed_cameras,
+        )
+        .order_by(Export.date.asc())
+    )
+
+    if not exports:
+        return JSONResponse(
+            content={"success": False, "message": "No exports available to download."},
+            status_code=404,
+        )
+
+    archive_base = sanitize_filename(case.name) if case.name else ""
+    if not archive_base:
+        archive_base = case_id
+
+    return StreamingResponse(
+        _stream_case_archive(exports),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": _content_disposition(
+                f"{archive_base}.zip", f"{case_id}.zip"
+            ),
+        },
+    )
+
+
+@router.patch(
+    "/cases/{case_id}",
+    response_model=GenericResponse,
+    dependencies=[Depends(require_role(["admin"]))],
+    summary="Update export case",
+    description="Updates an existing export case.",
+)
+def update_export_case(case_id: str, body: ExportCaseUpdateBody):
+    try:
+        case = ExportCase.get(ExportCase.id == case_id)
+    except DoesNotExist:
+        return JSONResponse(
+            content={"success": False, "message": "Export case not found"},
+            status_code=404,
+        )
+
+    if body.name is not None:
+        case.name = body.name
+    if body.description is not None:
+        case.description = body.description
+
+    case.updated_at = datetime.datetime.fromtimestamp(time.time())
+
+    case.save()
+
+    return JSONResponse(
+        content={"success": True, "message": "Successfully updated export case."}
+    )
+
+
+@router.delete(
+    "/cases/{case_id}",
+    response_model=GenericResponse,
+    dependencies=[Depends(require_role(["admin"]))],
+    summary="Delete export case",
+    description="""Deletes an export case.\n    Exports that reference this case will have their export_case set to null.\n    """,
+)
+def delete_export_case(case_id: str, request: Request, delete_exports: bool = False):
+    try:
+        case = ExportCase.get(ExportCase.id == case_id)
+    except DoesNotExist:
+        return JSONResponse(
+            content={"success": False, "message": "Export case not found"},
+            status_code=404,
+        )
+
+    if delete_exports:
+        if (
+            Export.select()
+            .where(Export.export_case == case_id, Export.retain_indefinitely == True)
+            .exists()
+        ):
+            return JSONResponse(
+                {
+                    "success": False,
+                    "message": "Protected exports cannot be deleted with their case.",
+                },
+                status_code=409,
+            )
+        cancel_queued_export_jobs_for_case(request.app.frigate_config, case_id)
+
+        with storage_lock():
+            exports = list(Export.select().where(Export.export_case == case_id))
+            if protected_export_exists([export.id for export in exports]):
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "message": "Protected exports cannot be deleted with their case.",
+                    },
+                    status_code=409,
+                )
+            for export in exports:
+                Path(export.video_path).unlink(missing_ok=True)
+                if export.thumb_path:
+                    Path(export.thumb_path).unlink(missing_ok=True)
+                export.delete_instance()
+    else:
+        # Unassign exports from this case but keep the exports themselves
+        Export.update(export_case=None).where(Export.export_case == case_id).execute()
+
+    case.delete_instance()
+
+    return JSONResponse(
+        content={"success": True, "message": "Successfully deleted export case."}
+    )
+
+
+@router.get(
+    "/jobs/export",
+    response_model=ExportJobsResponse,
+    dependencies=[Depends(allow_any_authenticated())],
+    summary="Get active export jobs",
+    description="Gets queued and running export jobs.",
+)
+def get_active_export_jobs(
+    request: Request,
+    allowed_cameras: list[str] = Depends(get_allowed_cameras_for_filter),
+):
+    jobs = list_active_export_jobs(request.app.frigate_config)
+    return JSONResponse(
+        content=[job.to_dict() for job in jobs if job.camera in allowed_cameras]
+    )
+
+
+@router.get(
+    "/jobs/export/{export_id}",
+    response_model=ExportJobModel,
+    dependencies=[Depends(allow_any_authenticated())],
+    summary="Get export job status",
+    description="Gets queued, running, or completed status for a specific export job.",
+)
+async def get_export_job_status(export_id: str, request: Request):
+    job = get_export_job(request.app.frigate_config, export_id)
+    if job is None:
+        return JSONResponse(
+            content={"success": False, "message": "Job not found"},
+            status_code=404,
+        )
+
+    await require_camera_access(job.camera, request=request)
+
+    return JSONResponse(content=job.to_dict())
+
+
+@router.post(
+    "/exports/batch",
+    response_model=BatchExportResponse,
+    dependencies=[Depends(allow_any_authenticated())],
+    summary="Start recording export batch",
+    description=(
+        "Starts recording exports for a batch of items, each with its own camera "
+        "and time range, and assigns them to a single export case. Attaching to "
+        "an existing case is temporarily admin-only until case-level ACLs exist."
+    ),
+)
+def export_recordings_batch(
+    request: Request,
+    body: BatchExportBody,
+    allowed_cameras: list[str] = Depends(get_allowed_cameras_for_filter),
+    current_user: dict = Depends(get_current_user),
+):
+    if isinstance(current_user, JSONResponse):
+        return current_user
+
+    # Stopgap: attaching to an existing case remains admin-only until
+    # case-level ACLs exist. Non-admins can still create a fresh case
+    # as a side effect of queueing items they already have camera access to.
+    if body.export_case_id is not None and current_user["role"] != "admin":
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": "Only admins can attach exports to an existing case.",
+            },
+            status_code=403,
+        )
+
+    case_validation_error = _validate_export_case(body.export_case_id)
+    if case_validation_error is not None:
+        return case_validation_error
+
+    # Fail-closed camera access: any item referencing an inaccessible
+    # camera rejects the whole request. The UI's review list is already
+    # filtered by camera access, so reaching this branch implies a stale
+    # session or a crafted request — reject loudly rather than silently
+    # dropping items.
+    allowed_camera_set = set(allowed_cameras)
+    for item in body.items:
+        if item.camera not in allowed_camera_set:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": f"Cannot export from {item.camera}: access denied",
+                },
+                status_code=403,
+            )
+
+    # Sanitize each item's image_path up front. A bad path in any item
+    # kills the whole request, consistent with single-export behavior.
+    sanitized_images: list[str | None] = []
+    for item in body.items:
+        existing_image, image_validation_error = _sanitize_existing_image(
+            request, item.image_path
+        )
+        if image_validation_error is not None:
+            return image_validation_error
+        sanitized_images.append(existing_image)
+
+    item_errors = _get_item_recording_export_errors(request, body.items, body.stream)
+
+    queueable_indexes = [
+        index for index in range(len(body.items)) if index not in item_errors
+    ]
+
+    if not queueable_indexes:
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": (
+                    "No exports could be queued: no recordings found for the "
+                    "requested ranges."
+                ),
+            },
+            status_code=400,
+        )
+
+    # Preflight admission: reject the whole batch if we can't fit every
+    # queueable item. Prevents partial batches where the tail fails with
+    # "queue full" after we've already created a case.
+    if available_export_queue_slots(request.app.frigate_config) < len(
+        queueable_indexes
+    ):
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": "Export queue is full. Try again once current exports finish.",
+            },
+            status_code=503,
+        )
+
+    export_case = None
+    export_case_id = body.export_case_id
+    if export_case_id is None and body.new_case_name:
+        export_case = _create_export_case_record(
+            body.new_case_name,
+            body.new_case_description,
+        )
+        export_case_id = export_case.id
+
+    export_ids: list[str] = []
+    results: list[dict[str, str | None | bool | int]] = []
+    for index, item in enumerate(body.items):
+        if index in item_errors:
+            results.append(
+                {
+                    "camera": item.camera,
+                    "export_id": None,
+                    "success": False,
+                    "status": None,
+                    "error": item_errors[index],
+                    "item_index": index,
+                    "client_item_id": item.client_item_id,
+                }
+            )
+            continue
+
+        export_job = _build_export_job(
+            item.camera,
+            item.start_time,
+            item.end_time,
+            item.friendly_name,
+            sanitized_images[index],
+            PlaybackSourceEnum.recordings,
+            export_case_id,
+            chapters=request.app.frigate_config.cameras[
+                item.camera
+            ].record.export.chapters,
+            stream=body.stream,
+            timestamp=body.timestamp,
+            metadata_categories=tuple(body.metadata_categories),
+        )
+        try:
+            start_export_job(request.app.frigate_config, export_job)
+        except Exception:
+            logger.exception("Failed to queue export job %s", export_job.id)
+            results.append(
+                {
+                    "camera": item.camera,
+                    "export_id": None,
+                    "success": False,
+                    "status": None,
+                    "error": "Failed to queue export job",
+                    "item_index": index,
+                    "client_item_id": item.client_item_id,
+                }
+            )
+            continue
+
+        export_ids.append(export_job.id)
+        results.append(
+            {
+                "camera": item.camera,
+                "export_id": export_job.id,
+                "success": True,
+                "status": "queued",
+                "error": None,
+                "item_index": index,
+                "client_item_id": item.client_item_id,
+            }
+        )
+
+    if export_case is not None and not export_ids:
+        export_case.delete_instance()
+        export_case_id = None
+
+    return JSONResponse(
+        content={
+            "export_case_id": export_case_id,
+            "export_ids": export_ids,
+            "results": results,
+        },
+        status_code=202,
+    )
+
+
+@router.post(
+    "/export/{camera_name}/start/{start_time}/end/{end_time}",
+    response_model=StartExportResponse,
+    dependencies=[Depends(require_camera_access)],
+    summary="Start recording export",
+    description="""Starts an export of a recording for the specified time range.
+    The export can be from recordings or preview footage. Returns the export ID if
+    successful, or an error message if the camera is invalid or no recordings/previews
+    are found for the time range.""",
+)
+def export_recording(
+    request: Request,
+    camera_name: str,
+    start_time: float,
+    end_time: float,
+    body: ExportRecordingsBody,
+    current_user: dict = Depends(get_current_user),
+):
+    if isinstance(current_user, JSONResponse):
+        return current_user
+
+    camera_validation_error = _validate_camera_name(request, camera_name)
+    if camera_validation_error is not None:
+        return camera_validation_error
+
+    playback_source = body.source
+    if (
+        body.timestamp != ExportTimestampMode.none or body.metadata_categories
+    ) and playback_source != PlaybackSourceEnum.recordings:
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": "Timestamp labels require realtime recording footage",
+            },
+            status_code=422,
+        )
+    friendly_name = body.name
+    existing_image, image_validation_error = _sanitize_existing_image(
+        request, body.image_path
+    )
+    if image_validation_error is not None:
+        return image_validation_error
+
+    export_case_id = body.export_case_id
+
+    # a chapters value in the request body overrides the camera's export config
+    camera_config = request.app.frigate_config.cameras[camera_name]
+    chapters = (
+        body.chapters
+        if body.chapters is not None
+        else camera_config.record.export.chapters
+    )
+
+    # Attaching to an existing case requires admin. Single-export for
+    # cameras the user can access is otherwise non-admin; we only gate
+    # the case-attachment side effect.
+    if export_case_id is not None and current_user["role"] != "admin":
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": "Only admins can attach exports to an existing case.",
+            },
+            status_code=403,
+        )
+
+    case_validation_error = _validate_export_case(export_case_id)
+    if case_validation_error is not None:
+        return case_validation_error
+
+    source_error = _validate_export_source(
+        camera_name,
+        start_time,
+        end_time,
+        playback_source,
+        body.stream,
+    )
+    if source_error is not None:
+        return JSONResponse(
+            content={"success": False, "message": source_error},
+            status_code=400,
+        )
+
+    export_job = _build_export_job(
+        camera_name,
+        start_time,
+        end_time,
+        friendly_name,
+        existing_image,
+        playback_source,
+        export_case_id,
+        chapters=chapters,
+        stream=body.stream,
+        timestamp=body.timestamp,
+        metadata_categories=tuple(body.metadata_categories),
+    )
+    try:
+        start_export_job(request.app.frigate_config, export_job)
+    except ExportQueueFullError:
+        logger.warning("Export queue is full; rejecting %s", export_job.id)
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": "Export queue is full. Try again once current exports finish.",
+            },
+            status_code=503,
+        )
+
+    return JSONResponse(
+        content=(
+            {
+                "success": True,
+                "message": "Export queued.",
+                "export_id": export_job.id,
+                "status": "queued",
+            }
+        ),
+        status_code=202,
+    )
+
+
+@router.patch(
+    "/export/{event_id}/rename",
+    response_model=GenericResponse,
+    dependencies=[Depends(require_role(["admin"]))],
+    summary="Rename export",
+    description="""Renames an export.
+    NOTE: This changes the friendly name of the export, not the filename.
+    """,
+)
+async def export_rename(event_id: str, body: ExportRenameBody, request: Request):
+    try:
+        export: Export = Export.get(Export.id == event_id)
+        await require_camera_access(export.camera, request=request)
+    except DoesNotExist:
+        return JSONResponse(
+            content=(
+                {
+                    "success": False,
+                    "message": "Export not found.",
+                }
+            ),
+            status_code=404,
+        )
+
+    return await asyncio.to_thread(_rename_export_asset, export, body.name)
+
+
+def _rename_export_asset(previous: Export, name: str) -> JSONResponse:
+    """Keep path publication atomic with protection, deletion and orphan cleanup."""
+    with storage_lock():
+        export = Export.get_or_none(
+            Export.id == previous.id, Export.camera == previous.camera
+        )
+        if export is None:
+            return JSONResponse(
+                {"success": False, "message": "Export not found."}, status_code=404
+            )
+        if export.in_progress:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "Export is still being written and can't be renamed yet.",
+                },
+                status_code=400,
+            )
+        new_path = (
+            export.video_path
+            if export.retain_indefinitely
+            else export_video_path(name, export.id)
+        )
+        old_path = export.video_path
+        moved = new_path != old_path
+        if moved:
+            try:
+                os.rename(old_path, new_path)
+            except OSError:
+                logger.exception("Failed to rename export file for %s", export.id)
+                return JSONResponse(
+                    content={"success": False, "message": "Failed to rename export."},
+                    status_code=500,
+                )
+        export.name = name
+        export.video_path = new_path
+        try:
+            export.save(only=[Export.name, Export.video_path])
+        except DatabaseError as err:
+            if moved:
+                try:
+                    os.rename(new_path, old_path)
+                except OSError:
+                    logger.exception(
+                        "Failed to restore export asset after rename failure"
+                    )
+            if isinstance(err, IntegrityError):
+                logger.warning("Export %s cannot use the requested name", export.id)
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "message": "Another export already uses that name.",
+                    },
+                    status_code=409,
+                )
+            logger.exception("Failed to save renamed export %s", export.id)
+            return JSONResponse(
+                content={"success": False, "message": "Failed to rename export."},
+                status_code=500,
+            )
+    return JSONResponse(
+        content=(
+            {
+                "success": True,
+                "message": "Successfully renamed export.",
+            }
+        ),
+        status_code=200,
+    )
+
+
+@router.post(
+    "/export/custom/{camera_name}/start/{start_time}/end/{end_time}",
+    response_model=StartExportResponse,
+    dependencies=[Depends(require_camera_access)],
+    summary="Start custom recording export",
+    description="""Starts an export of a recording for the specified time range using custom FFmpeg arguments.
+    The export can be from recordings or preview footage. Returns the export ID if
+    successful, or an error message if the camera is invalid or no recordings/previews
+    are found for the time range. If ffmpeg_input_args and ffmpeg_output_args are not provided,
+    defaults to timelapse export settings.""",
+)
+def export_recording_custom(
+    request: Request,
+    camera_name: str,
+    start_time: float,
+    end_time: float,
+    body: ExportRecordingsCustomBody,
+):
+    camera_validation_error = _validate_camera_name(request, camera_name)
+    if camera_validation_error is not None:
+        return camera_validation_error
+
+    # Validate user-provided ffmpeg args to prevent injection and add to cases.
+    # Admin users are trusted and skip validation.
+    is_admin = request.headers.get("remote-role", "") == "admin"
+
+    playback_source = body.source
+    friendly_name = body.name
+    existing_image, image_validation_error = _sanitize_existing_image(
+        request, body.image_path
+    )
+    if image_validation_error is not None:
+        return image_validation_error
+    ffmpeg_input_args = body.ffmpeg_input_args
+    ffmpeg_output_args = body.ffmpeg_output_args
+    cpu_fallback = body.cpu_fallback
+
+    export_case_id = body.export_case_id
+
+    if export_case_id is not None and not is_admin:
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": "Only admins can attach exports to an existing case.",
+            },
+            status_code=403,
+        )
+
+    case_validation_error = _validate_export_case(export_case_id)
+    if case_validation_error is not None:
+        return case_validation_error
+
+    source_error = _validate_export_source(
+        camera_name,
+        start_time,
+        end_time,
+        playback_source,
+    )
+    if source_error is not None:
+        return JSONResponse(
+            content={"success": False, "message": source_error},
+            status_code=400,
+        )
+
+    if not is_admin:
+        for args_label, args_value in [
+            ("input", ffmpeg_input_args),
+            ("output", ffmpeg_output_args),
+        ]:
+            if args_value is not None:
+                valid, message = validate_ffmpeg_args(args_value)
+                if not valid:
+                    return JSONResponse(
+                        content=(
+                            {
+                                "success": False,
+                                "message": f"Invalid ffmpeg {args_label} arguments: {message}",
+                            }
+                        ),
+                        status_code=400,
+                    )
+
+    # Set default values if not provided (timelapse defaults)
+    if ffmpeg_input_args is None:
+        ffmpeg_input_args = DEFAULT_TIME_LAPSE_FFMPEG_INPUT_ARGS
+
+    if ffmpeg_output_args is None:
+        ffmpeg_output_args = DEFAULT_TIME_LAPSE_FFMPEG_ARGS
+
+    export_job = _build_export_job(
+        camera_name,
+        start_time,
+        end_time,
+        friendly_name,
+        existing_image,
+        playback_source,
+        export_case_id,
+        ffmpeg_input_args,
+        ffmpeg_output_args,
+        cpu_fallback,
+    )
+    try:
+        start_export_job(request.app.frigate_config, export_job)
+    except ExportQueueFullError:
+        logger.warning("Export queue is full; rejecting %s", export_job.id)
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": "Export queue is full. Try again once current exports finish.",
+            },
+            status_code=503,
+        )
+
+    return JSONResponse(
+        content=(
+            {
+                "success": True,
+                "message": "Export queued.",
+                "export_id": export_job.id,
+                "status": "queued",
+            }
+        ),
+        status_code=202,
+    )
+
+
+@router.get(
+    "/exports/{export_id}",
+    response_model=ExportModel,
+    dependencies=[Depends(allow_any_authenticated())],
+    summary="Get a single export",
+    description="""Gets a specific export by ID. The user must have access to the camera
+    associated with the export.""",
+)
+async def get_export(export_id: str, request: Request):
+    try:
+        export = Export.get(Export.id == export_id)
+        await require_camera_access(export.camera, request=request)
+        return JSONResponse(content=model_to_dict(export))
+    except DoesNotExist:
+        return JSONResponse(
+            content={"success": False, "message": "Export not found"},
+            status_code=404,
+        )
+
+
+@router.post(
+    "/exports/{export_id}/protect",
+    response_model=ProtectedExportResponse,
+    dependencies=[Depends(allow_any_authenticated())],
+    openapi_extra={"x-required-role": "admin"},
+)
+async def protect_native_export(
+    export_id: str, request: Request, user: dict = Depends(native_image_user)
+):
+    """Protect an actual exported asset with current account/camera authorization."""
+    current = await _native_image_account(request, user["username"])
+    if current["role"] != "admin":
+        raise HTTPException(
+            403, "Protecting exported evidence requires the current admin role"
+        )
+    if getattr(request.app.state, "native_export_protection", False) is not True:
+        raise HTTPException(
+            503,
+            "Export protection is unavailable until protection-safe recovery is verified",
+            headers={"Cache-Control": "private, no-store"},
+        )
+    export = await asyncio.to_thread(Export.get_or_none, Export.id == export_id)
+    if export is None:
+        raise HTTPException(404, "Export not found")
+    config = request.app.frigate_config
+    allowed = User.get_allowed_cameras(
+        current["role"], config.auth.roles, set(config.cameras)
+    )
+    if export.camera not in allowed:
+        raise HTTPException(403, "Export camera is not currently allowed")
+    try:
+        protected_id = await asyncio.to_thread(
+            protect_export_asset,
+            export_id,
+            export.camera,
+            current["username"],
+            lambda: request.app.frigate_config,
+        )
+    except ExportProtectionConflict:
+        raise HTTPException(409, "Export is not a complete protectable asset") from None
+    except FileNotFoundError:
+        raise HTTPException(404, "Export asset is unavailable") from None
+    except ExportProtectionDenied:
+        raise HTTPException(403, "Export protection authorization changed") from None
+    except OSError as error:
+        logger.error(
+            "Export protection filesystem verification failed (%s)",
+            type(error).__name__,
+        )
+        raise HTTPException(503, "Export asset verification is unavailable") from None
+    except DatabaseError as error:
+        logger.error("Export protection storage failed (%s)", type(error).__name__)
+        raise HTTPException(503, "Export protection storage is unavailable") from None
+    return JSONResponse(
+        {
+            "success": True,
+            "message": "Exported evidence is permanently protected",
+            "protected_id": protected_id,
+        },
+        headers={"Cache-Control": "private, no-store"},
+    )
+
+
+def _get_files_in_use() -> set[str]:
+    """Get set of export filenames currently in use by ffmpeg."""
+    files_in_use: set[str] = set()
+    for process in psutil.process_iter():
+        try:
+            if process.name() != "ffmpeg":
+                continue
+            file_list = process.open_files()
+            if file_list:
+                for nt in file_list:
+                    if nt.path.startswith(EXPORT_DIR):
+                        files_in_use.add(nt.path.split("/")[-1])
+        except psutil.Error:
+            continue
+    return files_in_use
+
+
+@router.post(
+    "/exports/delete",
+    response_model=GenericResponse,
+    dependencies=[Depends(require_role(["admin"]))],
+    summary="Bulk delete exports",
+    description="Deletes one or more exports by ID. All IDs must exist and none can be in-progress.",
+)
+def bulk_delete_exports(body: ExportBulkDeleteBody):
+    exports = list(Export.select().where(Export.id << body.ids))
+
+    if len(exports) != len(body.ids):
+        return JSONResponse(
+            content={"success": False, "message": "One or more exports not found."},
+            status_code=404,
+        )
+
+    files_in_use = _get_files_in_use()
+
+    for export in exports:
+        if export.video_path.split("/")[-1] in files_in_use:
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": "Can not delete in-progress export.",
+                },
+                status_code=400,
+            )
+
+    with storage_lock():
+        if protected_export_exists(body.ids):
+            return JSONResponse(
+                {
+                    "success": False,
+                    "message": "Protected exported evidence cannot be deleted.",
+                },
+                status_code=409,
+            )
+        exports = list(Export.select().where(Export.id.in_(body.ids)))
+        for export in exports:
+            Path(export.video_path).unlink(missing_ok=True)
+            if export.thumb_path:
+                Path(export.thumb_path).unlink(missing_ok=True)
+        Export.delete().where(Export.id << body.ids).execute()
+
+    return JSONResponse(
+        content={
+            "success": True,
+            "message": f"Successfully deleted {len(exports)} export(s).",
+        },
+        status_code=200,
+    )
+
+
+@router.post(
+    "/exports/reassign",
+    response_model=GenericResponse,
+    dependencies=[Depends(require_role(["admin"]))],
+    summary="Bulk reassign exports to a case",
+    description="Assigns or unassigns one or more exports to/from a case. All IDs must exist.",
+)
+def bulk_reassign_exports(body: ExportBulkReassignBody):
+    exports = list(Export.select().where(Export.id << body.ids))
+
+    if len(exports) != len(body.ids):
+        return JSONResponse(
+            content={"success": False, "message": "One or more exports not found."},
+            status_code=404,
+        )
+
+    if body.export_case_id is not None:
+        try:
+            ExportCase.get(ExportCase.id == body.export_case_id)
+        except DoesNotExist:
+            return JSONResponse(
+                content={"success": False, "message": "Export case not found."},
+                status_code=404,
+            )
+
+    Export.update(export_case=body.export_case_id).where(
+        Export.id << body.ids
+    ).execute()
+
+    return JSONResponse(
+        content={
+            "success": True,
+            "message": f"Successfully updated {len(exports)} export(s).",
+        },
+        status_code=200,
+    )

@@ -1,0 +1,208 @@
+export interface FrigateStats {
+  cameras: { [camera_name: string]: CameraStats };
+  cpu_usages: { [pid: string]: CpuStats };
+  detectors: { [detectorKey: string]: DetectorStats };
+  embeddings?: EmbeddingsStats;
+  gpu_usages?: { [gpuKey: string]: GpuStats };
+  npu_usages?: { [npuKey: string]: NpuStats };
+  processes: { [processKey: string]: ExtraProcessStats };
+  service: ServiceStats;
+  camera_fps: number;
+  process_fps: number;
+  skipped_fps: number;
+  detection_fps: number;
+}
+
+export type CameraStats = {
+  capture_mode?: "recording_only" | "decoded_detection";
+  pipeline?: {
+    tracker_fps: number;
+    output_dropped_fps: number;
+    sampled_at: number;
+  } | null;
+  dynamic_resolution?: {
+    enabled: boolean;
+    min_height: number;
+    max_height: number | null;
+    width: number;
+    height: number;
+    source_width: number;
+    source_height: number;
+    reason:
+      | "disabled"
+      | "warming_up"
+      | "maximum"
+      | "overloaded"
+      | "minimum"
+      | "recovering"
+      | "detection_disabled";
+    load: number | null;
+    sampled_at: number;
+    last_inference_time: number | null;
+    error?: "capture_geometry_pending" | null;
+  } | null;
+  audio_dBFPS: number;
+  audio_rms: number;
+  camera_fps: number;
+  capture_pid: number;
+  detection_enabled: number;
+  detection_fps: number;
+  ffmpeg_pid: number;
+  pid: number;
+  process_fps: number;
+  skipped_fps: number;
+  skipped_pct: number;
+  connection_quality: "excellent" | "fair" | "poor" | "unusable";
+  expected_fps: number;
+  reconnects_last_hour: number;
+  stalls_last_hour: number;
+  ffmpeg_cpu?: string;
+  capture_cpu?: string;
+  detect_cpu?: string;
+};
+
+export type CpuStats = {
+  cmdline: string;
+  cpu: string;
+  cpu_average: string;
+  mem: string;
+};
+
+export type DetectorStats = {
+  detection_start: number;
+  inference_speed: number;
+  pid: number;
+  temperature?: number;
+  cpu?: string;
+  mem?: string;
+};
+
+export type EmbeddingsStats = {
+  image_embedding_speed: number;
+  face_embedding_speed: number;
+  plate_recognition_speed: number;
+  text_embedding_speed: number;
+  face_recognition_speed?: number;
+  yolov9_plate_detection_speed?: number;
+  devices?: Record<string, string>;
+};
+
+export type ExtraProcessStats = {
+  pid: number;
+  cpu?: string;
+  mem?: string;
+};
+
+export type GpuVendor = "intel" | "amd" | "nvidia" | "rockchip" | "rpi";
+
+export type GpuStats = {
+  vendor?: GpuVendor;
+  gpu: string;
+  mem: string;
+  enc?: string;
+  dec?: string;
+  compute?: string;
+  pstate?: string;
+  temp?: number;
+  clients?: { [pid: string]: string };
+};
+
+export type NpuStats = {
+  npu: number;
+  mem: string;
+  temp?: number;
+};
+
+export type GpuInfo = "vainfo" | "nvinfo";
+
+export type ServiceStats = {
+  last_updated: number;
+  storage: { [path: string]: StorageStats };
+  uptime: number;
+  latest_version: string;
+  version: string;
+  retention_unmet: boolean;
+};
+
+export type StorageStats = {
+  free: number;
+  total: number;
+  used: number;
+  mount_type: string;
+  min_shm?: number;
+  shm_frame_count?: number;
+};
+
+export type StreamStorage = {
+  usage: number;
+  bandwidth: number | null;
+};
+
+export type CameraStorage = {
+  [camera: string]: {
+    friendly_name?: string;
+    bandwidth: number;
+    usage: number;
+    usage_percent: number;
+    // absent for stream types with no segments on disk
+    streams?: {
+      main?: StreamStorage;
+      sub?: StreamStorage;
+    };
+  };
+};
+
+export type ProblemSeverity = "error" | "warning" | "info";
+
+export type PotentialProblem = {
+  text: string;
+  severity: ProblemSeverity;
+  relevantLink?: string;
+};
+
+export type Vainfo = {
+  return_code: number;
+  stdout: string;
+  stderr: string;
+};
+
+export type Nvinfo = {
+  [key: string]: {
+    name: string;
+    driver: string;
+    cuda_compute: string;
+    vbios: string;
+  };
+};
+
+export type Ffprobe = {
+  return_code: number;
+  stderr: string;
+  stdout: {
+    programs: string[];
+    streams: {
+      avg_frame_rate: string;
+      codec_long_name: string;
+      height?: number;
+      width?: number;
+    }[];
+  };
+};
+
+export type KeyframeSeverity =
+  "ok" | "warning" | "error" | "unknown" | "record_disabled";
+
+export type KeyframeGapPattern = "fixed" | "variable";
+
+export type KeyframeAnalysis = {
+  severity: KeyframeSeverity;
+  stream_index?: number;
+  keyframe_count?: number;
+  max_gap?: number | null;
+  mean_gap?: number | null;
+  min_gap?: number | null;
+  pattern?: KeyframeGapPattern | null;
+  duration_observed?: number | null;
+  segment_time?: number;
+  thresholds?: { warning: number; error: number };
+};

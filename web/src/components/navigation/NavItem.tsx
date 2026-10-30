@@ -1,0 +1,80 @@
+import { NavLink, useMatch, useResolvedPath } from "react-router-dom";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { isDesktop } from "react-device-detect";
+import { TooltipPortal } from "@radix-ui/react-tooltip";
+import { NavData } from "@/types/navigation";
+import { IconType } from "react-icons";
+import { cn } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
+
+const variants = {
+  primary: {
+    active: "font-bold text-white bg-selected hover:bg-selected/80",
+    inactive: "text-secondary-foreground bg-secondary hover:bg-muted",
+  },
+  secondary: {
+    active: "font-bold text-selected",
+    inactive: "text-secondary-foreground",
+  },
+};
+
+type NavItemProps = {
+  className?: string;
+  item: NavData;
+  Icon: IconType;
+  onClick?: () => void;
+  large?: boolean;
+};
+
+export default function NavItem({
+  className,
+  item,
+  Icon,
+  onClick,
+  large,
+}: NavItemProps) {
+  const { t } = useTranslation(["common"]);
+  const resolvedPath = useResolvedPath(item.url);
+  const isActive = useMatch({
+    path: resolvedPath.pathname,
+    end: resolvedPath.pathname === "/",
+  });
+  if (item.enabled == false) {
+    return;
+  }
+
+  const content = (
+    <NavLink
+      to={item.url}
+      aria-label={t(item.title)}
+      onClick={onClick}
+      className={cn(
+        "flex flex-col items-center justify-center rounded-lg p-[6px]",
+        className,
+        large && "size-12",
+        variants[item.variant ?? "primary"][isActive ? "active" : "inactive"],
+      )}
+    >
+      <Icon className={large ? "size-6" : "size-5"} />
+    </NavLink>
+  );
+
+  if (isDesktop) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{content}</TooltipTrigger>
+        <TooltipPortal>
+          <TooltipContent side="right">
+            <p>{t(item.title)}</p>
+          </TooltipContent>
+        </TooltipPortal>
+      </Tooltip>
+    );
+  }
+
+  return content;
+}

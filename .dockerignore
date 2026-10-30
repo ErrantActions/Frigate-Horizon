@@ -1,0 +1,25 @@
+README.md
+docs/
+.gitignore
+debug
+config/
+*.pyc
+.git
+core
+*.mp4
+*.jpg
+*.db
+*.ts
+
+web/dist/
+web/node_modules/
+web/.npm
+# Apple APNs provider keys must not enter build contexts.
+*.p8
+*.pem
+*.key
+**/secrets/
+**/__pycache__/
+**/node_modules/
+**/%SystemDrive%/
+.copilot/

@@ -1,0 +1,207 @@
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { HiDotsHorizontal } from "react-icons/hi";
+import { useApiHost } from "@/api";
+import { baseUrl } from "@/api/baseUrl";
+import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+import { Event } from "@/types/event";
+import { REVIEW_PADDING } from "@/types/review";
+import { FrigateConfig } from "@/types/frigateConfig";
+import { useCallback, useState } from "react";
+import { useIsAdmin } from "@/hooks/use-is-admin";
+import axios from "axios";
+import { toast } from "sonner";
+import { Button } from "../ui/button";
+
+type EventMenuProps = {
+  event: Event;
+  config?: FrigateConfig;
+  onOpenUpload?: (e: Event) => void;
+  onOpenSimilarity?: (e: Event) => void;
+  isSelected?: boolean;
+  onToggleSelection?: (event: Event | undefined) => void;
+};
+
+export default function EventMenu({
+  event,
+  config,
+  onOpenUpload,
+  onOpenSimilarity,
+  isSelected = false,
+  onToggleSelection,
+}: EventMenuProps) {
+  const apiHost = useApiHost();
+  const navigate = useNavigate();
+  const { t } = useTranslation(["views/explore", "views/replay"]);
+  const [isOpen, setIsOpen] = useState(false);
+  const isAdmin = useIsAdmin();
+  const [isStarting, setIsStarting] = useState(false);
+
+  const handleObjectSelect = () => {
+    if (isSelected) {
+      onToggleSelection?.(undefined);
+    } else {
+      onToggleSelection?.(event);
+    }
+  };
+
+  const handleDebugReplay = useCallback(
+    (event: Event) => {
+      setIsStarting(true);
+
+      axios
+        .post("debug_replay/start", {
+          camera: event.camera,
+          start_time: (event.start_time ?? 0) - REVIEW_PADDING,
+          end_time: (event.end_time ?? Date.now() / 1000) + REVIEW_PADDING,
+        })
+        .then((response) => {
+          if (response.status === 202 || response.status === 200) {
+            navigate("/replay");
+          }
+        })
+        .catch((error) => {
+          const errorMessage =
+            error.response?.data?.message ||
+            error.response?.data?.detail ||
+            "Unknown error";
+
+          if (error.response?.status === 409) {
+            toast.error(
+              t("dialog.toast.alreadyActive", { ns: "views/replay" }),
+              {
+                position: "top-center",
+                closeButton: true,
+                dismissible: false,
+                action: (
+                  <a
+                    href={`${baseUrl}replay`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <Button>
+                      {t("dialog.toast.goToReplay", { ns: "views/replay" })}
+                    </Button>
+                  </a>
+                ),
+              },
+            );
+          } else {
+            toast.error(
+              t("dialog.toast.error", {
+                ns: "views/replay",
+                error: errorMessage,
+              }),
+              {
+                position: "top-center",
+              },
+            );
+          }
+        })
+        .finally(() => {
+          setIsStarting(false);
+        });
+    },
+    [navigate, t],
+  );
+
+  return (
+    <>
+      <span tabIndex={0} className="sr-only" />
+      <DropdownMenu modal={false} open={isOpen} onOpenChange={setIsOpen}>
+        <DropdownMenuTrigger>
+          <div className="rounded p-1 pr-2" role="button">
+            <HiDotsHorizontal className="size-4 text-muted-foreground" />
+          </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuPortal>
+          <DropdownMenuContent>
+            <DropdownMenuItem
+              className="cursor-pointer"
+              onSelect={handleObjectSelect}
+            >
+              {isSelected
+                ? t("itemMenu.hideObjectDetails.label")
+                : t("itemMenu.showObjectDetails.label")}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator className="my-0.5" />
+            <DropdownMenuItem
+              className="cursor-pointer"
+              onSelect={() => {
+                navigate(`/explore?event_id=${event.id}`, {
+                  state: { canGoBack: true },
+                });
+              }}
+            >
+              {t("details.item.button.viewInExplore")}
+            </DropdownMenuItem>
+            <DropdownMenuItem className="cursor-pointer" asChild>
+              <a
+                download
+                href={
+                  event.has_snapshot
+                    ? `${apiHost}api/events/${event.id}/snapshot.jpg?crop=0&bbox=1&timestamp=0`
+                    : `${apiHost}api/events/${event.id}/thumbnail.webp`
+                }
+              >
+                {t("itemMenu.downloadSnapshot.label")}
+              </a>
+            </DropdownMenuItem>
+
+            {isAdmin &&
+              event.has_snapshot &&
+              event.plus_id == undefined &&
+              event.data.type == "object" &&
+              config?.plus?.enabled && (
+                <DropdownMenuItem
+                  className="cursor-pointer"
+                  onSelect={() => {
+                    setIsOpen(false);
+                    onOpenUpload?.(event);
+                  }}
+                >
+                  {t("itemMenu.submitToPlus.label")}
+                </DropdownMenuItem>
+              )}
+
+            {event.has_snapshot && config?.semantic_search?.enabled && (
+              <DropdownMenuItem
+                className="cursor-pointer"
+                onSelect={() => {
+                  if (onOpenSimilarity) onOpenSimilarity(event);
+                  else
+                    navigate(
+                      `/explore?search_type=similarity&event_id=${event.id}`,
+                      { state: { canGoBack: true } },
+                    );
+                }}
+              >
+                {t("itemMenu.findSimilar.label")}
+              </DropdownMenuItem>
+            )}
+            {isAdmin && event.has_clip && (
+              <DropdownMenuItem
+                className="cursor-pointer"
+                disabled={isStarting}
+                onSelect={() => {
+                  handleDebugReplay(event);
+                }}
+              >
+                {isStarting
+                  ? t("dialog.starting", { ns: "views/replay" })
+                  : t("itemMenu.debugReplay.label")}
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenuPortal>
+      </DropdownMenu>
+    </>
+  );
+}

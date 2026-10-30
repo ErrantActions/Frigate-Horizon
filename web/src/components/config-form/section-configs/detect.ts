@@ -1,0 +1,264 @@
+import type { HiddenFieldContext } from "@/types/configForm";
+import { DEFAULT_SCENE, getSceneChoices } from "@/utils/modelUtil";
+import type { SectionConfigOverrides } from "./types";
+
+// picking a scene only means something when there is more than one choice,
+// which includes a saved scene that no model uses
+const hideSceneWithoutChoice = (ctx: HiddenFieldContext): string[] =>
+  getSceneChoices(ctx).length > 1 ? [] : ["scene"];
+
+const detect: SectionConfigOverrides = {
+  base: {
+    sectionDocs: "/configuration/camera_specific",
+    messages: [
+      {
+        key: "detect-disabled",
+        messageKey: "configMessages.detect.disabled",
+        severity: "info",
+        condition: (ctx) =>
+          ctx.level === "camera" && ctx.formData?.enabled === false,
+      },
+    ],
+    fieldMessages: [
+      {
+        key: "detect-resolution-not-multiple-of-four",
+        health: true,
+        field: "width",
+        position: "before",
+        messageKey: "configMessages.detect.resolutionShouldBeMultipleOfFour",
+        severity: "warning",
+        condition: (ctx) => {
+          const width = ctx.formData?.width as number | null | undefined;
+          const height = ctx.formData?.height as number | null | undefined;
+          const isEvenButNotFour = (v: unknown) =>
+            typeof v === "number" && v % 2 === 0 && v % 4 !== 0;
+          return isEvenButNotFour(width) || isEvenButNotFour(height);
+        },
+      },
+      {
+        key: "detect-global-resolution-multiple-cameras",
+        field: "width",
+        position: "before",
+        messageKey: "configMessages.detect.globalResolutionMultipleCameras",
+        severity: "info",
+        condition: (ctx) => {
+          if (ctx.level !== "global") return false;
+          const width = ctx.formData?.width as number | null | undefined;
+          const height = ctx.formData?.height as number | null | undefined;
+          if (typeof width !== "number" && typeof height !== "number") {
+            return false;
+          }
+          const cameraCount = Object.keys(ctx.fullConfig?.cameras ?? {}).length;
+          return cameraCount > 1;
+        },
+      },
+      {
+        key: "detect-resolution-high",
+        health: true,
+        field: "width",
+        position: "before",
+        messageKey: "configMessages.detect.resolutionHigh",
+        severity: "warning",
+        condition: (ctx) => {
+          const width = ctx.formData?.width as number | null | undefined;
+          const height = ctx.formData?.height as number | null | undefined;
+          if (typeof width !== "number" || typeof height !== "number") {
+            return false;
+          }
+          return Math.min(width, height) > 1080;
+        },
+      },
+      {
+        key: "detect-square-resolution",
+        health: true,
+        field: "width",
+        position: "before",
+        messageKey: "configMessages.detect.squareResolution",
+        severity: "warning",
+        condition: (ctx) => {
+          const width = ctx.formData?.width as number | null | undefined;
+          const height = ctx.formData?.height as number | null | undefined;
+          return (
+            typeof width === "number" &&
+            typeof height === "number" &&
+            width > 0 &&
+            width === height
+          );
+        },
+      },
+      {
+        key: "detect-aspect-ratio-mismatch",
+        field: "width",
+        position: "before",
+        messageKey: "configMessages.detect.aspectRatioMismatch",
+        severity: "warning",
+        condition: (ctx) => {
+          const newWidth = ctx.formData?.width as number | null | undefined;
+          const newHeight = ctx.formData?.height as number | null | undefined;
+          if (typeof newWidth !== "number" || typeof newHeight !== "number") {
+            return false;
+          }
+          const saved =
+            ctx.level === "camera"
+              ? ctx.fullCameraConfig?.detect
+              : ctx.fullConfig?.detect;
+          const savedWidth = saved?.width;
+          const savedHeight = saved?.height;
+          if (
+            typeof savedWidth !== "number" ||
+            typeof savedHeight !== "number" ||
+            savedWidth <= 0 ||
+            savedHeight <= 0
+          ) {
+            return false;
+          }
+          if (newWidth === savedWidth && newHeight === savedHeight) {
+            return false;
+          }
+          const newRatio = newWidth / newHeight;
+          const savedRatio = savedWidth / savedHeight;
+          return Math.abs(newRatio - savedRatio) > 0.01;
+        },
+      },
+      {
+        key: "detect-scene-without-model",
+        health: true,
+        field: "scene",
+        position: "after",
+        messageKey: "configMessages.detect.sceneWithoutModel",
+        severity: "warning",
+        docLink: "/configuration/object_detectors#running-more-than-one-model",
+        condition: (ctx) => {
+          const scene = ctx.formData?.scene as string | undefined;
+          if (!scene || scene === DEFAULT_SCENE) return false;
+          const models = ctx.fullConfig?.models;
+          if (!models) return false;
+          return !models.some((model) => model.scene === scene);
+        },
+      },
+      {
+        key: "fps-greater-than-five",
+        health: true,
+        field: "fps",
+        messageKey: "configMessages.detect.fpsGreaterThanFive",
+        severity: "info",
+        position: "after",
+        docLink: "/frigate/camera_setup#choosing-a-detect-frame-rate",
+        condition: (ctx) => {
+          if (ctx.level !== "camera" || !ctx.fullCameraConfig) return false;
+          if (ctx.fullCameraConfig.type === "lpr") return false;
+          const detectFps = ctx.formData?.fps as number | undefined;
+          const streamFps = ctx.fullCameraConfig.detect?.fps;
+          return detectFps != null && streamFps != null && detectFps > 5;
+        },
+      },
+      {
+        key: "max-frames-set",
+        field: "stationary.max_frames",
+        messageKey: "configMessages.detect.maxFramesSet",
+        severity: "warning",
+        position: "after",
+        condition: (ctx) => {
+          const stationary = ctx.formData?.stationary as
+            | {
+                max_frames?: {
+                  default?: number | null;
+                  objects?: Record<string, number>;
+                } | null;
+              }
+            | null
+            | undefined;
+          const maxFrames = stationary?.max_frames;
+          if (!maxFrames) return false;
+          return (
+            typeof maxFrames.default === "number" ||
+            (maxFrames.objects != null &&
+              Object.keys(maxFrames.objects).length > 0)
+          );
+        },
+      },
+    ],
+    fieldOrder: [
+      "enabled",
+      "scene",
+      "width",
+      "height",
+      "fps",
+      "dynamic_resolution",
+      "min_initialized",
+      "max_disappeared",
+      "annotation_offset",
+      "stationary",
+      "stationary.interval",
+      "stationary.threshold",
+      "stationary.max_frames",
+    ],
+    restartRequired: [],
+    fieldGroups: {
+      resolution: ["width", "height", "fps"],
+      tracking: ["min_initialized", "max_disappeared"],
+    },
+    uiSchema: {
+      "ui:before": { render: "DetectResolutionPresets" },
+      "ui:after": { render: "StationaryObjectsInspector" },
+      scene: {
+        "ui:options": {
+          enumI18nPrefix: "detectionModels.scenes",
+          enumI18nOptional: true,
+        },
+      },
+      annotation_offset: {
+        "ui:options": {
+          signed: true,
+        },
+      },
+    },
+    hiddenFields: ["enabled_in_config", hideSceneWithoutChoice],
+    advancedFields: [
+      "min_initialized",
+      "max_disappeared",
+      "annotation_offset",
+      "stationary",
+    ],
+  },
+  global: {
+    restartRequired: [
+      "scene",
+      "fps",
+      "width",
+      "height",
+      "min_initialized",
+      "max_disappeared",
+    ],
+  },
+  camera: {
+    restartRequired: [
+      "scene",
+      "fps",
+      "width",
+      "height",
+      "min_initialized",
+      "max_disappeared",
+    ],
+  },
+  replay: {
+    restartRequired: [],
+    fieldOrder: ["width", "height", "fps"],
+    fieldGroups: {
+      resolution: ["width", "height", "fps"],
+    },
+    hiddenFields: [
+      "dynamic_resolution",
+      "enabled",
+      "enabled_in_config",
+      "scene",
+      "min_initialized",
+      "max_disappeared",
+      "annotation_offset",
+      "stationary",
+    ],
+    advancedFields: [],
+  },
+};
+
+export default detect;

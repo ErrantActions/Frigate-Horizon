@@ -1,0 +1,68 @@
+from pydantic import Field
+
+from ..base import FrigateBaseModel
+
+__all__ = ["SnapshotsConfig", "RetainConfig"]
+
+
+class RetainConfig(FrigateBaseModel):
+    default: float = Field(
+        default=10,
+        title="Default retention",
+        description="Default number of days to retain snapshots.",
+    )
+    objects: dict[str, float] = Field(
+        default_factory=dict,
+        title="Object retention",
+        description="Per-object overrides for snapshot retention days.",
+    )
+
+
+class SnapshotsConfig(FrigateBaseModel):
+    native_person: bool = Field(
+        default=False,
+        title="Native person best-shot analysis",
+        description="After a verified camera-native person event, allow one 30-second Coral analysis window and save confirmed people's best cached snapshots. Requires a native person signal, recording-only mode and an Edge TPU model. Generic motion and doorbell events never substitute. Existing zones, quality, retention and notification opt-in still apply.",
+    )
+    enabled: bool = Field(
+        default=False,
+        title="Enable snapshots",
+        description="Enable or disable saving snapshots for all cameras; can be overridden per-camera.",
+    )
+    timestamp: bool = Field(
+        default=False,
+        title="Timestamp overlay",
+        description="Overlay a timestamp on snapshots from API.",
+    )
+    bounding_box: bool = Field(
+        default=True,
+        title="Bounding box overlay",
+        description="Draw bounding boxes for tracked objects on snapshots from API.",
+    )
+    crop: bool = Field(
+        default=False,
+        title="Crop snapshot",
+        description="Crop snapshots from API to the detected object's bounding box.",
+    )
+    required_zones: list[str] = Field(
+        default_factory=list,
+        title="Required zones",
+        description="Zones an object must enter for a snapshot to be saved.",
+    )
+    height: int | None = Field(
+        default=None,
+        title="Snapshot height",
+        description="Height (pixels) to resize snapshots from API to; leave empty to preserve original size.",
+    )
+    retain: RetainConfig = Field(
+        default_factory=RetainConfig,
+        title="Snapshot retention",
+        description="Retention settings for snapshots including default days and per-object overrides.",
+    )
+    quality: int = Field(
+        default=60,
+        title="Snapshot quality",
+        description="Encode quality for saved snapshots (0-100).",
+        ge=0,
+        le=100,
+    )

@@ -1,0 +1,209 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+# Do preparation tasks before starting the main services
+
+set -o errexit -o nounset -o pipefail
+
+function migrate_addon_config_dir() {
+    local home_assistant_config_dir="/homeassistant"
+
+    if ! mountpoint --quiet "${home_assistant_config_dir}"; then
+        # Not running as a Home Assistant Add-on
+        return 0
+    fi
+
+    local config_dir="/config"
+    local new_config_file="${config_dir}/config.yml"
+    local new_config_file_yaml="${new_config_file//.yml/.yaml}"
+    if [[ -f "${new_config_file_yaml}" || -f "${new_config_file}" ]]; then
+        # Already migrated
+        return 0
+    fi
+
+    local old_config_file="${home_assistant_config_dir}/frigate.yml"
+    local old_config_file_yaml="${old_config_file//.yml/.yaml}"
+    if [[ -f "${old_config_file}" ]]; then
+        :
+    elif [[ -f "${old_config_file_yaml}" ]]; then
+        old_config_file="${old_config_file_yaml}"
+        new_config_file="${new_config_file_yaml}"
+    else
+        # Nothing to migrate
+        return 0
+    fi
+    unset old_config_file_yaml new_config_file_yaml
+
+    echo "[INFO] Starting migration from Home Assistant config dir to Add-on config dir..." >&2
+
+    local db_path
+    db_path=$(yq -r '.database.path' "${old_config_file}")
+    if [[ "${db_path}" == "null" ]]; then
+        db_path="${config_dir}/frigate.db"
+    fi
+    if [[ "${db_path}" == "${config_dir}/"* ]]; then
+        # replace /config/ prefix with /homeassistant/
+        local old_db_path="${home_assistant_config_dir}/${db_path:8}"
+
+        if [[ -f "${old_db_path}" ]]; then
+            local new_db_dir
+            new_db_dir="$(dirname "${db_path}")"
+            echo "[INFO] Migrating database from '${old_db_path}' to '${new_db_dir}' dir..." >&2
+            mkdir -vp "${new_db_dir}"
+            mv -vf "${old_db_path}" "${new_db_dir}"
+            local db_file
+            for db_file in "${old_db_path}"-shm "${old_db_path}"-wal; do
+                if [[ -f "${db_file}" ]]; then
+                    mv -vf "${db_file}" "${new_db_dir}"
+                fi
+            done
+            unset db_file
+        fi
+    fi
+
+    local config_entry
+    for config_entry in .model.path .model.labelmap_path .ffmpeg.path .mqtt.tls_ca_certs .mqtt.tls_client_cert .mqtt.tls_client_key; do
+        local config_entry_path
+        config_entry_path=$(yq -r "${config_entry}" "${old_config_file}")
+        if [[ "${config_entry_path}" == "${config_dir}/"* ]]; then
+            # replace /config/ prefix with /homeassistant/
+            local old_config_entry_path="${home_assistant_config_dir}/${config_entry_path:8}"
+
+            if [[ -f "${old_config_entry_path}" ]]; then
+                local new_config_entry_entry
+                new_config_entry_entry="$(dirname "${config_entry_path}")"
+                echo "[INFO] Migrating ${config_entry} from '${old_config_entry_path}' to '${config_entry_path}'..." >&2
+                mkdir -vp "${new_config_entry_entry}"
+                mv -vf "${old_config_entry_path}" "${config_entry_path}"
+            fi
+        fi
+    done
+
+    local old_model_cache_path="${home_assistant_config_dir}/model_cache"
+    if [[ -d "${old_model_cache_path}" ]]; then
+        echo "[INFO] Migrating '${old_model_cache_path}' to '${config_dir}'..." >&2
+        mv -f "${old_model_cache_path}" "${config_dir}"
+    fi
+
+    echo "[INFO] Migrating other files from '${home_assistant_config_dir}' to '${config_dir}'..." >&2
+    local file
+    for file in .exports .jwt_secret .timeline .vacuum go2rtc; do
+        file="${home_assistant_config_dir}/${file}"
+        if [[ -f "${file}" ]]; then
+            mv -vf "${file}" "${config_dir}"
+        fi
+    done
+
+    echo "[INFO] Migrating config file from '${old_config_file}' to '${new_config_file}'..." >&2
+    mv -vf "${old_config_file}" "${new_config_file}"
+
+    echo "[INFO] Migration from Home Assistant config dir to Add-on config dir completed." >&2
+}
+
+function migrate_db_from_media_to_config() {
+    # Find config file in yml or yaml, but prefer yml
+    local config_file="${CONFIG_FILE:-"/config/config.yml"}"
+    local config_file_yaml="${config_file//.yml/.yaml}"
+    if [[ -f "${config_file}" ]]; then
+        :
+    elif [[ -f "${config_file_yaml}" ]]; then
+        config_file="${config_file_yaml}"
+    else
+        # Frigate will create the config file on startup
+        return 0
+    fi
+    unset config_file_yaml
+
+    local user_db_path
+    user_db_path=$(yq -r '.database.path' "${config_file}")
+    if [[ "${user_db_path}" == "null" ]]; then
+        local old_db_path="/media/frigate/frigate.db"
+        local new_db_dir="/config"
+        if [[ -f "${old_db_path}" ]]; then
+            echo "[INFO] Migrating database from '${old_db_path}' to '${new_db_dir}' dir..." >&2
+            if mountpoint --quiet "${new_db_dir}"; then
+                # /config is a mount point, move the db
+                mv -vf "${old_db_path}" "${new_db_dir}"
+                local db_file
+                for db_file in "${old_db_path}"-shm "${old_db_path}"-wal; do
+                    if [[ -f "${db_file}" ]]; then
+                        mv -vf "${db_file}" "${new_db_dir}"
+                    fi
+                done
+                unset db_file
+            else
+                echo "[ERROR] Trying to migrate the database path from '${old_db_path}' to '${new_db_dir}' dir, but '${new_db_dir}' is not a mountpoint, please mount the '${new_db_dir}' dir" >&2
+                return 1
+            fi
+        fi
+    fi
+}
+
+# remove leftover from last run, not normally needed, but just in case
+# used by the docker healthcheck
+rm -f /dev/shm/.frigate-is-stopping
+
+migrate_addon_config_dir
+migrate_db_from_media_to_config
+
+# Align volume ownership with the runtime user (one sweep per PUID/schema
+# change, guarded by the sentinel; see fix-ownership). The escape hatch
+# deletes the sentinel instead: ownership is never mutated while it is on,
+# so the next non-root boot must re-sweep whatever root created meanwhile.
+if [[ "$(id -u)" -eq 0 ]]; then
+    if [[ "${FRIGATE_RUN_AS_ROOT:-false}" == "true" ]]; then
+        rm -f /config/.permissions_version
+    else
+        # Only when a mount backs /media/frigate itself: under a parent /media
+        # mount, a dedicated volume added later would be shadowed and skipped
+        sentinel_args=(--sentinel /config/.permissions_version)
+        root_services_mode=""
+        if [[ -n "${FRIGATE_ROOT_SERVICES:-}" ]]; then
+            # || true: an all-empty list (",") fails grep -v and errexit would kill the boot
+            root_services_mode=$(tr ',' '\n' <<< "${FRIGATE_ROOT_SERVICES//[[:space:]]/}" | grep -v '^$' | sort -u | paste -sd, - || true)
+            if [[ -n "$root_services_mode" ]]; then
+                sentinel_args+=(--mode "$root_services_mode")
+            fi
+        fi
+        if ! awk '$2 == "/media/frigate" || $2 ~ /^\/media\/frigate\//' /proc/mounts | grep -q .; then
+            sentinel_args=()
+        fi
+        /usr/local/bin/fix-ownership "${sentinel_args[@]}" \
+            "${PUID:-1000}" "${PGID:-1000}" /config /media/frigate
+
+        # Root services write clips stragglers and caches mid-run; realign the
+        # small trees every boot. Recordings are chowned at create instead.
+        if [[ -n "$root_services_mode" ]]; then
+            # only sweep what exists; clips and exports appear after the first run
+            boot_sweep_paths=(/config)
+            for extra in /media/frigate/clips /media/frigate/exports; do
+                if [[ -d "$extra" ]]; then
+                    boot_sweep_paths+=("$extra")
+                fi
+            done
+            /usr/local/bin/fix-ownership \
+                "${PUID:-1000}" "${PGID:-1000}" "${boot_sweep_paths[@]}"
+        fi
+    fi
+fi
+
+# Must stay after the sweep, which reads an absent /media/frigate as an
+# unmounted volume rather than a swept one
+if [[ "$(id -u)" -eq 0 && ! -d /media/frigate ]]; then
+    # The image does not ship this directory, so on a read-only rootfs it can
+    # only come from a mount. Report that rather than failing under errexit.
+    if ! mkdir -p /media/frigate 2>/dev/null; then
+        echo "[ERROR] /media/frigate does not exist and could not be created, which is what happens with read_only: true and no recordings volume." >&2
+        echo "[ERROR] Mount a volume at /media/frigate." >&2
+        echo "[ERROR] See https://docs.frigate.video/configuration/non_root for the compatibility matrix." >&2
+        exit 1
+    fi
+    if [[ "${FRIGATE_RUN_AS_ROOT:-false}" != "true" ]]; then
+        chown "${PUID:-1000}:${PGID:-1000}" /media/frigate
+    fi
+fi
+
+# usually a tmpfs mount: root-owned on arrival and outside the swept volumes
+if [[ "$(id -u)" -eq 0 && "${FRIGATE_RUN_AS_ROOT:-false}" != "true" ]]; then
+    mkdir -p /tmp/cache
+    chown "${PUID:-1000}:${PGID:-1000}" /tmp/cache
+fi

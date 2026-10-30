@@ -1,0 +1,255 @@
+from enum import Enum
+
+from pydantic import Field, PrivateAttr
+
+from frigate.const import MAX_PRE_CAPTURE, STREAM_TYPE_SUB
+from frigate.review.types import SeverityEnum
+
+from ..base import FrigateBaseModel
+
+__all__ = [
+    "ChaptersEnum",
+    "RecordConfig",
+    "RecordExportConfig",
+    "RecordPreviewConfig",
+    "RecordQualityEnum",
+    "RecordSubConfig",
+    "EventsConfig",
+    "ReviewRetainConfig",
+    "RecordRetainConfig",
+    "RetainModeEnum",
+]
+
+
+class RecordRetainConfig(FrigateBaseModel):
+    days: float = Field(
+        default=0,
+        ge=0,
+        title="Retention days",
+        description="Days to retain recordings.",
+    )
+
+
+class RetainModeEnum(str, Enum):
+    all = "all"
+    motion = "motion"
+    active_objects = "active_objects"
+
+
+class ReviewRetainConfig(FrigateBaseModel):
+    days: float = Field(
+        default=10,
+        ge=0,
+        title="Retention days",
+        description="Number of days to retain recordings of detection events.",
+    )
+    mode: RetainModeEnum = Field(
+        default=RetainModeEnum.motion,
+        title="Retention mode",
+        description="Mode for retention: all (save all segments), motion (save segments with motion), or active_objects (save segments with active objects).",
+    )
+
+
+class EventsConfig(FrigateBaseModel):
+    pre_capture: int = Field(
+        default=5,
+        title="Pre-capture seconds",
+        description="Number of seconds before the detection event to include in the recording.",
+        le=MAX_PRE_CAPTURE,
+        ge=0,
+    )
+    post_capture: int = Field(
+        default=5,
+        ge=0,
+        title="Post-capture seconds",
+        description="Number of seconds after the detection event to include in the recording.",
+    )
+    retain: ReviewRetainConfig = Field(
+        default_factory=ReviewRetainConfig,
+        title="Event retention",
+        description="Retention settings for recordings of detection events.",
+    )
+
+
+class RecordQualityEnum(str, Enum):
+    very_low = "very_low"
+    low = "low"
+    medium = "medium"
+    high = "high"
+    very_high = "very_high"
+
+
+class RecordPreviewConfig(FrigateBaseModel):
+    quality: RecordQualityEnum = Field(
+        default=RecordQualityEnum.medium,
+        title="Preview quality",
+        description="Preview quality level (very_low, low, medium, high, very_high).",
+    )
+
+
+class ChaptersEnum(str, Enum):
+    none = "none"
+    recording_segments = "recording_segments"
+    review_items = "review_items"
+
+
+class RecordExportConfig(FrigateBaseModel):
+    hwaccel_args: str | list[str] = Field(
+        default="auto",
+        title="Export hwaccel args",
+        description="Hardware acceleration args to use for export/transcode operations.",
+    )
+    max_concurrent: int = Field(
+        default=3,
+        ge=1,
+        title="Maximum concurrent exports",
+        description="Maximum number of export jobs to process at the same time.",
+    )
+    chapters: ChaptersEnum = Field(
+        default=ChaptersEnum.review_items,
+        title="Chapter metadata to embed in exported recordings",
+    )
+
+
+class RecordSubConfig(FrigateBaseModel):
+    enabled: bool = Field(
+        default=False,
+        title="Enable sub stream recording",
+        description="Enable recording of a second, lower quality stream for adaptive quality playback and extended retention.",
+    )
+    continuous: RecordRetainConfig = Field(
+        default_factory=RecordRetainConfig,
+        title="Sub stream continuous retention",
+        description="Number of days to retain sub stream recordings regardless of tracked objects or motion.",
+    )
+    motion: RecordRetainConfig = Field(
+        default_factory=RecordRetainConfig,
+        title="Sub stream motion retention",
+        description="Number of days to retain sub stream recordings triggered by motion.",
+    )
+    alerts: ReviewRetainConfig = Field(
+        default_factory=ReviewRetainConfig,
+        title="Sub stream alert retention",
+        description="Retention settings for sub stream recordings of alerts.",
+    )
+    detections: ReviewRetainConfig = Field(
+        default_factory=ReviewRetainConfig,
+        title="Sub stream detection retention",
+        description="Retention settings for sub stream recordings of detections.",
+    )
+
+
+class RecordConfig(FrigateBaseModel):
+    _archive_retention_days: float = PrivateAttr(default=0)
+
+    enabled: bool = Field(
+        default=False,
+        title="Enable recording",
+        description="Enable or disable recording for all cameras; can be overridden per-camera.",
+    )
+    expire_interval: int = Field(
+        default=60,
+        title="Record cleanup interval",
+        description="Minutes between cleanup passes that remove expired recording segments.",
+    )
+    continuous: RecordRetainConfig = Field(
+        default_factory=RecordRetainConfig,
+        title="Continuous retention",
+        description="Number of days to retain recordings regardless of tracked objects or motion. Set to 0 if you only want to retain recordings of alerts and detections.",
+    )
+    motion: RecordRetainConfig = Field(
+        default_factory=RecordRetainConfig,
+        title="Motion retention",
+        description="Number of days to retain recordings triggered by motion regardless of tracked objects. Set to 0 if you only want to retain recordings of alerts and detections.",
+    )
+    detections: EventsConfig = Field(
+        default_factory=EventsConfig,
+        title="Detection retention",
+        description="Recording retention settings for detection events including pre/post capture durations.",
+    )
+    alerts: EventsConfig = Field(
+        default_factory=EventsConfig,
+        title="Alert retention",
+        description="Recording retention settings for alert events including pre/post capture durations.",
+    )
+    export: RecordExportConfig = Field(
+        default_factory=RecordExportConfig,
+        title="Export config",
+        description="Settings used when exporting recordings such as timelapse and hardware acceleration.",
+    )
+    preview: RecordPreviewConfig = Field(
+        default_factory=RecordPreviewConfig,
+        title="Preview config",
+        description="Settings controlling the quality of recording previews shown in the UI.",
+    )
+    sub: RecordSubConfig = Field(
+        default_factory=RecordSubConfig,
+        title="Sub stream recording",
+        description="Settings for recording a second, lower quality stream.",
+    )
+    enabled_in_config: bool | None = Field(
+        default=None,
+        title="Original recording state",
+        description="Indicates whether recording was enabled in the original static configuration.",
+    )
+
+    @property
+    def archive_retention_days(self) -> float:
+        """Return the internal minimum lifetime shared by recording metadata."""
+        return self._archive_retention_days
+
+    @archive_retention_days.setter
+    def archive_retention_days(self, value: float) -> None:
+        self._archive_retention_days = value
+
+    def stream_enabled(self, stream_type: str) -> bool:
+        """Whether the given record stream type should currently be recording."""
+        if stream_type == STREAM_TYPE_SUB:
+            return self.enabled and self.sub.enabled
+
+        return self.enabled
+
+    @property
+    def effective_alert_days(self) -> float:
+        """Alert retention extended to the sub stream window when sub is enabled.
+
+        Review items and tracked objects must stay visible for as long as
+        either stream still has recordings.
+        """
+        if self.sub.enabled:
+            return max(
+                self.alerts.retain.days,
+                self.sub.alerts.days,
+                self.archive_retention_days,
+            )
+        return max(self.alerts.retain.days, self.archive_retention_days)
+
+    @property
+    def effective_detection_days(self) -> float:
+        """Detection retention extended to the sub window when sub is enabled."""
+        if self.sub.enabled:
+            return max(
+                self.detections.retain.days,
+                self.sub.detections.days,
+                self.archive_retention_days,
+            )
+        return max(self.detections.retain.days, self.archive_retention_days)
+
+    @property
+    def event_pre_capture(self) -> int:
+        return max(
+            self.alerts.pre_capture,
+            self.detections.pre_capture,
+        )
+
+    def get_review_pre_capture(self, severity: SeverityEnum) -> int:
+        if severity == SeverityEnum.alert:
+            return self.alerts.pre_capture
+        else:
+            return self.detections.pre_capture
+
+    def get_review_post_capture(self, severity: SeverityEnum) -> int:
+        if severity == SeverityEnum.alert:
+            return self.alerts.post_capture
+        else:
+            return self.detections.post_capture

@@ -1,0 +1,118 @@
+import { ENV } from "@/env";
+import { FrigateConfig } from "@/types/frigateConfig";
+import { NavData } from "@/types/navigation";
+import { useMemo } from "react";
+import { isDesktop } from "react-device-detect";
+import { FaCompactDisc, FaVideo } from "react-icons/fa";
+import { IoSearch } from "react-icons/io5";
+import { LuConstruction, LuShieldCheck } from "react-icons/lu";
+import { MdCategory, MdChat, MdVideoLibrary } from "react-icons/md";
+import { TbFaceId } from "react-icons/tb";
+import useSWR from "swr";
+import { useIsAdmin } from "./use-is-admin";
+
+export const ID_LIVE = 1;
+export const ID_REVIEW = 2;
+export const ID_EXPLORE = 3;
+export const ID_EXPORT = 4;
+export const ID_PLAYGROUND = 5;
+export const ID_FACE_LIBRARY = 6;
+export const ID_CLASSIFICATION = 7;
+export const ID_CHAT = 8;
+export const ID_PROTECTED_MEDIA = 9;
+
+export default function useNavigation(
+  variant: "primary" | "secondary" = "primary",
+) {
+  const { data: config } = useSWR<FrigateConfig>("config", {
+    revalidateOnFocus: false,
+  });
+  const isAdmin = useIsAdmin();
+
+  const hasChatAgent = useMemo(
+    () =>
+      Object.values(config?.genai ?? {}).some((agent) =>
+        agent?.roles?.includes("chat"),
+      ),
+    [config?.genai],
+  );
+
+  return useMemo(
+    () =>
+      [
+        {
+          id: ID_LIVE,
+          variant,
+          icon: FaVideo,
+          title: "menu.live.title",
+          url: "/",
+        },
+        {
+          id: ID_REVIEW,
+          variant,
+          icon: MdVideoLibrary,
+          title: "menu.review",
+          url: "/review",
+        },
+        {
+          id: ID_EXPLORE,
+          variant,
+          icon: IoSearch,
+          title: "menu.explore",
+          url: "/explore",
+        },
+        {
+          id: ID_EXPORT,
+          variant,
+          icon: FaCompactDisc,
+          title: "menu.export",
+          url: "/export",
+        },
+        {
+          id: ID_PROTECTED_MEDIA,
+          group: "tools",
+          variant,
+          icon: LuShieldCheck,
+          title: "menu.protectedMedia",
+          url: "/protected",
+        },
+        {
+          id: ID_PLAYGROUND,
+          group: "tools",
+          variant,
+          icon: LuConstruction,
+          title: "menu.uiPlayground",
+          url: "/playground",
+          enabled: ENV !== "production",
+        },
+        {
+          id: ID_FACE_LIBRARY,
+          group: "tools",
+          variant,
+          icon: TbFaceId,
+          title: "menu.faceLibrary",
+          url: "/faces",
+          enabled: isDesktop && config?.face_recognition.enabled && isAdmin,
+        },
+        {
+          id: ID_CLASSIFICATION,
+          group: "tools",
+          variant,
+          icon: MdCategory,
+          title: "menu.classification",
+          url: "/classification",
+          enabled: isDesktop && isAdmin,
+        },
+        {
+          id: ID_CHAT,
+          group: "tools",
+          variant,
+          icon: MdChat,
+          title: "menu.chat",
+          url: "/chat",
+          enabled: isDesktop && isAdmin && hasChatAgent,
+        },
+      ] as NavData[],
+    [config?.face_recognition?.enabled, hasChatAgent, variant, isAdmin],
+  );
+}

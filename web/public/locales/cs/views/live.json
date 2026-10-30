@@ -1,0 +1,244 @@
+{
+  "documentTitle.withCamera": "{{camera}}-Živě-Frigate",
+  "lowBandwidthMode": "Režim nízké přenosové rychlosti",
+  "twoWayTalk": {
+    "enable": "Povolit obousměrný hovor",
+    "disable": "Zakázat obousměrný hovor",
+    "requiresWebRTC": "Obousměrný hovor vyžaduje WebRTC, které není dostupné",
+    "error": {
+      "microphone": "Obousměrný hovor nemohl získat přístup k mikrofonu",
+      "refused": "Nepodařilo se zahájit obousměrný hovor. Podrobnosti najdete v konzoli prohlížeče."
+    }
+  },
+  "cameraAudio": {
+    "enable": "Povolit zvuk kamery",
+    "disable": "Zakázat zvuk kamery"
+  },
+  "ptz": {
+    "move": {
+      "clickMove": {
+        "label": "Klikněte do snímku pro vycentrování kamery",
+        "enable": "Povolit pohyb kliknutím",
+        "disable": "Zakázat pohyb kliknutím",
+        "enableWithZoom": "Povolit přesun kliknutím / přiblížení tažením"
+      },
+      "left": {
+        "label": "Posunout PTZ kameru doleva"
+      },
+      "up": {
+        "label": "Posunout PTZ kameru nahoru"
+      },
+      "down": {
+        "label": "Posunout PTZ kameru dolů"
+      },
+      "right": {
+        "label": "Posunout PTZ kameru doprava"
+      }
+    },
+    "zoom": {
+      "in": {
+        "label": "Přiblížit PTZ kameru"
+      },
+      "out": {
+        "label": "Oddálit PTZ kameru"
+      }
+    },
+    "frame": {
+      "center": {
+        "label": "Klikněte do snímku pro vycentrování PTZ kamery"
+      }
+    },
+    "presets": "Předvolby PTZ kamery",
+    "focus": {
+      "in": {
+        "label": "Ostření PTZ kamery +"
+      },
+      "out": {
+        "label": "Ostření PTZ kamery −"
+      }
+    }
+  },
+  "muteCameras": {
+    "enable": "Ztlumit všechny kamery",
+    "disable": "Zrušit ztlumení u všech kamer"
+  },
+  "detect": {
+    "enable": "Povolit detekci",
+    "disable": "Zakázat detekci"
+  },
+  "recording": {
+    "enable": "Povolit záznam",
+    "disable": "Zakázat záznam",
+    "disabledInConfig": "Nejprve je nutné povolit záznam pro tuto kameru v nastavení."
+  },
+  "snapshots": {
+    "enable": "Povolit vytváření snímků",
+    "disable": "Zakázat vytváření snímků"
+  },
+  "audioDetect": {
+    "enable": "Povolit detekci zvuků",
+    "disable": "Zakázat detekci zvuků"
+  },
+  "autotracking": {
+    "enable": "Povolit automatické sledování",
+    "disable": "Zakázat automatické sledování"
+  },
+  "streamStats": {
+    "disable": "Skrýt statistiky streamu",
+    "enable": "Ukázat statistiky streamu"
+  },
+  "manualRecording": {
+    "title": "Ruční záznam",
+    "playInBackground": {
+      "label": "Přehrát na pozadí",
+      "desc": "Povolte tuto volbu pro pokračování streamování i když je přehrávač skrytý."
+    },
+    "showStats": {
+      "label": "Ukázat statistiky",
+      "desc": "Povolte tuto možnost pro zobrazení překryvných statistik v obraze streamu."
+    },
+    "debugView": "Náhled ladění",
+    "start": "Spustit ruční záznam",
+    "failedToStart": "Nepodařilo se spustit ruční záznam.",
+    "end": "Ukončit ruční záznam",
+    "failedToEnd": "Nepodařilo se ukončit ruční záznam.",
+    "started": "Ruční záznam byl spuštěn.",
+    "ended": "Ruční záznam byl ukončen.",
+    "recordDisabledTips": "Protože je v konfiguraci této kamery záznam zakázán nebo omezen, uloží se pouze snímek.",
+    "tips": "Stáhněte si aktuální snímek nebo spusťte ruční událost na základě nastavení uchování záznamu této kamery."
+  },
+  "streamingSettings": "Nastavení Streamování",
+  "audio": "Zvuk",
+  "suspend": {
+    "forTime": "Pozastavení na: "
+  },
+  "stream": {
+    "title": "Stream",
+    "audio": {
+      "tips": {
+        "title": "Pro tento stream musí kamera poskytovat zvuk a jeho přenos musí být nastaven v go2rtc."
+      },
+      "available": "Zvuk je dostupný pro tento stream",
+      "unavailable": "Zvuk není dostupný pro tento stream"
+    },
+    "twoWayTalk": {
+      "available": "Obousměrný hovor je dostupný pro tento stream",
+      "unavailable": "Obousměrný hovor není dostupný pro tento stream",
+      "tips": "Vaše zařízení musí tuto funkci podporovat a WebRTC musí být nakonfigurováno pro obousměrnou komunikaci."
+    },
+    "lowBandwidth": {
+      "resetStream": "Resetovat stream",
+      "tips": "Živý náhled je v režimu nízké přenosové rychlosti kvůli načítání do vyrovnávací paměti nebo chybám streamu.",
+      "force": {
+        "label": "Vynutit režim nízké přenosové rychlosti",
+        "desc": "Vždy přehrávat vestavěný stream Frigate s nízkou přenosovou rychlostí místo vybraného streamu. Funguje na jakémkoli připojení, ale má nižší kvalitu a nemá zvuk."
+      }
+    },
+    "playInBackground": {
+      "label": "Přehrát na pozadí",
+      "tips": "Povolte tuto volbu pro pokračování streamování i když je přehrávač skrytý."
+    },
+    "auto": {
+      "label": "Automaticky",
+      "tips": "Přepíná streamy podle kvality připojení",
+      "selected": "Automaticky · {{stream}}",
+      "floorLabel": "Nízká přenosová rychlost",
+      "retry": "Zkusit nejvyšší kvalitu",
+      "reason": {
+        "bandwidth": "Přehrává se {{stream}}, protože připojení nestačilo pro stream s vyšší kvalitou",
+        "codec": "Přehrává se {{stream}}, protože prohlížeč neumí přehrát stream s vyšší kvalitou",
+        "saveData": "Přehrává se {{stream}}, protože je zapnutá úspora dat",
+        "floor": "Přehrává se obraz s nízkou přenosovou rychlostí, protože připojení nestačilo pro žádný stream"
+      }
+    },
+    "debug": {
+      "picker": "V ladicím režimu nelze vybírat stream. Ladicí zobrazení vždy používá stream s rolí detect.",
+      "technology": "V ladicím režimu nelze vybírat technologii streamování."
+    },
+    "mode": "Technologie streamování",
+    "technology": {
+      "description": "Vyberte preferovanou technologii streamování. Při chybě přehrávání nebo sítě může Frigate přesto přejít do režimu nízké přenosové rychlosti.",
+      "name": {
+        "mse": "MSE",
+        "webrtc": "WebRTC",
+        "jsmpeg": "JSMpeg"
+      },
+      "tips": {
+        "mse": "Doporučená výchozí volba, široká kompatibilita a plynulé přehrávání",
+        "webrtc": "Vyžaduje další nastavení a není podporováno na všech zařízeních"
+      },
+      "unavailable": {
+        "browser": "Váš prohlížeč nepodporuje WebRTC.",
+        "not-configured": "WebRTC není nastaveno. Nastavte webrtc candidates nebo ice_servers v go2rtc.",
+        "unreachable": "WebRTC se nemohlo připojit. Ověřte dostupnost portu 8555 a správné nastavení serveru STUN/TURN.",
+        "video-codec": "Videokodek tohoto streamu není v tomto prohlížeči podporován přes WebRTC.",
+        "audio-codec": "Zvukový kodek tohoto streamu není podporován přes WebRTC. Pomocí go2rtc jej překódujte na opus nebo G.711.",
+        "checking": "Ověřování dostupnosti WebRTC…"
+      }
+    }
+  },
+  "cameraSettings": {
+    "title": "Nastavení kamery {{camera}}",
+    "objectDetection": "Detekce objektů",
+    "snapshots": "Snímky",
+    "audioDetection": "Detekce zvuku",
+    "autotracking": "Automatické sledování",
+    "recording": "Záznam",
+    "transcription": "Přepis zvuku",
+    "camera": "Kamera"
+  },
+  "history": {
+    "label": "Zobrazit historické záznamy"
+  },
+  "effectiveRetainMode": {
+    "modes": {
+      "all": "Vše",
+      "motion": "Pohyb",
+      "active_objects": "Aktivní objekty"
+    }
+  },
+  "editLayout": {
+    "exitEdit": "Ukončit Úpravu",
+    "label": "Upravit Rozložení",
+    "group": {
+      "label": "Upravit skupinu kamer"
+    }
+  },
+  "notifications": "Oznámení",
+  "transcription": {
+    "enable": "Povolit živý přepis zvuku",
+    "disable": "Zakázat živý přepis zvuku"
+  },
+  "snapshot": {
+    "takeSnapshot": "Stáhnout aktuální snímek",
+    "noVideoSource": "Pro snímek není k dispozici žádné video.",
+    "captureFailed": "Zachycení snímku selhalo.",
+    "downloadStarted": "Stažení snímku spuštěno."
+  },
+  "documentTitle": {
+    "default": "Živě – Frigate"
+  },
+  "camera": {
+    "turnOn": "Zapnout kameru",
+    "turnOff": "Vypnout kameru"
+  },
+  "noCameras": {
+    "title": "Nejsou nastaveny žádné kamery",
+    "description": "Začněte připojením kamery k Frigate.",
+    "buttonText": "Přidat kameru",
+    "restricted": {
+      "title": "Nejsou dostupné žádné kamery",
+      "description": "Nemáte oprávnění zobrazovat žádné kamery v této skupině."
+    },
+    "default": {
+      "title": "Nejsou nastaveny žádné kamery",
+      "description": "Začněte připojením kamery k Frigate.",
+      "buttonText": "Přidat kameru"
+    },
+    "group": {
+      "title": "Ve skupině nejsou žádné kamery",
+      "description": "Tato skupina kamer nemá žádné přiřazené nebo povolené kamery.",
+      "buttonText": "Spravovat skupiny"
+    }
+  }
+}

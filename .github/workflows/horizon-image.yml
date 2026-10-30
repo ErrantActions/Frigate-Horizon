@@ -1,0 +1,119 @@
+name: Horizon source image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      cold_build:
+        description: Ignore build cache and rebuild all image layers
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: horizon-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-test-publish:
+    if: github.repository == 'ErrantActions/Frigate-Horizon' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    env:
+      LOCAL_IMAGE: horizon-candidate:${{ github.sha }}
+      REGISTRY_IMAGE: ghcr.io/errantactions/frigate-horizon:sha-${{ github.sha }}
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check source publication boundaries
+        run: python3 tools/check_public_source.py
+      - name: Scan source for secrets
+        run: |
+          go run github.com/zricethezav/gitleaks/v8@v8.24.2 dir . \
+            --redact --no-banner --exit-code 1
+      - name: Generate build metadata
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          commit = os.environ["GITHUB_SHA"]
+          Path("frigate/version.py").write_text(f'VERSION = "0.19.0-{commit[:12]}-horizon"\n')
+          Path("web/.env").write_text(f"VITE_GIT_COMMIT_HASH={commit}\n")
+          PY
+      - name: Report build capacity
+        run: |
+          nproc
+          free -h
+          df -h .
+      - name: Set up dedicated Buildx builder
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build the complete image from this checkout
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: docker/main/Dockerfile
+          target: frigate
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.LOCAL_IMAGE }}
+          no-cache: ${{ github.event_name == 'workflow_dispatch' && inputs.cold_build }}
+          cache-from: type=gha,scope=horizon-amd64
+          cache-to: type=gha,mode=max,scope=horizon-amd64
+          labels: |
+            org.opencontainers.image.source=https://github.com/ErrantActions/Frigate-Horizon
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: false
+      - name: Test the actual image on isolated Linux
+        run: bash tools/check_horizon_image.sh "$LOCAL_IMAGE"
+      - name: Authenticate to GHCR only after tests pass
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the tested image with an immutable commit tag
+        run: |
+          set -euo pipefail
+          docker tag "$LOCAL_IMAGE" "$REGISTRY_IMAGE"
+          docker push "$REGISTRY_IMAGE"
+          docker image inspect "$REGISTRY_IMAGE" > "$RUNNER_TEMP/published-image.json"
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          value = json.loads((Path(os.environ["RUNNER_TEMP"]) / "published-image.json").read_text())[0]
+          references = [ref for ref in value["RepoDigests"] if re.fullmatch(
+              r"ghcr\.io/errantactions/frigate-horizon@sha256:[0-9a-f]{64}", ref)]
+          if len(references) != 1:
+              raise SystemExit("Published digest is missing or ambiguous")
+          receipt = {
+              "commit": os.environ["GITHUB_SHA"],
+              "image": references[0],
+              "image_id": value["Id"],
+              "linux_image_checks": "passed",
+              "production_acceptance": False,
+              "export_protection": False,
+          }
+          Path("horizon-image-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(f"Tested Linux image: `{references[0]}`\n\n")
+              summary.write("No cameras, production configuration, credentials or hardware were used.\n")
+              summary.write("Production acceptance and export-protection admission remain separate gates.\n")
+          PY
+      - name: Save the verified pull reference
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: horizon-image-receipt
+          path: horizon-image-receipt.json
+          if-no-files-found: error
+      - name: Remove registry session
+        if: always()
+        run: docker logout ghcr.io

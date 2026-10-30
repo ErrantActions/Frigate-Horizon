@@ -1,0 +1,11 @@
+diff --git a/internal/webrtc/webrtc.go b/internal/webrtc/webrtc.go
+--- a/internal/webrtc/webrtc.go
++++ b/internal/webrtc/webrtc.go
+@@ -120,6 +120,7 @@ func Init() {
+ 
+ 	// sync WebRTC server (two API versions)
+ 	api.HandleFunc("api/webrtc", syncHandler)
++	initHorizonOwned()
+ 
+ 	// WebRTC client
+ 	streams.HandleFunc("webrtc", streamsHandler)

@@ -1,0 +1,132 @@
+"""Shared helpers for GenAI providers and chat (OpenAI-style messages, tool call parsing)."""
+
+import io
+import json
+import logging
+from typing import Any
+
+from PIL import Image
+
+logger = logging.getLogger(__name__)
+
+
+def to_jpeg(img_bytes: bytes) -> bytes | None:
+    """Convert image bytes to JPEG.
+
+    Some provider image decoders (e.g. llama.cpp's STB) do not support WebP,
+    which is the format Frigate stores thumbnails in.
+    """
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        if img.mode != "RGB":
+            img = img.convert("RGB")  # type: ignore[assignment]
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+    except Exception as e:
+        logger.warning("Failed to convert image to JPEG: %s", e)
+        return None
+
+
+def synthetic_jpeg(width: int, height: int) -> bytes:
+    """A flat gray JPEG of the given dimensions, for measuring image token cost."""
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (128, 128, 128)).save(
+        buf, format="JPEG", quality=60
+    )
+    return buf.getvalue()
+
+
+def interleave_images(
+    prompt: str, images: list[bytes], captions: list[str] | None = None
+) -> list[str | bytes]:
+    """The prompt, then each image preceded by its caption when one is given.
+
+    Providers map the text and image parts onto their own request format, so
+    every provider sends the same order.
+    """
+    parts: list[str | bytes] = [prompt]
+
+    for index, image in enumerate(images):
+        if captions and index < len(captions):
+            parts.append(captions[index])
+
+        parts.append(image)
+
+    return parts
+
+
+def parse_tool_calls_from_message(
+    message: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """
+    Parse tool_calls from an OpenAI-style message dict.
+
+    Message may have "tool_calls" as a list of:
+      {"id": str, "function": {"name": str, "arguments": str}, ...}
+
+    Returns a list of {"id", "name", "arguments"} with arguments parsed as dict,
+    or None if no tool_calls. Used by Ollama and LlamaCpp (non-stream) responses.
+    """
+    raw = message.get("tool_calls")
+    if not raw or not isinstance(raw, list):
+        return None
+    result = []
+    for idx, tool_call in enumerate(raw):
+        function_data = tool_call.get("function") or {}
+        raw_arguments = function_data.get("arguments") or {}
+        if isinstance(raw_arguments, dict):
+            arguments = raw_arguments
+        elif isinstance(raw_arguments, str):
+            try:
+                arguments = json.loads(raw_arguments)
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                logger.warning(
+                    "Failed to parse tool call arguments: %s, tool: %s",
+                    e,
+                    function_data.get("name", "unknown"),
+                )
+                arguments = {}
+        else:
+            arguments = {}
+        result.append(
+            {
+                "id": tool_call.get("id", "") or f"call_{idx}",
+                "name": function_data.get("name", ""),
+                "arguments": arguments,
+            }
+        )
+    return result if result else None
+
+
+def build_assistant_message_for_conversation(
+    content: Any,
+    tool_calls_raw: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """
+    Build the assistant message dict in OpenAI format for appending to a conversation.
+
+    tool_calls_raw: list of {"id", "name", "arguments"} (arguments as dict), or None.
+    """
+    msg: dict[str, Any] = {"role": "assistant", "content": content}
+    if tool_calls_raw:
+        msg["tool_calls"] = [
+            {
+                "id": tc["id"],
+                "type": "function",
+                "function": {
+                    "name": tc["name"],
+                    "arguments": json.dumps(tc.get("arguments") or {}),
+                },
+                # Gemini-only: opaque signature that must be echoed back on
+                # the same functionCall part in the next turn. Other providers
+                # do not set or read this.
+                **(
+                    {"thought_signature": tc["thought_signature"]}
+                    if tc.get("thought_signature")
+                    else {}
+                ),
+            }
+            for tc in tool_calls_raw
+        ]
+    return msg

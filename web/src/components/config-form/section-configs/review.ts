@@ -1,0 +1,171 @@
+import type { SectionConfigOverrides } from "./types";
+
+const review: SectionConfigOverrides = {
+  base: {
+    sectionDocs: "/configuration/review",
+    messages: [
+      {
+        key: "record-disabled",
+        messageKey: "configMessages.review.recordDisabled",
+        runtimeOverride: {
+          section: "record",
+          messageKey: "configMessages.review.recordRuntimeDisabled",
+        },
+        severity: "warning",
+        condition: (ctx) => {
+          if (ctx.level === "camera" && ctx.fullCameraConfig) {
+            return ctx.fullCameraConfig.record.enabled === false;
+          }
+          return ctx.fullConfig.record?.enabled === false;
+        },
+      },
+      {
+        key: "detect-disabled",
+        messageKey: "configMessages.review.detectDisabled",
+        runtimeOverride: {
+          section: "detect",
+          messageKey: "configMessages.review.detectRuntimeDisabled",
+        },
+        severity: "info",
+        condition: (ctx) => {
+          if (ctx.level === "camera" && ctx.fullCameraConfig) {
+            return ctx.fullCameraConfig.detect?.enabled === false;
+          }
+          return false;
+        },
+      },
+    ],
+    fieldMessages: [
+      {
+        key: "detections-all-non-alert",
+        field: "detections.labels",
+        messageKey: "configMessages.review.allNonAlertDetections",
+        severity: "info",
+        position: "after",
+        condition: (ctx) => {
+          const labels = (
+            ctx.formData?.detections as Record<string, unknown> | undefined
+          )?.labels;
+          return !Array.isArray(labels) || labels.length === 0;
+        },
+      },
+      {
+        key: "genai-no-descriptions-provider",
+        health: (ctx) =>
+          (ctx.formData as { genai?: { enabled?: boolean } })?.genai
+            ?.enabled === true,
+        field: "genai.enabled",
+        messageKey: "configMessages.objects.genaiNoDescriptionsProvider",
+        severity: "warning",
+        position: "before",
+        condition: (ctx) => {
+          const providers = ctx.fullConfig.genai;
+          if (!providers || Object.keys(providers).length === 0) return true;
+          return !Object.values(providers).some((agent) =>
+            agent.roles?.includes("descriptions"),
+          );
+        },
+      },
+      {
+        key: "genai-image-source-recordings-record-disabled",
+        health: true,
+        field: "genai.image_source",
+        messageKey:
+          "configMessages.review.genaiImageSourceRecordingsRecordDisabled",
+        runtimeOverride: {
+          section: "record",
+          messageKey:
+            "configMessages.review.genaiImageSourceRecordingsRecordRuntimeDisabled",
+        },
+        severity: "warning",
+        position: "after",
+        condition: (ctx) => {
+          const genai = ctx.formData?.genai as
+            Record<string, unknown> | undefined;
+          if (genai?.image_source !== "recordings") return false;
+          if (ctx.level === "camera" && ctx.fullCameraConfig) {
+            return ctx.fullCameraConfig.record?.enabled === false;
+          }
+          return ctx.fullConfig.record?.enabled === false;
+        },
+      },
+    ],
+    fieldDocs: {
+      "alerts.labels": "/configuration/review/#alerts-and-detections",
+      "detections.labels": "/configuration/review/#alerts-and-detections",
+      genai: "/configuration/genai/genai_review",
+      "genai.image_source": "/configuration/genai/genai_review#image-source",
+      "genai.frame_mode": "/configuration/genai/genai_review#frame-mode",
+      "genai.additional_concerns":
+        "/configuration/genai/genai_review#additional-concerns",
+    },
+    restartRequired: [],
+    fieldOrder: ["alerts", "detections", "genai", "genai.enabled"],
+    fieldGroups: {},
+    hiddenFields: [
+      "enabled_in_config",
+      "alerts.enabled_in_config",
+      "detections.enabled_in_config",
+      "genai.enabled_in_config",
+    ],
+    advancedFields: [],
+    uiSchema: {
+      alerts: {
+        "ui:before": { render: "CameraReviewStatusToggles" },
+        labels: {
+          "ui:widget": "reviewLabels",
+          "ui:options": {
+            suppressMultiSchema: true,
+          },
+        },
+        required_zones: {
+          "ui:widget": "hidden",
+        },
+      },
+      detections: {
+        labels: {
+          "ui:widget": "reviewLabels",
+          "ui:options": {
+            suppressMultiSchema: true,
+          },
+        },
+        required_zones: {
+          "ui:widget": "hidden",
+        },
+      },
+      genai: {
+        additional_concerns: {
+          "ui:widget": "ArrayAsTextWidget",
+          "ui:options": {
+            size: "full",
+            multiline: true,
+          },
+        },
+        activity_context_prompt: {
+          "ui:widget": "textarea",
+          "ui:options": {
+            size: "full",
+          },
+        },
+        image_source: {
+          "ui:options": {
+            enumI18nPrefix: "review.imageSource",
+          },
+        },
+        frame_mode: {
+          "ui:options": {
+            enumI18nPrefix: "review.frameMode",
+          },
+        },
+      },
+    },
+  },
+  global: {
+    restartRequired: [],
+  },
+  camera: {
+    restartRequired: [],
+  },
+};
+
+export default review;

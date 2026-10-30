@@ -1,0 +1,120 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+# Start the go2rtc service
+
+set -o errexit -o nounset -o pipefail
+
+runs_as_root=0
+if [[ "$(id -u)" -eq 0 ]]; then
+    if [[ "${FRIGATE_RUN_AS_ROOT:-false}" == "true" ]] || /usr/local/bin/service-runs-as-root go2rtc; then
+        runs_as_root=1
+    fi
+fi
+
+# Root via FRIGATE_ROOT_SERVICES only; the escape hatch sweeps nothing and
+# leaves no unprivileged service, so /config/go2rtc stays as safe as pre-drop.
+granular_root=0
+if [[ "$runs_as_root" -eq 1 && "${FRIGATE_RUN_AS_ROOT:-false}" != "true" ]]; then
+    granular_root=1
+fi
+
+# Logs should be sent to stdout so that s6 can collect them
+
+function get_ip_and_port_from_supervisor() {
+    local ip_address
+    # Example: 192.168.1.10/24
+    local ip_regex='^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})/[0-9]{1,2}$'
+    if ip_address=$(
+        curl -fsSL \
+            -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+            -H "Content-Type: application/json" \
+            http://supervisor/network/interface/default/info |
+            jq --exit-status --raw-output '.data.ipv4.address[0]'
+    ) && [[ "${ip_address}" =~ ${ip_regex} ]]; then
+        ip_address="${BASH_REMATCH[1]}"
+        echo "[INFO] Got IP address from supervisor: ${ip_address}"
+    else
+        echo "[WARN] Failed to get IP address from supervisor"
+        return 0
+    fi
+
+    local webrtc_port
+    local port_regex='^([0-9]{1,5})$'
+    if webrtc_port=$(
+        curl -fsSL \
+            -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+            -H "Content-Type: application/json" \
+            http://supervisor/addons/self/info |
+            jq --exit-status --raw-output '.data.network["8555/tcp"]'
+    ) && [[ "${webrtc_port}" =~ ${port_regex} ]]; then
+        webrtc_port="${BASH_REMATCH[1]}"
+        echo "[INFO] Got WebRTC port from supervisor: ${webrtc_port}"
+    else
+        echo "[WARN] Failed to get WebRTC port from supervisor"
+        return 0
+    fi
+
+    export FRIGATE_GO2RTC_WEBRTC_CANDIDATE_INTERNAL="${ip_address}:${webrtc_port}"
+}
+
+function set_libva_version() {
+    local ffmpeg_path
+    ffmpeg_path=$(python3 /usr/local/ffmpeg/get_ffmpeg_path.py)
+    LIBAVFORMAT_VERSION_MAJOR=$("$ffmpeg_path" -version | grep -Po "libavformat\W+\K\d+")
+    export LIBAVFORMAT_VERSION_MAJOR
+}
+
+set_libva_version
+
+if [[ -f "/dev/shm/go2rtc.yaml" ]]; then
+    echo "[INFO] Removing stale config from last run..."
+    rm /dev/shm/go2rtc.yaml
+fi
+
+if [[ ! -f "/dev/shm/go2rtc.yaml" ]]; then
+    echo "[INFO] Preparing new go2rtc config..."
+
+    if [[ -n "${SUPERVISOR_TOKEN:-}" ]]; then
+        # Running as a Home Assistant Add-on, infer the IP address and port
+        get_ip_and_port_from_supervisor
+    fi
+
+    python3 /usr/local/go2rtc/create_config.py
+else
+    echo "[WARNING] Unable to remove existing go2rtc config. Changes made to your frigate config file may not be recognized. Please remove the /dev/shm/go2rtc.yaml from your docker host manually."
+fi
+
+# HomeKit persistence. The helper is symlink-safe; hand off to go2rtc only when dropping.
+readonly homekit_config_path="/config/go2rtc_homekit.yml"
+if [[ "$(id -u)" -eq 0 && "$runs_as_root" -eq 0 ]]; then
+    python3 /usr/local/go2rtc/prepare_homekit.py "${homekit_config_path}" --chown
+    chown go2rtc:go2rtc /dev/shm/go2rtc.yaml 2>/dev/null || true
+else
+    python3 /usr/local/go2rtc/prepare_homekit.py "${homekit_config_path}"
+fi
+
+readonly config_path="/config"
+
+# the sweep hands /config to uid 1000, so a root service must not exec from it
+if [[ "$granular_root" -eq 1 && -x "${config_path}/go2rtc" ]]; then
+  echo "[WARN] Ignoring '${config_path}/go2rtc' because FRIGATE_ROOT_SERVICES runs this service as root and /config is owned by the runtime user; using the embedded binary"
+  echo "[WARN] Use FRIGATE_RUN_AS_ROOT=true instead if you need both a custom go2rtc build and root"
+  readonly binary_path="/usr/local/go2rtc/bin/go2rtc"
+elif [[ -x "${config_path}/go2rtc" ]]; then
+  readonly binary_path="${config_path}/go2rtc"
+  echo "[WARN] Using go2rtc binary from '${binary_path}' instead of the embedded one"
+else
+  readonly binary_path="/usr/local/go2rtc/bin/go2rtc"
+fi
+
+echo "[INFO] Starting go2rtc..."
+
+# Replace the bash process with the go2rtc process, redirecting stderr to stdout
+# Use HomeKit config as the primary config so writebacks go there
+# The main config from Frigate will be loaded as a secondary config
+exec 2>&1
+if [[ "$(id -u)" -ne 0 || "$runs_as_root" -eq 1 ]]; then
+    exec "${binary_path}" -config="${homekit_config_path}" -config=/dev/shm/go2rtc.yaml
+else
+    exec s6-setuidgid go2rtc "${binary_path}" -config="${homekit_config_path}" -config=/dev/shm/go2rtc.yaml
+fi
