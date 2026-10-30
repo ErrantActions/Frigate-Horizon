@@ -119,7 +119,6 @@ export type WizardFormData = {
   probeResult?: OnvifProbeResponse;
   probeCandidates?: string[]; // candidate URLs from probe
   candidateTests?: CandidateTestMap; // test results for candidates
-  hasBackchannel?: boolean; // true if camera supports backchannel audio
   appleCompatibility?: boolean; // camera level, covers both recording outputs
   onvif?: {
     enabled: boolean;
@@ -178,6 +177,11 @@ export type CameraConfigData = {
       };
       live?: {
         streams: Record<string, string>;
+        transcode?: {
+          enabled: boolean;
+          source: string;
+          qualities: { height: number; bitrate: number }[];
+        };
       };
       onvif?: {
         host: string;

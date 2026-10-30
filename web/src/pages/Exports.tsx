@@ -1,4 +1,5 @@
 import { baseUrl } from "@/api/baseUrl";
+import { GenericVideoPlayer } from "@/components/player/GenericVideoPlayer";
 import { useJobStatus } from "@/api/ws";
 import {
   ActiveExportJobCard,
@@ -282,7 +283,6 @@ function Exports() {
   const [selectedCaseId, setSelectedCaseId] = useState<string | undefined>(
     undefined,
   );
-  const [selectedAspect, setSelectedAspect] = useState(0.0);
 
   // Handle browser back button to deselect case before navigating away
   useHistoryBack({
@@ -683,27 +683,11 @@ function Exports() {
           <DialogTitle className="smart-capitalize">
             {selected?.name?.replaceAll("_", " ")}
           </DialogTitle>
-          <video
-            className={cn(
-              "size-full rounded-lg md:rounded-2xl",
-              selectedAspect < 1.5 && "aspect-video h-full",
-            )}
-            playsInline
-            preload="auto"
-            autoPlay
-            controls
-            muted
-            onLoadedData={(e) =>
-              setSelectedAspect(
-                e.currentTarget.videoWidth / e.currentTarget.videoHeight,
-              )
-            }
-          >
-            <source
-              src={`${baseUrl}${selected?.video_path?.replace("/media/frigate/", "")}`}
-              type="video/mp4"
+          {selected && (
+            <GenericVideoPlayer
+              source={`${baseUrl}vod/export/${encodeURIComponent(selected.id)}/index.m3u8`}
             />
-          </video>
+          )}
         </DialogContent>
       </Dialog>
 

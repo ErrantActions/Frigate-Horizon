@@ -1,6 +1,8 @@
+import logging
 from enum import Enum
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..base import FrigateBaseModel
 
@@ -15,6 +17,7 @@ __all__ = [
 
 # canonical MQTT payload for an empty mode list
 MQTT_NO_MODES = "NONE"
+logger = logging.getLogger(__name__)
 
 
 class BirdseyeModeEnum(str, Enum):
@@ -78,6 +81,17 @@ class BirdseyeLayoutConfig(FrigateBaseModel):
 
 
 class BirdseyeConfig(FrigateBaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def remove_retired_encoder_quality(cls, value: Any) -> Any:
+        """Migrate the removed MPEG quality option to explicit HLS bitrate settings."""
+        if isinstance(value, dict) and "quality" in value:
+            logger.warning(
+                "Ignoring retired Birdseye quality setting; HLS uses birdseye.bitrate"
+            )
+            return {key: item for key, item in value.items() if key != "quality"}
+        return value
+
     enabled: bool = Field(
         default=True,
         title="Enable Birdseye",
@@ -104,12 +118,11 @@ class BirdseyeConfig(FrigateBaseModel):
         title="Height",
         description="Output height (pixels) of the composed Birdseye frame.",
     )
-    quality: int = Field(
-        default=8,
-        title="Encoding quality",
-        description="Encoding quality for the Birdseye mpeg1 feed (1 highest quality, 31 lowest).",
-        ge=1,
-        le=31,
+    bitrate: int = Field(
+        default=2500,
+        ge=64,
+        title="HLS restream bitrate",
+        description="Target and maximum video bitrate in kbps for the H264 Birdseye restream used by HLS viewing. This does not change camera recordings.",
     )
     inactivity_threshold: int = Field(
         default=30,

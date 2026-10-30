@@ -37,7 +37,7 @@ const FAMILY_ALIASES: Record<string, string> = {
   av01: "av1",
 };
 
-function canPlayMimeType(mimeType: string): boolean {
+export function isMseMimeTypeSupported(mimeType: string): boolean {
   if (window.ManagedMediaSource?.isTypeSupported(mimeType)) {
     return true;
   }
@@ -46,8 +46,14 @@ function canPlayMimeType(mimeType: string): boolean {
     return true;
   }
 
-  // native playback fallback for browsers without MSE
-  return document.createElement("video").canPlayType(mimeType) !== "";
+  return false;
+}
+
+function canPlayMimeType(mimeType: string): boolean {
+  return (
+    isMseMimeTypeSupported(mimeType) ||
+    document.createElement("video").canPlayType(mimeType) !== ""
+  );
 }
 
 /**

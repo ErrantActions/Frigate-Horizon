@@ -23,8 +23,6 @@ import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 import {
   AudioState,
-  LivePlayerError,
-  LivePlayerMode,
   LiveStreamMetadata,
   StatsState,
   VolumeState,
@@ -35,7 +33,7 @@ import { isEqual } from "lodash";
 import useSWR from "swr";
 import { useIsAdmin } from "@/hooks/use-is-admin";
 import { isDesktop, isMobile, isMobileOnly } from "react-device-detect";
-import BirdseyeLivePlayer from "@/components/player/BirdseyeLivePlayer";
+import BirdseyeLivePlayer from "@/components/player/BirdseyeHlsPlayer";
 import LivePlayer from "@/components/player/LivePlayer";
 import { dashboardLiveStreams } from "@/utils/adaptiveLive";
 import { IoClose } from "react-icons/io5";
@@ -104,9 +102,6 @@ type DraggableGridLayoutProps = {
   setIsEditMode: React.Dispatch<React.SetStateAction<boolean>>;
   fullscreen: boolean;
   toggleFullscreen: () => void;
-  preferredLiveModes: { [key: string]: LivePlayerMode };
-  handleError: (cameraName: string, error: LivePlayerError) => void;
-  resetPreferredLiveMode: (cameraName: string) => void;
   isRestreamedStates: { [key: string]: boolean };
   supportsAudioOutputStates: {
     [key: string]: { supportsAudio: boolean; cameraName: string };
@@ -131,9 +126,6 @@ export default function DraggableGridLayout({
   setIsEditMode,
   fullscreen,
   toggleFullscreen,
-  preferredLiveModes,
-  handleError,
-  resetPreferredLiveMode,
   isRestreamedStates,
   supportsAudioOutputStates,
   streamMetadata,
@@ -756,7 +748,6 @@ export default function DraggableGridLayout({
                 )}
                 birdseyeConfig={birdseyeConfig}
                 aspectRatio={layoutAspects["birdseye"] ?? DEFAULT_ASPECT}
-                liveMode={birdseyeConfig.restream ? "mse" : "jsmpeg"}
                 onClick={() => onSelectCamera("birdseye")}
               ></BirdseyeLivePlayerGridItem>
             )}
@@ -782,9 +773,6 @@ export default function DraggableGridLayout({
               const showStillWithoutActivity =
                 currentGroupStreamingSettings?.[camera.name]?.streamType !==
                 "continuous";
-              const useWebGL =
-                currentGroupStreamingSettings?.[camera.name]
-                  ?.compatibilityMode || false;
               return (
                 <GridLiveContextMenu
                   className={CARD_FIT}
@@ -799,7 +787,6 @@ export default function DraggableGridLayout({
                   camera={camera.name}
                   streamName={streamName}
                   cameraGroup={cameraGroup}
-                  preferredLiveMode={preferredLiveModes[camera.name] ?? "mse"}
                   isRestreamed={isRestreamedStates[camera.name]}
                   supportsAudio={
                     supportsAudioOutputStates[streamName]?.supportsAudio ??
@@ -820,9 +807,6 @@ export default function DraggableGridLayout({
                   }
                   muteAll={muteAll}
                   unmuteAll={unmuteAll}
-                  resetPreferredLiveMode={() =>
-                    resetPreferredLiveMode(camera.name)
-                  }
                   config={config}
                   streamMetadata={streamMetadata}
                 >
@@ -830,12 +814,14 @@ export default function DraggableGridLayout({
                     key={camera.name}
                     streamName={requestedStreams[camera.name]}
                     adaptive={!streamExists}
+                    dataSaver={
+                      currentGroupStreamingSettings?.[camera.name]?.dataSaver
+                    }
                     onStreamChange={onStreamChange}
                     autoLive={autoLive ?? globalAutoLive}
                     showStillWithoutActivity={showStillWithoutActivity ?? true}
                     alwaysShowCameraName={displayCameraNames}
                     showResolution={showResolution}
-                    useWebGL={useWebGL}
                     cameraRef={cameraRef}
                     className={cn(
                       "size-full",
@@ -848,7 +834,6 @@ export default function DraggableGridLayout({
                       windowVisible && visibleCameras.includes(camera.name)
                     }
                     cameraConfig={camera}
-                    preferredLiveMode={preferredLiveModes[camera.name] ?? "mse"}
                     playInBackground={false}
                     showStats={statsStates[camera.name]}
                     onClick={() => {
@@ -856,8 +841,6 @@ export default function DraggableGridLayout({
                         onSelectCamera(camera.name);
                       }
                     }}
-                    onError={(e) => handleError(camera.name, e)}
-                    onResetLiveMode={() => resetPreferredLiveMode(camera.name)}
                     playAudio={audioStates[camera.name]}
                     volume={volumeStates[camera.name]}
                     onLiveAspectChange={liveAspectHandlers[camera.name]}
@@ -957,7 +940,6 @@ type BirdseyeLivePlayerGridItemProps = {
   children?: React.ReactNode;
   birdseyeConfig: BirdseyeConfig;
   aspectRatio: number;
-  liveMode: LivePlayerMode;
   onClick: () => void;
 };
 
@@ -975,7 +957,6 @@ const BirdseyeLivePlayerGridItem = React.forwardRef<
       children,
       birdseyeConfig,
       aspectRatio: cellAspect,
-      liveMode,
       onClick,
       ...props
     },
@@ -994,7 +975,6 @@ const BirdseyeLivePlayerGridItem = React.forwardRef<
         <BirdseyeLivePlayer
           className={cn(CARD_FIT, className)}
           birdseyeConfig={birdseyeConfig}
-          liveMode={liveMode}
           onClick={onClick}
           containerRef={ref as React.RefObject<HTMLDivElement>}
         />
@@ -1015,7 +995,6 @@ type GridLiveContextMenuProps = {
   camera: string;
   streamName: string;
   cameraGroup: string;
-  preferredLiveMode: string;
   isRestreamed: boolean;
   supportsAudio: boolean;
   audioState: boolean;
@@ -1028,7 +1007,6 @@ type GridLiveContextMenuProps = {
   setVolumeState: (volumeState: number) => void;
   muteAll: () => void;
   unmuteAll: () => void;
-  resetPreferredLiveMode: () => void;
   config?: FrigateConfig;
   streamMetadata?: { [key: string]: LiveStreamMetadata };
 };
@@ -1049,7 +1027,6 @@ const GridLiveContextMenu = React.forwardRef<
       camera,
       streamName,
       cameraGroup,
-      preferredLiveMode,
       isRestreamed,
       supportsAudio,
       audioState,
@@ -1062,7 +1039,6 @@ const GridLiveContextMenu = React.forwardRef<
       setVolumeState,
       muteAll,
       unmuteAll,
-      resetPreferredLiveMode,
       config,
       streamMetadata,
       ...props
@@ -1084,7 +1060,6 @@ const GridLiveContextMenu = React.forwardRef<
           camera={camera}
           streamName={streamName}
           cameraGroup={cameraGroup}
-          preferredLiveMode={preferredLiveMode}
           isRestreamed={isRestreamed}
           supportsAudio={supportsAudio}
           audioState={audioState}
@@ -1097,7 +1072,6 @@ const GridLiveContextMenu = React.forwardRef<
           setVolumeState={setVolumeState}
           muteAll={muteAll}
           unmuteAll={unmuteAll}
-          resetPreferredLiveMode={resetPreferredLiveMode}
           config={config}
           streamMetadata={streamMetadata}
         >

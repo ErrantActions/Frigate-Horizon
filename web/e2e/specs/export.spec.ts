@@ -1,4 +1,5 @@
 import { test, expect, type FrigateApp } from "../fixtures/frigate-test";
+import { mockHlsMedia } from "../helpers/hls-media";
 import {
   expectBodyInteractive,
   waitForBodyInteractive,
@@ -400,8 +401,18 @@ test.describe("Export Page - Empty State @high", () => {
 });
 
 test.describe("Export Page - Mobile @high @mobile", () => {
-  test("mobile can open an export preview dialog", async ({ frigateApp }) => {
-    test.skip(!frigateApp.isMobile, "Mobile-only assertion");
+  test("opens an HLS export preview without playing the original file", async ({
+    frigateApp,
+  }) => {
+    const originals: string[] = [];
+    frigateApp.page.on("request", (request) => {
+      if (/\/exports\/.*\.mp4(?:\?|$)/.test(request.url()))
+        originals.push(request.url());
+    });
+    const media = await mockHlsMedia(
+      frigateApp.page,
+      "**/vod/export/export-001/**",
+    );
 
     await frigateApp.goto("/export");
 
@@ -415,6 +426,15 @@ test.describe("Export Page - Mobile @high @mobile", () => {
       .filter({ hasText: "Front Door - Person Alert" });
     await expect(dialog).toBeVisible();
     await expect(dialog.locator("video")).toBeVisible();
+    await expect
+      .poll(() =>
+        dialog
+          .locator("video")
+          .evaluate((video: HTMLVideoElement) => video.videoWidth),
+      )
+      .toBe(1280);
+    expect(media.some((url) => url.endsWith("/index.m3u8"))).toBe(true);
+    expect(originals).toEqual([]);
   });
 });
 

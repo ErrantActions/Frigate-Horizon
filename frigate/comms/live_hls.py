@@ -162,14 +162,20 @@ class LiveHlsManager:
             return master
 
     async def master(
-        self, camera: str, renditions: tuple[LiveHlsRendition, ...]
+        self,
+        camera: str,
+        renditions: tuple[LiveHlsRendition, ...],
+        *,
+        audio: bool = True,
     ) -> str:
         """Build a shared, authenticated bitrate ladder with real codec metadata."""
         await self.sync_config()
         masters = await asyncio.gather(
             *(self.bootstrap(camera, value.height) for value in renditions)
         )
-        return master_playlist(tuple(zip(renditions, masters, strict=True)))
+        return master_playlist(
+            tuple(zip(renditions, masters, strict=True)), audio=audio
+        )
 
     async def fetch(
         self, camera: str, height: int, resource: str, params: dict[str, str]

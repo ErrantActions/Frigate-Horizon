@@ -158,10 +158,7 @@ def create_fastapi_app(
                 try:
                     await app.state.native_health.close()
                 finally:
-                    try:
-                        await app.state.native_talkback.close()
-                    finally:
-                        await app.state.native_controls.close()
+                    await app.state.native_controls.close()
             finally:
                 try:
                     await app.state.plugins.close()

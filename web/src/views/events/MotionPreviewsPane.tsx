@@ -14,6 +14,7 @@ import { useTranslation } from "react-i18next";
 import { CameraConfig } from "@/types/frigateConfig";
 import useSWR from "swr";
 import { baseUrl } from "@/api/baseUrl";
+import { previewHlsUrl, useHlsPreview } from "@/hooks/use-hls-preview";
 import { Recording } from "@/types/record";
 import { useResizeObserver } from "@/hooks/resize-observer";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -400,6 +401,12 @@ function MotionPreviewClip({
   }, [clipStart, preview, range.end_time]);
 
   const compatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hlsFailed = useHlsPreview(
+    videoRef,
+    preview ? previewHlsUrl(preview) : undefined,
+    isVisible,
+    clipStart,
+  );
 
   useEffect(() => {
     return () => {
@@ -628,10 +635,6 @@ function MotionPreviewClip({
               resetPlayback();
             }}
             onLoadedData={() => setVideoLoaded(true)}
-            onError={() => {
-              setVideoLoaded(true);
-              setVideoPlaying(true);
-            }}
             onTimeUpdate={() => {
               if (!videoRef.current || !preview) {
                 return;
@@ -641,12 +644,15 @@ function MotionPreviewClip({
                 videoRef.current.currentTime = clipStart;
               }
             }}
-          >
-            <source
-              src={`${baseUrl}${preview.src.substring(1)}`}
-              type={preview.type}
-            />
-          </video>
+          />
+          {hlsFailed && (
+            <p
+              role="alert"
+              className="absolute inset-0 flex items-center justify-center bg-background_alt p-2 text-center"
+            >
+              {t("playbackFailed", { ns: "components/player" })}
+            </p>
+          )}
           {motionHeatmap && (
             <canvas
               ref={dimOverlayCanvasRef}

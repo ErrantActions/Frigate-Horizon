@@ -420,11 +420,11 @@
     "description": "User interface preferences such as timezone, time/date formatting, and units.",
     "live_hls": {
       "label": "Bandwidth-adaptive live HLS",
-      "description": "Use a private on-demand HLS packager for bandwidth-adaptive live viewing over authenticated HTTPS. Requires the live-hls companion service. Recordings, detection, and camera source settings are unchanged."
+      "description": "Enable live viewing through the private on-demand HLS packager over authenticated HTTPS. Requires the live-hls companion service and configured HLS renditions. Disabling this stops live video; it does not select another transport. Stored recordings and detection are unchanged."
     },
     "live_compatibility": {
       "label": "Allow Live compatibility streams",
-      "description": "Global administrator control for Frigate-generated H264 Live streams. Disable to use original configured streams only. Camera codecs and recordings are unchanged."
+      "description": "Permit H264 live renditions. This legacy administrator gate is preserved: disabling it stops camera live HLS, not selects another viewing transport. Camera codecs and recordings are unchanged."
     },
     "recording_compatibility": {
       "label": "Allow Review compatibility playback",
@@ -590,9 +590,9 @@
       "label": "Height",
       "description": "Output height (pixels) of the composed Birdseye frame."
     },
-    "quality": {
-      "label": "Encoding quality",
-      "description": "Encoding quality for the Birdseye mpeg1 feed (1 highest quality, 31 lowest)."
+    "bitrate": {
+      "label": "HLS restream bitrate",
+      "description": "Target and maximum video bitrate in kbps for the H264 Birdseye restream used by HLS viewing. This does not change camera recordings."
     },
     "inactivity_threshold": {
       "label": "Inactivity threshold",
@@ -809,14 +809,6 @@
           "description": "Target and maximum video bitrate in kbps."
         }
       }
-    },
-    "height": {
-      "label": "Live height",
-      "description": "Height (pixels) to render the jsmpeg live stream in the Web UI; must be <= detect stream height."
-    },
-    "quality": {
-      "label": "Live quality",
-      "description": "Encoding quality for the jsmpeg stream (1 highest, 31 lowest)."
     }
   },
   "motion": {

@@ -43,14 +43,14 @@ const LEGACY_OUTDOOR_LAYOUT = [
 const FRONT_DOOR_WITHOUT_TECHNOLOGY = {
   streamName: "front_door",
   streamType: "smart",
-  compatibilityMode: false,
+  dataSaver: false,
   playAudio: false,
   volume: 1,
 };
 
 const STREAMING_SETTINGS = {
   outdoor: {
-    front_door: { ...FRONT_DOOR_WITHOUT_TECHNOLOGY, playerMode: "webrtc" },
+    front_door: { ...FRONT_DOOR_WITHOUT_TECHNOLOGY },
   },
 };
 
@@ -632,9 +632,23 @@ test.describe("UI settings import/export @medium", () => {
     await confirmImport(frigateApp.page);
 
     expect(await readIdb(frigateApp.page, STREAMING_KEY)).toEqual({
-      indoor: EXISTING_STREAMING.indoor,
+      indoor: {
+        garage: {
+          streamName: "garage",
+          streamType: "continuous",
+          dataSaver: true,
+          playAudio: true,
+          volume: 0.5,
+        },
+      },
       outdoor: {
-        ...EXISTING_STREAMING.outdoor,
+        backyard: {
+          streamName: "backyard",
+          streamType: "no-streaming",
+          dataSaver: false,
+          playAudio: false,
+          volume: 0,
+        },
         ...STREAMING_SETTINGS.outdoor,
       },
     });

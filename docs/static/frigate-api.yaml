@@ -4740,124 +4740,6 @@ paths:
       x-required-role: admin
       security:
         - frigateAdminAuth: []
-  /native/cameras/{camera}/talkback:
-    post:
-      tags:
-        - Native
-      summary: Native Talkback
-      description: |-
-        **Access:** Admin role required.
-
-        Exchange audio SDP only through this camera's verified configured backchannel.
-      operationId: native_talkback_native_cameras__camera__talkback_post
-      parameters:
-        - name: camera
-          in: path
-          required: true
-          schema:
-            type: string
-            title: Camera
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/NativeTalkbackBody'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      x-required-role: admin
-      security:
-        - frigateAdminAuth: []
-  /native/cameras/{camera}/talkback/{lease_id}/renew:
-    post:
-      tags:
-        - Native
-      summary: Renew Native Talkback
-      description: |-
-        **Access:** Admin role required.
-
-        Reauthorize current admin and camera rights before renewing an owned lease.
-      operationId: 
-        renew_native_talkback_native_cameras__camera__talkback__lease_id__renew_post
-      parameters:
-        - name: camera
-          in: path
-          required: true
-          schema:
-            type: string
-            title: Camera
-        - name: lease_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-            title: Lease Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      x-required-role: admin
-      security:
-        - frigateAdminAuth: []
-  /native/cameras/{camera}/talkback/{lease_id}:
-    delete:
-      tags:
-        - Native
-      summary: Close Native Talkback
-      description: |-
-        **Access:** Any authenticated user.
-
-        Release only an owned lease without requiring ongoing control permission.
-      operationId: 
-        close_native_talkback_native_cameras__camera__talkback__lease_id__delete
-      parameters:
-        - name: camera
-          in: path
-          required: true
-          schema:
-            type: string
-            title: Camera
-        - name: lease_id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-            title: Lease Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      x-required-role: any
-      security:
-        - frigateUserAuth: []
   /exports:
     get:
       tags:
@@ -8494,17 +8376,17 @@ paths:
       security:
         - frigateUserAuth: []
       x-required-role: camera
-  /onvif/cameras/{camera_name}/replay/sessions/{session_id}/stream.mp4:
+  /onvif/cameras/{camera_name}/replay/sessions/{session_id}/hls/{resource}:
     get:
       tags:
         - Camera
-      summary: Replay Stream
+      summary: Replay Hls
       description: |-
         **Access:** Authenticated user with access to the referenced camera.
 
-        Authorize each playback request and stream one fixed, authenticated replay.
+        Authorize every HLS object from one bounded camera-native replay.
       operationId: 
-        replay_stream_onvif_cameras__camera_name__replay_sessions__session_id__stream_mp4_get
+        replay_hls_onvif_cameras__camera_name__replay_sessions__session_id__hls__resource__get
       parameters:
         - name: camera_name
           in: path
@@ -8520,6 +8402,12 @@ paths:
           schema:
             type: string
             title: Session Id
+        - name: resource
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Resource
       responses:
         '200':
           description: Successful Response
@@ -8799,6 +8687,33 @@ paths:
               - type: string
               - type: 'null'
             title: Camera Name
+        - name: audio
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+            title: Audio
+        - name: height
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: integer
+                maximum: 2160
+                minimum: 144
+              - type: 'null'
+            title: Height
+        - name: max_height
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: integer
+                maximum: 2160
+                minimum: 144
+              - type: 'null'
+            title: Max Height
       responses:
         '200':
           description: Successful Response
@@ -10354,6 +10269,85 @@ paths:
         Returns an HLS playlist for a timestamp range with HLS discontinuity enabled. Append /master.m3u8 or /index.m3u8 for HLS playback.
       operationId: 
         vod_clip_vod_clip__camera_name__start__start_ts__end__end_ts__get
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: start_ts
+          in: path
+          required: true
+          schema:
+            type: number
+            title: Start Ts
+        - name: end_ts
+          in: path
+          required: true
+          schema:
+            type: number
+            title: End Ts
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+        - frigateUserAuth: []
+      x-required-role: camera
+  /vod/export/{export_id}:
+    get:
+      tags:
+        - Media
+      summary: Vod Export
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Package a completed export for HLS without changing its original file.
+      operationId: vod_export_vod_export__export_id__get
+      parameters:
+        - name: export_id
+          in: path
+          required: true
+          schema:
+            type: string
+            title: Export Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /vod/preview/{camera_name}/start/{start_ts}/end/{end_ts}:
+    get:
+      tags:
+        - Media
+      summary: Vod Preview
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Return an HLS mapping for an existing camera preview. Append /index.m3u8 for playback.
+      operationId: 
+        vod_preview_vod_preview__camera_name__start__start_ts__end__end_ts__get
       parameters:
         - name: camera_name
           in: path
@@ -15117,25 +15111,6 @@ components:
       title: NativeSnoozeBody
       description: The native action can pause only one currently allowed 
         camera.
-    NativeTalkbackBody:
-      properties:
-        type:
-          type: string
-          const: offer
-          title: Type
-        sdp:
-          type: string
-          maxLength: 131072
-          minLength: 10
-          title: Sdp
-      additionalProperties: false
-      type: object
-      required:
-        - type
-        - sdp
-      title: NativeTalkbackBody
-      description: Only session descriptions are accepted, never destinations or
-        credentials.
     NfsPlan:
       properties:
         shares:
@@ -15840,6 +15815,10 @@ components:
           type: string
           format: date-time
           title: End
+        audio:
+          type: boolean
+          title: Audio
+          default: true
       additionalProperties: false
       type: object
       required:

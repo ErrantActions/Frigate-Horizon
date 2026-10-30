@@ -33,8 +33,9 @@ class TestTranscodeNaming(unittest.TestCase):
     def test_source_gives_each_ffmpeg_token_its_own_raw_param(self):
         self.assertEqual(
             transcode_stream_source("front", 480, 500),
-            "ffmpeg:front#video=h264#height=480#hardware#audio=copy"
-            "#raw=-b:v#raw=500k#raw=-maxrate#raw=500k#raw=-bufsize#raw=1000k",
+            "ffmpeg:front#video=h264#height=480#hardware#audio=aac"
+            "#raw=-b:v#raw=500k#raw=-maxrate#raw=500k#raw=-bufsize#raw=1000k"
+            "#raw=-b:a#raw=96k#raw=-ar#raw=48000",
         )
 
     def test_default_source_skips_transcoded_streams(self):
@@ -76,7 +77,9 @@ class TestRawTranscodeStreams(unittest.TestCase):
         }
         config["cameras"]["front"]["live"]["transcode"]["source"] = "front"
         original_only = FrigateConfig(**config)
-        self.assertEqual(original_only.cameras["front"].live.streams, {"front": "front"})
+        self.assertEqual(
+            original_only.cameras["front"].live.streams, {"front": "front"}
+        )
         config["ui"]["live_compatibility"] = True
         enabled = FrigateConfig(**config)
         self.assertTrue(generated_transcode_streams(enabled))
@@ -201,6 +204,32 @@ def camera_config(live: dict | None = None, go2rtc: dict | None = None) -> dict:
 
 
 class TestLiveTranscodeConfig(unittest.TestCase):
+    def test_hls_renditions_do_not_change_full_quality_recording_commands(self):
+        config = camera_config()
+        config["cameras"]["front"]["record"] = {"enabled": True}
+        config["cameras"]["front"]["ffmpeg"]["inputs"][0]["roles"] = [
+            "detect",
+            "record",
+        ]
+        original = FrigateConfig(**config).cameras["front"]
+        config["ui"] = {"live_hls": True}
+        config["cameras"]["front"]["live"] = {
+            "streams": {"Main": "front"},
+            "transcode": {"enabled": True, "source": "front"},
+        }
+        adaptive = FrigateConfig(**config).cameras["front"]
+
+        def recording(camera):
+            return [
+                command["cmd"]
+                for command in camera.ffmpeg_cmds
+                if "record" in command["roles"]
+            ]
+
+        self.assertTrue(recording(original))
+        self.assertEqual(recording(original), recording(adaptive))
+        self.assertTrue(any("copy" in command for command in recording(adaptive)))
+
     def streams(self, live: dict, go2rtc: dict | None = None) -> dict[str, str]:
         config = FrigateConfig(**camera_config(live, go2rtc))
         return config.cameras["front"].live.streams
@@ -223,8 +252,7 @@ class TestLiveTranscodeConfig(unittest.TestCase):
             [
                 ("front", "front"),
                 ("720p", "front_transcode_720p"),
-                ("480p", "front_transcode_480p"),
-                ("360p", "front_transcode_360p"),
+                ("1080p", "front_transcode_1080p"),
             ],
         )
 
@@ -249,8 +277,8 @@ class TestLiveTranscodeConfig(unittest.TestCase):
             generated_transcode_streams(FrigateConfig(**config)),
         )
         self.assertEqual(
-            raw_transcode_streams(config)["front_transcode_360p"],
-            transcode_stream_source("front_sub", 360, 250),
+            raw_transcode_streams(config)["front_transcode_1080p"],
+            transcode_stream_source("front_sub", 1080, 2500),
         )
 
     def test_placed_entries_keep_position_and_label(self):
@@ -258,7 +286,7 @@ class TestLiveTranscodeConfig(unittest.TestCase):
             {
                 "streams": {
                     "Main": "front",
-                    "Low": "front_transcode_480p",
+                    "Low": "front_transcode_720p",
                     "Sub": "front_sub",
                 },
                 "transcode": {"enabled": True},
@@ -269,10 +297,9 @@ class TestLiveTranscodeConfig(unittest.TestCase):
             list(streams.items()),
             [
                 ("Main", "front"),
-                ("Low", "front_transcode_480p"),
+                ("Low", "front_transcode_720p"),
                 ("Sub", "front_sub"),
-                ("720p", "front_transcode_720p"),
-                ("360p", "front_transcode_360p"),
+                ("1080p", "front_transcode_1080p"),
             ],
         )
 

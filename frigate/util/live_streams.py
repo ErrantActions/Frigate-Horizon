@@ -16,8 +16,7 @@ GO2RTC_API = "http://127.0.0.1:1984/api"
 
 DEFAULT_TRANSCODE_QUALITIES: list[dict[str, int]] = [
     {"height": 720, "bitrate": 1200},
-    {"height": 480, "bitrate": 500},
-    {"height": 360, "bitrate": 250},
+    {"height": 1080, "bitrate": 2500},
 ]
 
 
@@ -35,8 +34,8 @@ def transcode_stream_source(source: str, height: int, bitrate: int) -> str:
     """Build the go2rtc ffmpeg source that transcodes a stream to H.264.
 
     go2rtc rejects API-registered sources containing spaces, so each ffmpeg
-    token gets its own #raw= parameter. #audio=copy keeps audio, which any
-    #video= option would otherwise drop.
+    token gets its own #raw= parameter. AAC normalizes playback audio for HLS
+    without changing the camera source or recording commands.
     """
     tokens = (
         "-b:v",
@@ -45,9 +44,13 @@ def transcode_stream_source(source: str, height: int, bitrate: int) -> str:
         f"{bitrate}k",
         "-bufsize",
         f"{2 * bitrate}k",
+        "-b:a",
+        "96k",
+        "-ar",
+        "48000",
     )
     raw = "".join(f"#raw={token}" for token in tokens)
-    return f"ffmpeg:{source}#video=h264#height={height}#hardware#audio=copy{raw}"
+    return f"ffmpeg:{source}#video=h264#height={height}#hardware#audio=aac{raw}"
 
 
 def transcode_streams(

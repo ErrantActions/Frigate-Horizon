@@ -70,20 +70,10 @@ if go2rtc_config.get("log") is None:
 elif go2rtc_config["log"].get("format") is None:
     go2rtc_config["log"]["format"] = "text"
 
-# ensure there is a default webrtc config
 if go2rtc_config.get("webrtc") is None:
     go2rtc_config["webrtc"] = {}
-
-if go2rtc_config["webrtc"].get("candidates") is None:
-    default_candidates = []
-    # use internal candidate if it was discovered when running through the add-on
-    internal_candidate = os.environ.get("FRIGATE_GO2RTC_WEBRTC_CANDIDATE_INTERNAL")
-    if internal_candidate is not None:
-        default_candidates.append(internal_candidate)
-    # should set default stun server so webrtc can work
-    default_candidates.append("stun:8555")
-
-    go2rtc_config["webrtc"]["candidates"] = default_candidates
+go2rtc_config["webrtc"]["listen"] = ""
+go2rtc_config["webrtc"].pop("candidates", None)
 
 if go2rtc_config.get("rtsp", {}).get("username") is not None:
     go2rtc_config["rtsp"]["username"] = substitute_frigate_vars(
@@ -191,7 +181,12 @@ if config.get("birdseye", {}).get("restream", False):
     birdseye: dict[str, Any] = config.get("birdseye")
 
     input = f"-f rawvideo -pix_fmt yuv420p -video_size {birdseye.get('width', 1280)}x{birdseye.get('height', 720)} -r 10 -i {BIRDSEYE_PIPE}"
-    ffmpeg_cmd = f"exec:{parse_preset_hardware_acceleration_encode(ffmpeg_path, config.get('ffmpeg', {}).get('hwaccel_args', ''), input, '-rtsp_transport tcp -f rtsp {output}')}"
+    bitrate = birdseye.get("bitrate", 2500)
+    output = (
+        f"-b:v {bitrate}k -maxrate {bitrate}k -bufsize {2 * bitrate}k "
+        "-rtsp_transport tcp -f rtsp {output}"
+    )
+    ffmpeg_cmd = f"exec:{parse_preset_hardware_acceleration_encode(ffmpeg_path, config.get('ffmpeg', {}).get('hwaccel_args', ''), input, output)}"
 
     if go2rtc_config.get("streams"):
         go2rtc_config["streams"]["birdseye"] = ffmpeg_cmd

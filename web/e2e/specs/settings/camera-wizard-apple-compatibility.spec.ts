@@ -6,8 +6,7 @@
  * pins an explicit Safari and Chrome UA instead of relying on the project's
  * own.
  *
- * The save tests drive Step 4, which registers go2rtc streams and renders MSE
- * previews; they mock those and assert only the captured config/set body.
+ * The save tests verify that camera inputs and HLS sources are saved together.
  */
 
 import { test, expect } from "../../fixtures/frigate-test";
@@ -337,7 +336,6 @@ async function saveHevcCamera(
   await expect(save).toBeEnabled({ timeout: 15_000 });
   await save.click();
 
-  // the camera PUT is the one carrying update_topic; go2rtc follows without it
   await expect
     .poll(() => saved.some((body) => "update_topic" in body), {
       timeout: 15_000,
@@ -348,8 +346,25 @@ async function saveHevcCamera(
     update_topic: string;
     config_data: {
       cameras: Record<string, { ffmpeg: { apple_compatibility?: boolean } }>;
+      go2rtc: { streams: Record<string, string[]> };
     };
   };
   expect(cameraSave.update_topic).toBe("config/cameras/hevc_test_camera/add");
+  expect(saved).toHaveLength(1);
+  expect(cameraSave.config_data.go2rtc.streams.hevc_test_camera).toEqual([
+    `${MAIN_URI}#backchannel=0`,
+  ]);
+  expect(cameraSave.config_data.cameras.hevc_test_camera).toMatchObject({
+    live: {
+      transcode: {
+        enabled: true,
+        source: "hevc_test_camera",
+        qualities: [
+          { height: 720, bitrate: 1200 },
+          { height: 1080, bitrate: 2500 },
+        ],
+      },
+    },
+  });
   return cameraSave.config_data.cameras.hevc_test_camera.ffmpeg;
 }

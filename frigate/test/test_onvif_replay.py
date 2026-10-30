@@ -6,6 +6,7 @@ import json
 import unittest
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -121,7 +122,18 @@ class TestReplaySessions(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.configuration = object()
         self.process = FakeProcess([MP4, b"mp4-frame", b""])
-        self.factory = AsyncMock(return_value=self.process)
+
+        async def spawn(*args, **_kwargs):
+            output = Path(args[-1])
+            data = await self.process.stdout.read(65536)
+            (output.parent / "init.mp4").write_bytes(data)
+            (output.parent / "segment_00000.m4s").write_bytes(data)
+            output.write_text(
+                '#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:1,\nsegment_00000.m4s\n'
+            )
+            return self.process
+
+        self.factory = AsyncMock(side_effect=spawn)
         self.manager = OnvifReplayManager(
             lambda: self.configuration,
             process_factory=self.factory,
@@ -146,7 +158,7 @@ class TestReplaySessions(unittest.IsolatedAsyncioTestCase):
             "rtsp://",
         ):
             self.assertNotIn(private, text)
-        session, first = await self.manager.prepare("front", public["id"])
+        session = await self.manager.prepare("front", public["id"])
         command = " ".join(self.factory.await_args.args)
         arguments = self.factory.await_args.args
         self.assertEqual(arguments[arguments.index("-c:v") + 1], "libx264")
@@ -164,15 +176,15 @@ class TestReplaySessions(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private-password", command)
         self.assertNotIn("vendor-token", command)
         self.assertNotIn("camera.invalid", command)
-        chunks = [
-            chunk
-            async for chunk in self.manager.stream(
-                session,
-                first,
-                AsyncMock(return_value=True),
-            )
-        ]
-        self.assertEqual(chunks, [MP4, b"mp4-frame"])
+        self.assertEqual(arguments[arguments.index("-f") + 1], "hls")
+        self.assertEqual(
+            await self.manager.resource("front", public["id"], "init.mp4"), MP4
+        )
+        self.assertIn(
+            b"#EXTM3U",
+            await self.manager.resource("front", public["id"], "index.m3u8"),
+        )
+        await self.manager.close(session)
         self.assertTrue(self.process.terminated)
         self.assertTrue(session.gateway.closed)
         self.assertEqual(self.manager.sessions, {})
@@ -183,16 +195,11 @@ class TestReplaySessions(unittest.IsolatedAsyncioTestCase):
         self.process.stdout.read.side_effect = [audio_mp4(), b""]
         public = self.reserve()
         self.assertIsNone(public["audio"])
-        session, first = await self.manager.prepare("front", public["id"])
+        session = await self.manager.prepare("front", public["id"])
         self.assertTrue(session.audio)
         self.assertEqual(session.public()["audio_codec"], "aac_lc")
         self.assertEqual(session.public()["audio_sample_rate"], 48000)
-        _chunks = [
-            chunk
-            async for chunk in self.manager.stream(
-                session, first, AsyncMock(return_value=True)
-            )
-        ]
+        await self.manager.close(session)
         status = self.manager.status("front", public["id"])
         self.assertEqual(status["audio_status"], "available")
         self.assertNotIn("vendor-token", json.dumps(status))
@@ -208,7 +215,7 @@ class TestReplaySessions(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(public["audio"])
         self.assertEqual(public["audio_status"], "not_recorded")
-        session, _first = await self.manager.prepare("front", public["id"])
+        session = await self.manager.prepare("front", public["id"])
         self.assertFalse(session.audio)
         self.assertEqual(session.audio_status, "not_recorded")
         self.assertNotIn("anullsrc", self.factory.await_args.args)
@@ -220,7 +227,7 @@ class TestReplaySessions(unittest.IsolatedAsyncioTestCase):
         public = self.manager.create(
             "front", descriptor, NOW, END, "ffmpeg", self.configuration
         )
-        session, _first = await self.manager.prepare("front", public["id"])
+        session = await self.manager.prepare("front", public["id"])
         self.assertFalse(session.audio)
         self.assertEqual(session.audio_status, "unavailable")
 
@@ -231,16 +238,46 @@ class TestReplaySessions(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ReplayUnsupported):
                 await self.manager.prepare("front", public["id"])
 
-    async def test_wrong_camera_and_duplicate_consumers_never_start_a_second_process(
+    async def test_wrong_camera_is_denied_and_hls_requests_share_one_process(
         self,
     ):
         public = self.reserve()
         with self.assertRaises(KeyError):
             await self.manager.prepare("back", public["id"])
         await self.manager.prepare("front", public["id"])
-        with self.assertRaises(ReplayUnsupported):
-            await self.manager.prepare("front", public["id"])
+        await self.manager.prepare("front", public["id"])
         self.factory.assert_awaited_once()
+
+    async def test_hls_resources_cannot_escape_the_session_or_change_camera(self):
+        public = self.reserve()
+        for resource in ("../config.yml", "/init.mp4", "https://outside.invalid/a.mp4"):
+            with self.subTest(resource=resource), self.assertRaises(KeyError):
+                await self.manager.resource("front", public["id"], resource)
+        with self.assertRaises(KeyError):
+            await self.manager.resource("back", public["id"], "index.m3u8")
+        self.factory.assert_not_awaited()
+
+    async def test_concurrent_hls_objects_share_startup(self):
+        public = self.reserve()
+        manifest, initialization = await asyncio.gather(
+            self.manager.resource("front", public["id"], "index.m3u8"),
+            self.manager.resource("front", public["id"], "init.mp4"),
+        )
+        self.assertIn(b"#EXTM3U", manifest)
+        self.assertEqual(initialization, MP4)
+        self.factory.assert_awaited_once()
+
+    async def test_video_only_hls_never_requests_or_encodes_audio(self):
+        public = self.manager.create(
+            "front", source(), NOW, END, "ffmpeg", self.configuration, audio=False
+        )
+        session = await self.manager.prepare("front", public["id"])
+        arguments = self.factory.await_args.args
+        self.assertIn("-an", arguments)
+        self.assertNotIn("0:a:0?", arguments)
+        self.assertNotIn("-c:a", arguments)
+        self.assertEqual(session.audio_status, "not_requested")
+        self.assertEqual(session.public()["protocol"], "hls")
 
     async def test_capacity_and_range_are_bounded_before_spawning(self):
         public = self.reserve()
@@ -261,29 +298,22 @@ class TestReplaySessions(unittest.IsolatedAsyncioTestCase):
         self.factory.assert_not_awaited()
         await self.manager.close(self.manager.get("front", public["id"]))
 
-    async def test_disconnect_and_explicit_cancel_release_process_and_gateway(self):
+    async def test_explicit_cancel_releases_process_gateway_and_hls_files(self):
         public = self.reserve()
-        session, first = await self.manager.prepare("front", public["id"])
-        chunks = [
-            chunk
-            async for chunk in self.manager.stream(
-                session,
-                first,
-                AsyncMock(return_value=False),
-            )
-        ]
-        self.assertEqual(chunks, [])
+        session = await self.manager.prepare("front", public["id"])
+        directory = session.media_path
+        await self.manager.close(session)
+        self.assertFalse(directory.exists())
         self.assertTrue(self.process.terminated)
         self.assertTrue(session.gateway.closed)
         self.assertEqual(self.manager.sessions, {})
         await self.manager.close(session)
 
-    async def test_generator_cancel_and_shutdown_release_resources(self):
+    async def test_idle_hls_session_releases_resources(self):
         public = self.reserve()
-        session, first = await self.manager.prepare("front", public["id"])
-        stream = self.manager.stream(session, first, AsyncMock(return_value=True))
-        self.assertEqual(await anext(stream), MP4)
-        await stream.aclose()
+        session = await self.manager.prepare("front", public["id"])
+        session.last_request = -1000
+        await asyncio.sleep(0.6)
         self.assertTrue(session.gateway.closed)
         self.assertEqual(self.manager.sessions, {})
 
@@ -312,7 +342,7 @@ class TestReplaySessions(unittest.IsolatedAsyncioTestCase):
 
     async def test_shutdown_releases_an_active_process_and_gateway(self):
         public = self.reserve()
-        session, _first = await self.manager.prepare("front", public["id"])
+        session = await self.manager.prepare("front", public["id"])
         await self.manager.shutdown()
         self.assertTrue(self.process.terminated)
         self.assertTrue(session.gateway.closed)
@@ -375,7 +405,7 @@ class TestReplaySessions(unittest.IsolatedAsyncioTestCase):
 
     async def test_unresponsive_transcoder_is_killed_and_gateway_still_closes(self):
         public = self.reserve()
-        session, _first = await self.manager.prepare("front", public["id"])
+        session = await self.manager.prepare("front", public["id"])
         self.process.terminate = lambda: setattr(self.process, "terminated", True)
         self.process.wait = AsyncMock(side_effect=[TimeoutError(), 0])
         await self.manager.close(session)

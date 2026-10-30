@@ -8,14 +8,14 @@ HTTPS connection. Unlike a real-time WebSocket feed, HLS downloads discrete
 media resources, allowing the player to estimate throughput and use its buffer
 to select a sustainable bitrate.
 
-This feature is optional and disabled by default. It requires the private
+This is the only live video transport and is enabled by default. It requires the private
 MediaMTX companion in `docker/live-hls/compose.yaml`. Do not expose the
 companion's HTTP server or add a router port forward.
 
 ## Renditions
 
 The initial implementation uses advertised main-derived profiles at 720p or
-higher. Cameras need at least two profiles with configured bitrates. Existing
+higher. Cameras need at least one profile with a configured bitrate. Existing
 manually configured go2rtc profiles are supported with
 `live.transcode.enabled: false`; that flag controls server-side generation, not
 the availability of a stream.
@@ -54,14 +54,13 @@ disable client TLS verification or expose the private packager to make HLS work.
 
 ## Player behavior
 
-In Auto quality mode, compatible MediaSource players use the HLS ladder. The web
+In Auto quality mode, all supported players use the HLS ladder. The web
 player starts at the lowest advertised bitrate and delegates subsequent bitrate
 selection to hls.js's throughput and buffer policy. Display size and Data Saver
-cap the maximum level. Explicit stream selections and WebRTC selections retain
-their existing transport.
+cap the maximum level. Explicit quality selections pin an advertised HLS rung.
 
-If adaptive HLS fails, the web player reports the error and returns to the
-existing compatibility stream. Offline messages, playback errors, resolution
+If HLS fails, the web player reports the error and offers an HLS retry, without
+opening another transport. Offline messages, playback errors, resolution
 badges, and statistics remain available; there is no separate Not live badge.
 
 The player stops requests when its tile is inactive, allowing the shared muxer
@@ -78,6 +77,13 @@ All paths below are relative to the configured Frigate API base:
   actual private packager's codec, resolution, and audio-group metadata.
 - `GET /{camera_name}/live/hls/{height}p/{resource}`: authorized playlists, init
   fragments, segments, and low-latency parts.
+
+The master accepts `audio=false` to omit the audio group and audio codecs,
+`height` to pin an advertised rung, and `max_height` to cap advertised heights.
+Height bounds are 144 through 2160; unavailable selections return 404 rather
+than inventing a source. These options also apply to native HLS clients.
+Birdseye uses the same routes with `birdseye` as the camera name and retains
+the existing full-camera-scope authorization requirement.
 
 Every request rechecks authentication and camera access. Responses are private
 and not cacheable by shared proxies. Private packager session values are kept
@@ -112,10 +118,17 @@ its initial peak bitrate to the lowest rung, then release that startup cap
 according to playback readiness and the user's maximum-quality preference.
 Updating the web player does not update a native app binary.
 
+The HLS-only release removes native talkback endpoints and advertises
+`talkback.supported: false`; clients must hide those controls. PTZ remains
+available under its existing authorization rules. Camera-SD replay now uses
+`/onvif/cameras/{camera}/replay/sessions/{id}/hls/index.m3u8` and its manifest
+children instead of the retired `stream.mp4` endpoint. Close replay sessions
+with their existing DELETE operation when leaving playback.
+
 ## Qualification
 
 Validate first decoded-frame time, variant synchronization, low/high bandwidth
 transitions, buffer behavior, audio continuity, and idle producer shutdown.
 Measure on the intended device and network. A working signaling request, a
 downloaded playlist, or mobile-browser tests alone do not prove native iPhone
-playback or remote WebRTC connectivity.
+playback. Do not equate browser emulation with an actual native iPhone test.

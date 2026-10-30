@@ -145,14 +145,27 @@ export type RecordingResponse = {
 };
 export type ReplaySession = {
   id: string;
-  state: "ready" | "starting" | "streaming" | "ended" | "expired";
+  state:
+    | "ready"
+    | "starting"
+    | "streaming"
+    | "complete"
+    | "ended"
+    | "expired"
+    | "failed";
+  protocol: "hls";
   start: string;
   end: string;
   expires_in: number;
   max_duration_seconds: number;
   audio: boolean | null;
   audio_status:
-    "pending" | "available" | "not_recorded" | "unavailable" | "not_present";
+    | "pending"
+    | "available"
+    | "not_recorded"
+    | "unavailable"
+    | "not_present"
+    | "not_requested";
   audio_codec?: "aac_lc" | null;
   audio_sample_rate?: number | null;
 };

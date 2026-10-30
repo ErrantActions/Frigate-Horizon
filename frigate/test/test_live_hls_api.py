@@ -12,14 +12,14 @@ from frigate.test.test_live_hls import configuration
 )
 class TestLiveHlsApi(unittest.TestCase):
     def setUp(self):
-        from fastapi import FastAPI, HTTPException
+        from fastapi import Depends, FastAPI, HTTPException
         from fastapi.testclient import TestClient
 
-        from frigate.api.auth import require_camera_access
+        from frigate.api.auth import require_admin_by_default, require_camera_access
         from frigate.api.live_hls import router
         from frigate.comms.live_hls import LiveHlsManager
 
-        app = FastAPI()
+        app = FastAPI(dependencies=[Depends(require_admin_by_default())])
         self.config = configuration()
         self.config.ui.live_hls = True
         app.frigate_config = self.config
@@ -63,6 +63,62 @@ class TestLiveHlsApi(unittest.TestCase):
             set(resource["responses"]["200"]["content"]),
             {"application/vnd.apple.mpegurl", "video/mp4"},
         )
+
+    def test_video_only_and_pinned_rung_remain_camera_scoped(self):
+        response = self.client.get(
+            "/front/live/hls/master.m3u8?audio=false&height=1080"
+        )
+        self.assertEqual(response.status_code, 200)
+        args = self.manager.master.await_args
+        self.assertEqual(args.args[0], "front")
+        self.assertEqual([value.height for value in args.args[1]], [1080])
+        self.assertEqual(args.kwargs, {"audio": False})
+
+    def test_viewport_cap_filters_only_advertised_renditions(self):
+        response = self.client.get("/front/live/hls/master.m3u8?max_height=720")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [value.height for value in self.manager.master.await_args.args[1]],
+            [720],
+        )
+
+    def test_unavailable_master_selection_does_not_start_the_packager(self):
+        for query in ("height=360", "max_height=200", "audio=invalid"):
+            with self.subTest(query=query):
+                response = self.client.get("/front/live/hls/master.m3u8?" + query)
+                self.assertIn(response.status_code, (404, 422))
+        self.manager.master.assert_not_awaited()
+
+    def test_single_rung_remains_available_without_an_alternate_transport(self):
+        del self.config.cameras["front"].live.streams["1080p"]
+        response = self.client.get("/front/live/hls/status")
+        self.assertTrue(response.json()["available"])
+        self.assertEqual(
+            [value["height"] for value in response.json()["renditions"]], [720]
+        )
+
+    def test_birdseye_does_not_bypass_the_existing_camera_access_guard(self):
+        self.config.birdseye.enabled = True
+        self.config.birdseye.restream = True
+        for suffix in ("status", "master.m3u8", "720p/init.mp4"):
+            with self.subTest(suffix=suffix):
+                response = self.client.get("/birdseye/live/hls/" + suffix)
+                self.assertEqual(response.status_code, 403)
+        self.manager.master.assert_not_awaited()
+        self.manager.fetch.assert_not_awaited()
+
+    def test_birdseye_camera_guard_can_allow_full_scope_without_admin_privileges(self):
+        from frigate.api.auth import require_camera_access
+
+        self.config.birdseye.enabled = True
+        self.config.birdseye.restream = True
+        self.client.app.dependency_overrides[require_camera_access] = lambda: None
+        response = self.client.get(
+            "/birdseye/live/hls/status",
+            headers={"remote-user": "viewer", "remote-role": "viewer"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["available"])
 
     def test_all_routes_recheck_camera_access_before_touching_media(self):
         for path in (

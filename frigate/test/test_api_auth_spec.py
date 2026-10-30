@@ -61,9 +61,6 @@ class TestApiAuthSpec(unittest.TestCase):
             ("/native/features", "get"): "any",
             ("/native/cameras/{camera}/controls", "get"): "camera",
             ("/native/cameras/{camera}/ptz", "post"): "admin",
-            ("/native/cameras/{camera}/talkback", "post"): "admin",
-            ("/native/cameras/{camera}/talkback/{lease_id}/renew", "post"): "admin",
-            ("/native/cameras/{camera}/talkback/{lease_id}", "delete"): "any",
             ("/exports/{export_id}/protect", "post"): "admin",
         }
         for (path, method), role in expected.items():

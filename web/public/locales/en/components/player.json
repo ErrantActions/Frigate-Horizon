@@ -1,4 +1,5 @@
 {
+  "hlsOnly": "Playback requires an HLS playlist.",
   "liveWarning": {
     "notLive": "Not live",
     "notLiveDescription": "Live playback is unavailable, has stopped updating, or is showing a still image.",
@@ -7,7 +8,9 @@
   },
   "adaptive": {
     "minimumUnavailable": "Live video could not be played at the minimum allowed quality. Retry or check the connection.",
-    "hlsUnavailable": "Adaptive HLS is unavailable. Using compatibility streaming.",
+    "hlsUnavailable": "HLS live video is unavailable. Retry or check the camera's HLS configuration.",
+    "audioUnsupported": "This browser cannot decode the live audio. Video will continue without audio.",
+    "birdseyeUnavailable": "Birdseye HLS is unavailable. Enable the Birdseye restream and check the HLS companion.",
     "pictureInPictureUnavailable": "Picture in Picture is unavailable for this video."
   },
   "resolutionBadge": {

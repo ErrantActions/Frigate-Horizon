@@ -7,15 +7,12 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useTranslation } from "react-i18next";
-import { LuRotateCcw, LuInfo } from "react-icons/lu";
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { LuInfo } from "react-icons/lu";
+import { useState, useCallback, useMemo } from "react";
 import ActivityIndicator from "@/components/indicators/activity-indicator";
 import axios from "axios";
 import { toast } from "sonner";
-import MSEPlayer from "@/components/player/MsePlayer";
 import { WizardFormData, StreamConfig, TestResult } from "@/types/cameraWizard";
-import { PlayerStatsType, LiveStreamMetadata } from "@/types/live";
-import { detectCameraAudioFeatures } from "@/utils/cameraUtil";
 import { FaCircleCheck, FaTriangleExclamation } from "react-icons/fa6";
 import { LuX } from "react-icons/lu";
 import { Card, CardContent } from "../../ui/card";
@@ -40,21 +37,8 @@ export default function Step4Validation({
   const { t } = useTranslation(["views/settings"]);
   const [isValidating, setIsValidating] = useState(false);
   const [testingStreams, setTestingStreams] = useState<Set<string>>(new Set());
-  const [measuredBandwidth, setMeasuredBandwidth] = useState<
-    Map<string, number>
-  >(new Map());
-  const [registeredStreamIds, setRegisteredStreamIds] = useState<
-    Map<string, string>
-  >(new Map());
 
   const streams = useMemo(() => wizardData.streams || [], [wizardData.streams]);
-
-  const handleBandwidthUpdate = useCallback(
-    (streamId: string, bandwidth: number) => {
-      setMeasuredBandwidth((prev) => new Map(prev).set(streamId, bandwidth));
-    },
-    [],
-  );
 
   // Use test results from Step 2, but allow re-validation in Step 3
   const validationResults = useMemo(() => {
@@ -88,27 +72,6 @@ export default function Step4Validation({
           "Connection failed";
 
         return { success: false, error: errorMessage };
-      }
-    },
-    [],
-  );
-
-  const checkBackchannel = useCallback(
-    async (go2rtcStreamId: string, useFfmpeg: boolean): Promise<boolean> => {
-      // ffmpeg compatibility mode guarantees no backchannel connection
-      if (useFfmpeg) {
-        return false;
-      }
-
-      try {
-        const response = await axios.get<LiveStreamMetadata>(
-          `go2rtc/streams/${go2rtcStreamId}`,
-        );
-
-        const audioFeatures = detectCameraAudioFeatures(response.data, false);
-        return audioFeatures.twoWayAudio;
-      } catch {
-        return false;
       }
     },
     [],
@@ -197,30 +160,11 @@ export default function Step4Validation({
     }
   }, [streams, onUpdate, t, performStreamValidation]);
 
-  const handleSave = useCallback(async () => {
+  const handleSave = useCallback(() => {
     if (!wizardData.cameraName || !wizardData.streams?.length) {
       toast.error(t("cameraWizard.step4.saveError"));
       return;
     }
-
-    const candidateStreams =
-      wizardData.streams?.filter(
-        (s) => s.testResult?.success && !(s.useFfmpeg ?? false),
-      ) || [];
-
-    let hasBackchannelResult = false;
-    if (candidateStreams.length > 0) {
-      // Check all candidate streams for backchannel support
-      const backchanelChecks = candidateStreams.map((stream) => {
-        const actualStreamId = registeredStreamIds.get(stream.id);
-        return actualStreamId
-          ? checkBackchannel(actualStreamId, stream.useFfmpeg ?? false)
-          : Promise.resolve(false);
-      });
-      const results = await Promise.all(backchanelChecks);
-      hasBackchannelResult = results.some((result) => result);
-    }
-    onUpdate({ hasBackchannel: hasBackchannelResult });
 
     // Convert wizard data to final config format
     const configData = {
@@ -231,13 +175,12 @@ export default function Step4Validation({
       brandTemplate: wizardData.brandTemplate,
       customUrl: wizardData.customUrl,
       streams: wizardData.streams,
-      hasBackchannel: wizardData.hasBackchannel,
       appleCompatibility: wizardData.appleCompatibility,
       onvif: wizardData.onvif,
     };
 
     onSave(configData);
-  }, [wizardData, onSave, t, onUpdate, checkBackchannel, registeredStreamIds]);
+  }, [wizardData, onSave, t]);
 
   const canSave = useMemo(() => {
     return (
@@ -331,17 +274,9 @@ export default function Step4Validation({
                   </div>
 
                   {result?.success && (
-                    <div className="mb-3">
-                      <StreamPreview
-                        stream={stream}
-                        onBandwidthUpdate={handleBandwidthUpdate}
-                        onStreamRegistered={(go2rtcStreamId) => {
-                          setRegisteredStreamIds((prev) =>
-                            new Map(prev).set(stream.id, go2rtcStreamId),
-                          );
-                        }}
-                      />
-                    </div>
+                    <p className="mb-3 text-sm text-muted-foreground">
+                      {t("cameraWizard.step4.hlsPreviewAfterSave")}
+                    </p>
                   )}
 
                   {result?.success && (
@@ -432,11 +367,7 @@ export default function Step4Validation({
                         {t("cameraWizard.step4.issues.title")}
                       </div>
                       <div className="rounded-lg bg-background p-3">
-                        <StreamIssues
-                          stream={stream}
-                          measuredBandwidth={measuredBandwidth}
-                          wizardData={wizardData}
-                        />
+                        <StreamIssues stream={stream} wizardData={wizardData} />
                       </div>
                     </div>
                   )}
@@ -481,15 +412,10 @@ export default function Step4Validation({
 
 type StreamIssuesProps = {
   stream: StreamConfig;
-  measuredBandwidth: Map<string, number>;
   wizardData: Partial<WizardFormData>;
 };
 
-function StreamIssues({
-  stream,
-  measuredBandwidth,
-  wizardData,
-}: StreamIssuesProps) {
+function StreamIssues({ stream, wizardData }: StreamIssuesProps) {
   const { t } = useTranslation(["views/settings"]);
 
   const issues = useMemo(
@@ -515,10 +441,6 @@ function StreamIssues({
 
   return (
     <div className="space-y-2">
-      <BandwidthDisplay
-        streamId={stream.id}
-        measuredBandwidth={measuredBandwidth}
-      />
       <div className="space-y-1">
         {issues.map((issue, index) => (
           <div key={index} className="flex items-center gap-2 text-sm">
@@ -545,170 +467,6 @@ function StreamIssues({
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-type BandwidthDisplayProps = {
-  streamId: string;
-  measuredBandwidth: Map<string, number>;
-};
-
-function BandwidthDisplay({
-  streamId,
-  measuredBandwidth,
-}: BandwidthDisplayProps) {
-  const { t } = useTranslation(["views/settings"]);
-  const streamBandwidth = measuredBandwidth.get(streamId);
-
-  if (!streamBandwidth) return null;
-
-  const perHour = streamBandwidth * 3600; // kB/hour
-  const perHourDisplay =
-    perHour >= 1000000
-      ? `${(perHour / 1000000).toFixed(1)} ${t("unit.data.gbph", { ns: "common" })}`
-      : perHour >= 1000
-        ? `${(perHour / 1000).toFixed(1)} ${t("unit.data.mbph", { ns: "common" })}`
-        : `${perHour.toFixed(0)} ${t("unit.data.kbph", { ns: "common" })}`;
-
-  return (
-    <div className="mb-2 text-sm">
-      <span className="font-medium text-muted-foreground">
-        {t("cameraWizard.step4.estimatedBandwidth")}:
-      </span>{" "}
-      <span className="text-secondary-foreground">
-        {streamBandwidth.toFixed(1)} {t("unit.data.kbps", { ns: "common" })}
-      </span>
-      <span className="ml-2 text-muted-foreground">({perHourDisplay})</span>
-    </div>
-  );
-}
-
-type StreamPreviewProps = {
-  stream: StreamConfig;
-  onBandwidthUpdate?: (streamId: string, bandwidth: number) => void;
-  onStreamRegistered?: (go2rtcStreamId: string) => void;
-};
-
-// live stream preview using MSEPlayer with temp go2rtc streams
-function StreamPreview({
-  stream,
-  onBandwidthUpdate,
-  onStreamRegistered,
-}: StreamPreviewProps) {
-  const { t } = useTranslation(["views/settings"]);
-  const [streamId, setStreamId] = useState(`wizard_${stream.id}_${Date.now()}`);
-  const [registered, setRegistered] = useState(false);
-  const [error, setError] = useState(false);
-
-  const handleStats = useCallback(
-    (stats: PlayerStatsType) => {
-      if (stats.bandwidth > 0) {
-        onBandwidthUpdate?.(stream.id, stats.bandwidth);
-      }
-    },
-    [stream.id, onBandwidthUpdate],
-  );
-
-  const handleReload = useCallback(async () => {
-    // Clean up old stream first
-    if (streamId) {
-      axios.delete(`go2rtc/streams/${streamId}`).catch(() => {
-        // do nothing on cleanup errors - go2rtc won't consume the streams
-      });
-    }
-
-    // Reset state and create new stream ID
-    setError(false);
-    setRegistered(false);
-    setStreamId(`wizard_${stream.id}_${Date.now()}`);
-  }, [stream.id, streamId]);
-
-  useEffect(() => {
-    // Register stream with go2rtc
-    const streamUrl = stream.useFfmpeg ? `ffmpeg:${stream.url}` : stream.url;
-    axios
-      .put(`go2rtc/streams/${streamId}`, null, {
-        params: { src: streamUrl },
-      })
-      .then(async () => {
-        // Add small delay to allow go2rtc api to run and initialize the stream
-        setTimeout(() => {
-          setRegistered(true);
-          onStreamRegistered?.(streamId);
-        }, 500);
-      })
-      .catch(() => {
-        setError(true);
-      });
-
-    // Cleanup on unmount
-    return () => {
-      axios.delete(`go2rtc/streams/${streamId}`).catch(() => {
-        // do nothing on cleanup errors - go2rtc won't consume the streams
-      });
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stream.url, stream.useFfmpeg, streamId]);
-
-  const resolution = stream.testResult?.resolution;
-  let aspectRatio = "16/9";
-  if (resolution) {
-    const [width, height] = resolution.split("x").map(Number);
-    if (width && height) {
-      aspectRatio = `${width}/${height}`;
-    }
-  }
-
-  if (error) {
-    return (
-      <div
-        className="flex max-h-[30dvh] flex-col items-center justify-center gap-2 rounded-lg bg-secondary p-4 md:max-h-[20dvh]"
-        style={{ aspectRatio }}
-      >
-        <span className="text-sm text-danger">
-          {t("cameraWizard.step4.streamUnavailable")}
-        </span>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleReload}
-          className="flex items-center gap-2"
-        >
-          <LuRotateCcw className="size-4" />
-          {t("cameraWizard.step4.reload")}
-        </Button>
-      </div>
-    );
-  }
-
-  if (!registered) {
-    return (
-      <div
-        className="flex max-h-[30dvh] items-center justify-center rounded-lg bg-secondary md:max-h-[20dvh]"
-        style={{ aspectRatio }}
-      >
-        <ActivityIndicator className="size-4" />
-        <span className="ml-2 text-sm">
-          {t("cameraWizard.step4.connecting")}
-        </span>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="relative max-h-[30dvh] md:max-h-[20dvh]"
-      style={{ aspectRatio }}
-    >
-      <MSEPlayer
-        camera={streamId}
-        playbackEnabled={true}
-        className="max-h-[30dvh] rounded-lg md:max-h-[20dvh]"
-        getStats={true}
-        setStats={handleStats}
-        onError={() => setError(true)}
-      />
     </div>
   );
 }

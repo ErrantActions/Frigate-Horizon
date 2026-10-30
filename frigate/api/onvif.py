@@ -1,7 +1,6 @@
 """Authorized ONVIF operations using saved connections and a shared device owner."""
 
 import asyncio
-import re
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -17,7 +16,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from fastapi.routing import APIRoute
 from lxml.etree import Error as XmlError
 from onvif import ONVIFError
@@ -188,6 +187,7 @@ class ReplayRequest(BaseModel):
     recording_token: str = Field(min_length=1, max_length=256)
     start: datetime
     end: datetime
+    audio: bool = Field(default=True, strict=True)
 
     @model_validator(mode="after")
     def validate_range(self):
@@ -201,29 +201,6 @@ class ReplayRequest(BaseModel):
                 "Use a timezone-aware replay range of at most five minutes"
             )
         return self
-
-
-class ReplayStreamingResponse(StreamingResponse):
-    """Clean up even when ASGI disconnects before consuming the body generator."""
-
-    def __init__(self, content, cleanup):
-        super().__init__(
-            content,
-            media_type="video/mp4",
-            headers={
-                "Cache-Control": "private, no-store",
-                "Accept-Ranges": "none",
-                "X-Accel-Buffering": "no",
-                "Referrer-Policy": "no-referrer",
-            },
-        )
-        self.cleanup = cleanup
-
-    async def __call__(self, scope, receive, send):
-        try:
-            await super().__call__(scope, receive, send)
-        finally:
-            await self.cleanup()
 
 
 async def _operation(request, camera_name, operation, *, mutation=False):
@@ -888,6 +865,7 @@ async def create_replay(camera_name: str, body: ReplayRequest, request: Request)
             body.end,
             configuration.cameras[camera_name].ffmpeg.ffmpeg_path,
             configuration,
+            audio=body.audio,
         )
     except RecordingSourceDenied:
         raise HTTPException(
@@ -948,21 +926,17 @@ async def replay_session_status(camera_name: str, session_id: str, request: Requ
 
 
 @router.get(
-    "/onvif/cameras/{camera_name}/replay/sessions/{session_id}/stream.mp4",
+    "/onvif/cameras/{camera_name}/replay/sessions/{session_id}/hls/{resource}",
     dependencies=READ,
 )
-async def replay_stream(camera_name: str, session_id: str, request: Request):
-    """Authorize each playback request and stream one fixed, authenticated replay."""
+async def replay_hls(
+    camera_name: str, session_id: str, resource: str, request: Request
+):
+    """Authorize every HLS object from one bounded camera-native replay."""
     manager = _replay_manager(request)
-    byte_range = request.headers.get("range")
-    if (
-        byte_range is not None
-        and re.fullmatch(r"bytes=0-(?:\d{1,12})?", byte_range) is None
-    ):
-        raise HTTPException(416, "Create a new fixed replay range to seek")
     try:
-        session, first = await manager.prepare(camera_name, session_id)
-    except KeyError:
+        content = await manager.resource(camera_name, session_id, resource)
+    except (KeyError, FileNotFoundError):
         raise HTTPException(404, "Replay session is not available") from None
     except ReplayUnsupported:
         raise HTTPException(
@@ -971,12 +945,16 @@ async def replay_stream(camera_name: str, session_id: str, request: Request):
     except (OSError, TimeoutError):
         raise HTTPException(502, "Camera replay video is unavailable") from None
 
-    async def connected():
-        return not await request.is_disconnected()
-
-    return ReplayStreamingResponse(
-        manager.stream(session, first, connected),
-        lambda: manager.close(session),
+    return Response(
+        content,
+        media_type="application/vnd.apple.mpegurl"
+        if resource.endswith(".m3u8")
+        else "video/mp4",
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+        },
     )
 
 

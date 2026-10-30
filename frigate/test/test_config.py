@@ -1942,7 +1942,7 @@ class TestConfig(unittest.TestCase):
         assert frigate_config.cameras["back"].snapshots.height == 150
         assert frigate_config.cameras["back"].snapshots.enabled
 
-    def test_global_jsmpeg(self):
+    def test_removed_global_mpeg_quality_is_migrated(self):
         config = {
             "mqtt": {"host": "mqtt"},
             "live": {"quality": 4},
@@ -1966,7 +1966,7 @@ class TestConfig(unittest.TestCase):
         }
 
         frigate_config = FrigateConfig(**config)
-        assert frigate_config.cameras["back"].live.quality == 4
+        assert "quality" not in frigate_config.cameras["back"].live.model_dump()
 
     def test_default_live(self):
         config = {
@@ -1991,7 +1991,7 @@ class TestConfig(unittest.TestCase):
         }
 
         frigate_config = FrigateConfig(**config)
-        assert frigate_config.cameras["back"].live.quality == 8
+        assert "quality" not in frigate_config.cameras["back"].live.model_dump()
 
     def test_global_live_merge(self):
         config = {
@@ -2020,8 +2020,8 @@ class TestConfig(unittest.TestCase):
         }
 
         frigate_config = FrigateConfig(**config)
-        assert frigate_config.cameras["back"].live.quality == 7
-        assert frigate_config.cameras["back"].live.height == 480
+        assert "quality" not in frigate_config.cameras["back"].live.model_dump()
+        assert "height" not in frigate_config.cameras["back"].live.model_dump()
 
     def test_global_timestamp_style(self):
         config = {

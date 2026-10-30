@@ -6,12 +6,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { LiveAutoReason } from "@/types/live";
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { LuInfo } from "react-icons/lu";
-import { MdOutlineRestartAlt } from "react-icons/md";
-import { Button } from "@/components/ui/button";
 
 // Radix Select needs a non-empty value. Auto itself is stored as the
 // absence of a pinned stream
@@ -23,11 +19,8 @@ type LiveStreamSelectProps = {
   pinnedStream: string | undefined;
   playingStream: string;
   autoAvailable: boolean;
-  autoReason?: LiveAutoReason;
   // undefined selects auto
   onSelect: (stream: string | undefined) => void;
-  // sends auto back to the top of the ladder
-  onRetry: () => void;
   disabled: boolean;
 };
 
@@ -36,9 +29,7 @@ export default function LiveStreamSelect({
   pinnedStream,
   playingStream,
   autoAvailable,
-  autoReason,
   onSelect,
-  onRetry,
   disabled,
 }: LiveStreamSelectProps) {
   const { t } = useTranslation(["views/live"]);
@@ -65,10 +56,7 @@ export default function LiveStreamSelect({
           <SelectValue>
             {auto
               ? t("stream.auto.selected", {
-                  stream:
-                    autoReason === "floor"
-                      ? t("stream.auto.floorLabel")
-                      : labelFor(playingStream),
+                  stream: labelFor(playingStream),
                 })
               : labelFor(value)}
           </SelectValue>
@@ -94,34 +82,6 @@ export default function LiveStreamSelect({
           </SelectGroup>
         </SelectContent>
       </Select>
-
-      {auto && autoReason && !disabled && (
-        <div className="flex flex-col items-center gap-3">
-          <div className="flex flex-row items-center gap-1 text-sm text-muted-foreground">
-            <LuInfo className="size-4 shrink-0" />
-            <div>
-              {t(`stream.auto.reason.${autoReason}`, {
-                stream: labelFor(playingStream),
-              })}
-            </div>
-          </div>
-
-          {autoReason !== "saveData" && autoReason !== "viewport" && (
-            <Button
-              className="flex items-center gap-2.5 rounded-lg"
-              aria-label={t("stream.auto.retry")}
-              variant="outline"
-              size="sm"
-              onClick={onRetry}
-            >
-              <MdOutlineRestartAlt className="size-5 text-primary-variant" />
-              <div className="text-primary-variant">
-                {t("stream.auto.retry")}
-              </div>
-            </Button>
-          )}
-        </div>
-      )}
     </>
   );
 }

@@ -17,7 +17,7 @@ import re
 from enum import Enum
 from urllib.parse import unquote
 
-from peewee import DoesNotExist
+from peewee import DatabaseError, DoesNotExist
 
 from frigate.config import FrigateConfig
 from frigate.const import EXPORT_DIR
@@ -120,6 +120,21 @@ def resolve_media_uri(
         return MediaAuthResolution.UNKNOWN, None
 
     root = parts[0]
+    if root == "vod" and len(parts) >= 2 and parts[1] == "preview":
+        if len(parts) < 3:
+            return MediaAuthResolution.UNRESOLVED_MEDIA, None
+        return MediaAuthResolution.CAMERA, parts[2]
+    if root == "vod" and len(parts) >= 2 and parts[1] == "export":
+        if len(parts) < 3:
+            return MediaAuthResolution.UNRESOLVED_MEDIA, None
+        try:
+            export = Export.get(Export.id == parts[2])
+            return MediaAuthResolution.CAMERA, export.camera
+        except DoesNotExist:
+            return MediaAuthResolution.UNRESOLVED_MEDIA, None
+        except DatabaseError:
+            logger.warning("HLS export authorization storage is unavailable")
+            return MediaAuthResolution.UNRESOLVED_MEDIA, None
     if root == "recordings":
         return _resolve_recording(parts)
     if root == "clips":
@@ -290,7 +305,7 @@ def deny_response_for_media_uri(
     if path is None:
         normalized = normalize_request_path(split_request_uri(original_url)[0])
         first = normalized.lstrip("/").split("/", 1)[0]
-        if first in ("clips", "recordings", "exports"):
+        if first in ("clips", "recordings", "exports", "vod"):
             return 403
         return None
 

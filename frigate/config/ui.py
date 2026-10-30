@@ -20,16 +20,16 @@ class UnitSystemEnum(str, Enum):
 
 class UIConfig(FrigateBaseModel):
     live_hls: bool = Field(
-        default=False,
+        default=True,
         strict=True,
         title="Bandwidth-adaptive live HLS",
-        description="Use a private on-demand HLS packager for bandwidth-adaptive live viewing over authenticated HTTPS. Requires the live-hls companion service. Recordings, detection, and camera source settings are unchanged.",
+        description="Enable live viewing through the private on-demand HLS packager over authenticated HTTPS. Requires the live-hls companion service and configured HLS renditions. Disabling this stops live video; it does not select another transport. Stored recordings and detection are unchanged.",
     )
     live_compatibility: bool = Field(
         default=True,
         strict=True,
         title="Allow Live compatibility streams",
-        description="Global administrator control for Frigate-generated H264 Live streams. Disable to use original configured streams only. Camera codecs and recordings are unchanged.",
+        description="Permit H264 live renditions. This legacy administrator gate is preserved: disabling it stops camera live HLS, not selects another viewing transport. Camera codecs and recordings are unchanged.",
     )
     recording_compatibility: bool = Field(
         default=True,

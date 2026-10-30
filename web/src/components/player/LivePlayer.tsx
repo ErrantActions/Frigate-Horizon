@@ -1,5 +1,4 @@
-import WebRtcPlayer from "./WebRTCPlayer";
-import { CameraConfig, FrigateConfig } from "@/types/frigateConfig";
+import { CameraConfig } from "@/types/frigateConfig";
 import AutoUpdatingCameraImage from "../camera/AutoUpdatingCameraImage";
 import ActivityIndicator from "../indicators/activity-indicator";
 import {
@@ -12,19 +11,10 @@ import {
   useState,
 } from "react";
 import { useResizeObserver } from "@/hooks/resize-observer";
-import MSEPlayer from "./MsePlayer";
-import JSMpegPlayer from "./JSMpegPlayer";
 import { MdCircle } from "react-icons/md";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { useCameraActivity } from "@/hooks/use-camera-activity";
-import {
-  LiveHealthSample,
-  LivePlayerError,
-  TwoWayTalkError,
-  LivePlayerMode,
-  PlayerStatsType,
-  VideoResolutionType,
-} from "@/types/live";
+import { PlayerStatsType, VideoResolutionType } from "@/types/live";
 import { getIconForLabel } from "@/utils/iconUtil";
 import Chip from "../indicators/Chip";
 import { cn } from "@/lib/utils";
@@ -40,8 +30,6 @@ import { getTranslatedLabel } from "@/utils/i18n";
 import { formatList } from "@/utils/stringUtil";
 import useSWR from "swr";
 import { Button } from "../ui/button";
-import { useAutoLiveStream } from "@/hooks/use-auto-live-stream";
-import { adaptiveLiveStreams, viewportLiveRung } from "@/utils/adaptiveLive";
 import type { LiveHlsStatus } from "@/types/liveHls";
 import { toast } from "sonner";
 
@@ -53,31 +41,24 @@ type LivePlayerProps = {
   className?: string;
   cameraConfig: CameraConfig;
   streamName: string;
-  preferredLiveMode: LivePlayerMode;
   showStillWithoutActivity?: boolean;
   alwaysShowCameraName?: boolean;
-  useWebGL: boolean;
   windowVisible?: boolean;
   playAudio?: boolean;
   volume?: number;
   playInBackground: boolean;
-  micEnabled?: boolean; // only webrtc supports mic
-  iOSCompatFullScreen?: boolean;
   pip?: boolean;
   autoLive?: boolean;
   showStats?: boolean;
   onClick?: () => void;
   setFullResolution?: React.Dispatch<React.SetStateAction<VideoResolutionType>>;
-  onError?: (error: LivePlayerError) => void;
-  onHealthSample?: (sample: LiveHealthSample) => void;
   streamAuto?: boolean;
-  onMicrophoneError?: (error: TwoWayTalkError) => void;
-  onResetLiveMode?: () => void;
   onLiveAspectChange?: (aspectRatio: number | undefined) => void;
   adaptive?: boolean;
   onStreamChange?: (camera: string, stream: string) => void;
   showResolution?: boolean;
   onHideResolution?: () => void;
+  dataSaver?: boolean;
 };
 
 export default function LivePlayer({
@@ -86,134 +67,66 @@ export default function LivePlayer({
   className,
   cameraConfig,
   streamName: requestedStreamName,
-  preferredLiveMode: requestedLiveMode,
   showStillWithoutActivity: requestedShowStillWithoutActivity = true,
   alwaysShowCameraName = false,
-  useWebGL = false,
   windowVisible = true,
   playAudio = false,
   volume,
   playInBackground = false,
-  micEnabled = false,
-  iOSCompatFullScreen = false,
   pip,
   autoLive = true,
   showStats = false,
   onClick,
   setFullResolution,
-  onError,
-  onHealthSample,
   streamAuto = false,
-  onMicrophoneError,
-  onResetLiveMode,
   onLiveAspectChange,
   adaptive = false,
   onStreamChange,
   showResolution = true,
   onHideResolution,
+  dataSaver = false,
 }: LivePlayerProps) {
   const { t } = useTranslation(["components/player"]);
-  const { data: config } = useSWR<FrigateConfig>("config");
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const [overlayDimensions] = useResizeObserver(overlayRef);
-  const adaptiveStreams = useMemo(
-    () => adaptiveLiveStreams(cameraConfig),
-    [cameraConfig],
-  );
-  const adaptiveSelected =
-    adaptive &&
-    config?.ui.live_compatibility !== false &&
-    adaptiveStreams.length > 1;
+  const adaptiveSelected = adaptive || streamAuto;
   const [hlsFailed, setHlsFailed] = useState(false);
   const [hlsStreamName, setHlsStreamName] = useState<string>();
-  const hlsEligible =
-    config?.ui.live_hls === true &&
-    requestedLiveMode === "mse" &&
-    (adaptiveSelected || streamAuto) &&
-    !micEnabled;
   const failHls = useCallback(() => {
     setHlsFailed(true);
     toast.error(t("adaptive.hlsUnavailable"), {
       id: `live-hls-${cameraConfig.name}`,
     });
   }, [cameraConfig.name, t]);
-  const { data: hlsStatus, isLoading: hlsStatusLoading } =
-    useSWR<LiveHlsStatus>(
-      hlsEligible && !hlsFailed
-        ? `${encodeURIComponent(cameraConfig.name)}/live/hls/status`
-        : null,
-      {
-        revalidateOnFocus: false,
-        shouldRetryOnError: false,
-        onError: failHls,
-      },
-    );
-  const hlsActive = hlsEligible && !hlsFailed && hlsStatus?.available === true;
-  const hlsPending = hlsEligible && !hlsFailed && hlsStatusLoading;
-  const autoStream = useAutoLiveStream({
-    cameraName: cameraConfig.name,
-    streams: adaptiveStreams,
-    selected: adaptiveSelected && !hlsActive && !hlsPending,
-    paused: !windowVisible || !autoLive || hlsActive || hlsPending,
-    minimumRung: viewportLiveRung(
-      cameraConfig,
-      adaptiveStreams,
-      overlayDimensions.height,
-      window.devicePixelRatio,
-    ),
-    allowFloor: false,
-    context: "dashboard",
-    startLow: adaptiveSelected,
-  });
-  const streamName =
-    (adaptiveSelected && !hlsActive
-      ? autoStream.streamName
-      : requestedStreamName) ?? requestedStreamName;
+  const {
+    data: hlsStatus,
+    isLoading: hlsStatusLoading,
+    mutate: reloadHlsStatus,
+  } = useSWR<LiveHlsStatus>(
+    !hlsFailed
+      ? `${encodeURIComponent(cameraConfig.name)}/live/hls/status`
+      : null,
+    {
+      revalidateOnFocus: false,
+      shouldRetryOnError: false,
+      onError: failHls,
+    },
+  );
+  const hlsActive = !hlsFailed && hlsStatus?.available === true;
+  const hlsPending = !hlsFailed && hlsStatusLoading;
+  const hlsUnavailable =
+    hlsFailed || (!hlsStatusLoading && hlsStatus?.available === false);
+  const preferredHeight = dataSaver
+    ? hlsStatus?.renditions[0]?.height
+    : adaptiveSelected
+      ? undefined
+      : Number(/_transcode_(\d+)p$/.exec(requestedStreamName)?.[1]) ||
+        hlsStatus?.renditions.at(-1)?.height;
   const playingStreamName =
     hlsActive && hlsStatus
       ? (hlsStreamName ??
         `${cameraConfig.name}_transcode_${hlsStatus.renditions[0].height}p`)
-      : streamName;
-  const { handleError: handleAdaptiveError } = autoStream;
-  useEffect(() => {
-    if (!hlsActive && !hlsPending)
-      onStreamChange?.(cameraConfig.name, streamName);
-  }, [cameraConfig.name, streamName, onStreamChange, hlsActive, hlsPending]);
-  const [blockedStream, setBlockedStream] = useState<string>();
-  const compatibilityBlocked =
-    config?.ui.live_compatibility === false && blockedStream === streamName;
-  const minimumBlocked =
-    (adaptiveSelected || streamAuto) &&
-    adaptiveStreams.length > 1 &&
-    streamName === adaptiveStreams.at(-1) &&
-    blockedStream === streamName;
-  const handlePlayerError = useCallback(
-    (error: LivePlayerError) => {
-      if (adaptiveSelected && handleAdaptiveError(error)) return;
-      if (
-        (adaptiveSelected || streamAuto) &&
-        adaptiveStreams.length > 1 &&
-        streamName === adaptiveStreams.at(-1)
-      ) {
-        setBlockedStream(streamName);
-        return;
-      }
-      if (config?.ui.live_compatibility === false) {
-        setBlockedStream(streamName);
-        return;
-      }
-      onError?.(error);
-    },
-    [
-      adaptiveSelected,
-      adaptiveStreams,
-      streamAuto,
-      handleAdaptiveError,
-      config?.ui.live_compatibility,
-      streamName,
-      onError,
-    ],
-  );
+      : requestedStreamName;
 
   const internalContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -258,12 +171,6 @@ export default function LivePlayer({
 
   const showStillWithoutActivity =
     requestedShowStillWithoutActivity && !recordingOnly;
-  const preferredLiveMode =
-    recordingOnly && requestedLiveMode === "jsmpeg"
-      ? "MediaSource" in window || "ManagedMediaSource" in window
-        ? "mse"
-        : "webrtc"
-      : requestedLiveMode;
 
   const cameraActive = useMemo(
     () =>
@@ -329,7 +236,6 @@ export default function LivePlayer({
       const timer = setTimeout(() => {
         if (liveReadyRef.current && !cameraActiveRef.current) {
           setLiveReady(false);
-          onResetLiveMode?.();
         }
       }, 500);
 
@@ -338,7 +244,6 @@ export default function LivePlayer({
       };
     }
     // live mode won't change
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoLive, cameraActive, liveReady]);
 
   // camera still state
@@ -379,19 +284,7 @@ export default function LivePlayer({
   useEffect(() => {
     setLiveReady(false);
     setHlsStreamName(undefined);
-  }, [preferredLiveMode, hlsActive, hlsPending]);
-
-  // the stream is part of the MSE and WebRTC keys, so a stream change
-  // remounts them in the same render and the new player is hidden until it
-  // plays. jsmpeg plays the camera, not the stream, and keeps playing
-  const [renderedStream, setRenderedStream] = useState(streamName);
-  if (renderedStream !== streamName) {
-    setRenderedStream(streamName);
-    if (preferredLiveMode !== "jsmpeg" && !hlsActive) {
-      setLiveReady(false);
-      setLiveResolution(undefined);
-    }
-  }
+  }, [hlsActive, hlsPending]);
 
   useEffect(() => {
     if (showStillWithoutActivity && !autoLive) {
@@ -401,7 +294,6 @@ export default function LivePlayer({
 
   const playerIsPlaying = useCallback(() => {
     setLiveReady(true);
-    setBlockedStream(undefined);
   }, []);
 
   // enabled states
@@ -437,7 +329,7 @@ export default function LivePlayer({
   }
 
   let player;
-  if (!autoLive || !streamName || !cameraEnabled) {
+  if (!autoLive || !cameraEnabled) {
     player = null;
   } else if (hlsPending) {
     player = <ActivityIndicator className="w-full" />;
@@ -448,6 +340,7 @@ export default function LivePlayer({
           key={`hls_${cameraConfig.name}_${key}`}
           camera={cameraConfig.name}
           renditions={hlsStatus.renditions}
+          preferredHeight={preferredHeight}
           maximumHeight={
             inDashboard
               ? overlayDimensions.height *
@@ -475,95 +368,8 @@ export default function LivePlayer({
         />
       </Suspense>
     );
-  } else if (preferredLiveMode == "webrtc") {
-    player = (
-      <WebRtcPlayer
-        key={`webrtc_${streamName}_${key}`}
-        className={`size-full ${liveReady ? "" : "hidden"}`}
-        camera={streamName}
-        playbackEnabled={
-          (windowVisible || playInBackground) && (cameraActive || liveReady)
-        }
-        getStats={showStats}
-        setStats={setStats}
-        setFullResolution={handleFullResolution}
-        audioEnabled={playAudio}
-        volume={volume}
-        microphoneEnabled={micEnabled}
-        iOSCompatFullScreen={iOSCompatFullScreen}
-        onPlaying={playerIsPlaying}
-        pip={pip}
-        onError={handlePlayerError}
-        onHealthSample={
-          config?.ui.live_compatibility === false
-            ? undefined
-            : adaptiveSelected
-              ? autoStream.onHealthSample
-              : onHealthSample
-        }
-        onMicrophoneError={onMicrophoneError}
-      />
-    );
-  } else if (preferredLiveMode == "mse") {
-    if ("MediaSource" in window || "ManagedMediaSource" in window) {
-      player = (
-        <MSEPlayer
-          key={`mse_${streamName}_${key}`}
-          className={`size-full ${liveReady ? "" : "hidden"}`}
-          camera={streamName}
-          playbackEnabled={
-            (windowVisible || playInBackground) && (cameraActive || liveReady)
-          }
-          audioEnabled={playAudio}
-          volume={volume}
-          playInBackground={playInBackground}
-          getStats={showStats}
-          setStats={setStats}
-          onPlaying={playerIsPlaying}
-          pip={pip}
-          setFullResolution={handleFullResolution}
-          onError={handlePlayerError}
-          onHealthSample={
-            config?.ui.live_compatibility === false
-              ? undefined
-              : adaptiveSelected
-                ? autoStream.onHealthSample
-                : onHealthSample
-          }
-        />
-      );
-    } else {
-      player = (
-        <div className="w-5xl text-center text-sm">
-          {t("livePlayerRequiredIOSVersion")}
-        </div>
-      );
-    }
-  } else if (preferredLiveMode == "jsmpeg") {
-    if (cameraActive || !showStillWithoutActivity || liveReady) {
-      player = (
-        <JSMpegPlayer
-          key={"jsmpeg_" + key}
-          className="flex justify-center overflow-hidden"
-          camera={cameraConfig.name}
-          width={cameraConfig.detect.width}
-          height={cameraConfig.detect.height}
-          playbackEnabled={
-            cameraActive || !showStillWithoutActivity || liveReady
-          }
-          useWebGL={useWebGL}
-          setStats={setStats}
-          containerRef={containerRef ?? internalContainerRef}
-          onPlaying={playerIsPlaying}
-        />
-      );
-    } else {
-      player = null;
-    }
   } else {
-    player = (
-      <ActivityIndicator className={"w-full [.bg-black_&]:text-white"} />
-    );
+    player = null;
   }
 
   return (
@@ -579,6 +385,7 @@ export default function LivePlayer({
       data-camera={cameraConfig.name}
       data-live-stream={playingStreamName}
       data-live-auto={streamAuto || adaptiveSelected}
+      style={hlsUnavailable ? { aspectRatio: pictureAspect } : undefined}
       className={cn(
         // the card owns the corner: overflow-hidden clips the stream, the still
         // image, and every overlay to this one radius so they stay concentric
@@ -609,23 +416,19 @@ export default function LivePlayer({
           </div>
         )}
       {player}
-      {(compatibilityBlocked || minimumBlocked) && (
+      {hlsUnavailable && (
         <div
           role="alert"
           className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-background/90 p-4 text-center"
         >
-          <p>
-            {minimumBlocked
-              ? t("adaptive.minimumUnavailable")
-              : t("compatibility.liveDisabled")}
-          </p>
+          <p>{t("adaptive.hlsUnavailable")}</p>
           <Button
             onClick={(event) => {
               event.stopPropagation();
-              setBlockedStream(undefined);
+              setHlsFailed(false);
               setLiveReady(false);
               setLiveResolution(undefined);
-              if (adaptiveSelected) autoStream.reset();
+              void reloadHlsStatus();
               setKey((value) => value + 1);
             }}
           >
@@ -635,8 +438,7 @@ export default function LivePlayer({
       )}
       {cameraEnabled &&
         !offline &&
-        !compatibilityBlocked &&
-        !minimumBlocked &&
+        !hlsUnavailable &&
         (!showStillWithoutActivity || isReEnabling) &&
         !liveReady && (
           <div className="absolute inset-0 flex items-center justify-center">
@@ -822,7 +624,7 @@ export default function LivePlayer({
         <PlayerStats
           stats={stats}
           minimal={cameraRef !== undefined}
-          streamLabel={preferredLiveMode === "jsmpeg" ? undefined : streamLabel}
+          streamLabel={streamLabel}
           streamAuto={streamAuto || adaptiveSelected}
         />
       )}

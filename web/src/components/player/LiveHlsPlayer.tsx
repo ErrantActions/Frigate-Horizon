@@ -2,6 +2,7 @@ import { baseUrl } from "@/api/baseUrl";
 import type { LiveHlsRendition } from "@/types/liveHls";
 import type { PlayerStatsType, VideoResolutionType } from "@/types/live";
 import { playWithTemporaryMuteFallback } from "@/utils/videoUtil";
+import { isMseMimeTypeSupported } from "@/utils/codecSupport";
 import Hls from "hls.js";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
@@ -11,6 +12,7 @@ type Props = {
   camera: string;
   renditions: LiveHlsRendition[];
   maximumHeight: number;
+  preferredHeight?: number;
   className?: string;
   playbackEnabled: boolean;
   audioEnabled: boolean;
@@ -28,6 +30,7 @@ export default function LiveHlsPlayer({
   camera,
   renditions,
   maximumHeight,
+  preferredHeight,
   className,
   playbackEnabled,
   audioEnabled,
@@ -45,26 +48,30 @@ export default function LiveHlsPlayer({
   const hlsRef = useRef<Hls | undefined>(undefined);
   const callbacks = useRef({ onPlaying, onError, onResolution, onLevelChange });
   const failed = useRef(false);
-  const capRef = useRef(0);
+  const maximumRendition =
+    renditions.find(
+      (rendition) => rendition.height >= Math.max(720, maximumHeight),
+    ) ?? renditions.at(-1);
+  const saveData = (
+    navigator as Navigator & { connection?: { saveData?: boolean } }
+  ).connection?.saveData;
+  const selectedHeight = saveData ? renditions[0]?.height : preferredHeight;
+  const heightLimit = maximumRendition?.height;
+  const audioSupported =
+    !Hls.isSupported() ||
+    isMseMimeTypeSupported('audio/mp4; codecs="mp4a.40.2"');
+
+  useEffect(() => {
+    if (audioEnabled && !audioSupported) {
+      toast.warning(t("adaptive.audioUnsupported"), {
+        id: `live-hls-audio-${camera}`,
+      });
+    }
+  }, [audioEnabled, audioSupported, camera, t]);
 
   useEffect(() => {
     callbacks.current = { onPlaying, onError, onResolution, onLevelChange };
   }, [onPlaying, onError, onResolution, onLevelChange]);
-
-  useEffect(() => {
-    const saveData = (
-      navigator as Navigator & { connection?: { saveData?: boolean } }
-    ).connection?.saveData;
-    const covering = renditions.findIndex(
-      (rendition) => rendition.height >= Math.max(720, maximumHeight),
-    );
-    capRef.current = saveData
-      ? 0
-      : covering < 0
-        ? renditions.length - 1
-        : covering;
-    if (hlsRef.current) hlsRef.current.autoLevelCapping = capRef.current;
-  }, [renditions, maximumHeight]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -75,6 +82,12 @@ export default function LiveHlsPlayer({
       `api/${encodeURIComponent(camera)}/live/hls/master.m3u8`,
       baseUrl,
     );
+    url.searchParams.set("audio", String(audioSupported));
+    if (selectedHeight !== undefined) {
+      url.searchParams.set("height", String(selectedHeight));
+    } else if (heightLimit !== undefined) {
+      url.searchParams.set("max_height", String(heightLimit));
+    }
     const fail = () => {
       if (!alive || failed.current) return;
       failed.current = true;
@@ -89,6 +102,9 @@ export default function LiveHlsPlayer({
           width: video.videoWidth,
           height: video.videoHeight,
         });
+        if (!hlsRef.current) {
+          callbacks.current.onLevelChange?.(video.videoHeight);
+        }
       }
     };
     const ready = () => {
@@ -116,11 +132,10 @@ export default function LiveHlsPlayer({
         },
       });
       hlsRef.current = hls;
-      hls.autoLevelCapping = capRef.current;
       hls.on(Hls.Events.MEDIA_ATTACHED, () => hls.loadSource(url.href));
       hls.on(Hls.Events.MANIFEST_PARSED, play);
       hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
-        const height = renditions[data.level]?.height;
+        const height = hls.levels[data.level]?.height;
         if (height !== undefined) callbacks.current.onLevelChange?.(height);
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -145,7 +160,14 @@ export default function LiveHlsPlayer({
       video.removeAttribute("src");
       video.load();
     };
-  }, [camera, playbackEnabled, renditions]);
+  }, [
+    camera,
+    playbackEnabled,
+    renditions,
+    selectedHeight,
+    heightLimit,
+    audioSupported,
+  ]);
 
   useEffect(() => {
     const video = videoRef.current;

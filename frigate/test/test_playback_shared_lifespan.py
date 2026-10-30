@@ -114,11 +114,11 @@ class TestPlaybackSharedLifespan(unittest.IsolatedAsyncioTestCase):
     async def test_native_close_failure_does_not_skip_other_services_or_shared_cleanup(
         self,
     ):
-        for failing in ("native_health", "native_talkback", "native_controls"):
+        for failing in ("native_health", "native_controls"):
             with self.subTest(failing=failing):
                 playback = SimpleNamespace(start=AsyncMock(), close=AsyncMock())
                 app, owner, replay = self.create(playback)
-                for name in ("native_health", "native_talkback", "native_controls"):
+                for name in ("native_health", "native_controls"):
                     setattr(
                         app.state,
                         name,
@@ -147,7 +147,6 @@ class TestPlaybackSharedLifespan(unittest.IsolatedAsyncioTestCase):
                             pass
                 for name in (
                     "native_health",
-                    "native_talkback",
                     "native_controls",
                     "plugins",
                 ):

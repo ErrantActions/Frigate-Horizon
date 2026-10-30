@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { baseUrl } from "@/api/baseUrl";
 import { ProtectedMediaItem } from "@/types/protectedMedia";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { GenericVideoPlayer } from "@/components/player/GenericVideoPlayer";
 import {
   Dialog,
   DialogContent,
@@ -107,14 +108,9 @@ export default function ProtectedMediaCard({
             <p role="alert">{t("playbackError")}</p>
           ) : (
             playing && (
-              <video
-                className="w-full"
-                controls
-                autoPlay
-                playsInline
-                src={original}
-                aria-label={t("playOriginal")}
-                onError={() => setPlaybackFailed(true)}
+              <GenericVideoPlayer
+                source={`${baseUrl}vod/event/${encodeURIComponent(item.id)}/index.m3u8`}
+                onPlaybackFailure={() => setPlaybackFailed(true)}
               />
             )
           )}

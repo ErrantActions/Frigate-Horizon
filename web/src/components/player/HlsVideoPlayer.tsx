@@ -22,7 +22,10 @@ import { ASPECT_VERTICAL_LAYOUT, RecordingPlayerError } from "@/types/record";
 import { useTranslation } from "react-i18next";
 import ObjectTrackOverlay from "@/components/overlay/ObjectTrackOverlay";
 import { useIsAdmin } from "@/hooks/use-is-admin";
-import { playWithTemporaryMuteFallback } from "@/utils/videoUtil";
+import {
+  isHlsPlaylistUrl,
+  playWithTemporaryMuteFallback,
+} from "@/utils/videoUtil";
 import {
   PlaybackPerformance,
   playbackBufferTarget,
@@ -470,6 +473,14 @@ export default function HlsVideoPlayer({
 
   useEffect(() => {
     if (!videoRef.current) {
+      return;
+    }
+
+    if (!isHlsPlaylistUrl(activeSource.playlist)) {
+      reportPlaybackFailureRef.current(
+        MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED,
+        t("hlsOnly"),
+      );
       return;
     }
 

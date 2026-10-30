@@ -32,11 +32,7 @@ import {
   GroupStreamingSettings,
 } from "@/types/frigateConfig";
 import { useStreamingSettings } from "@/context/streaming-settings-provider";
-import {
-  IoIosNotifications,
-  IoIosNotificationsOff,
-  IoIosWarning,
-} from "react-icons/io";
+import { IoIosNotifications, IoIosNotificationsOff } from "react-icons/io";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "react-router-dom";
 import { formatUnixTimestampToDateTime } from "@/utils/dateUtil";
@@ -57,7 +53,6 @@ type LiveContextMenuProps = {
   camera: string;
   streamName: string;
   cameraGroup?: string;
-  preferredLiveMode: string;
   isRestreamed: boolean;
   supportsAudio: boolean;
   audioState: boolean;
@@ -70,7 +65,6 @@ type LiveContextMenuProps = {
   toggleStats: () => void;
   showResolution: boolean;
   onResolutionChange: (value: boolean) => void;
-  resetPreferredLiveMode: () => void;
   config?: FrigateConfig;
   children?: ReactNode;
   streamMetadata?: { [key: string]: LiveStreamMetadata };
@@ -80,7 +74,6 @@ export default function LiveContextMenu({
   camera,
   streamName,
   cameraGroup,
-  preferredLiveMode,
   isRestreamed,
   supportsAudio,
   audioState,
@@ -93,7 +86,6 @@ export default function LiveContextMenu({
   toggleStats,
   showResolution,
   onResolutionChange,
-  resetPreferredLiveMode,
   config,
   children,
   streamMetadata,
@@ -162,7 +154,7 @@ export default function LiveContextMenu({
                 [camera]: {
                   streamName: streamName,
                   streamType: "smart",
-                  compatibilityMode: false,
+                  dataSaver: false,
                   playAudio: audioState,
                   volume: volumeState ?? 1,
                 },
@@ -183,9 +175,6 @@ export default function LiveContextMenu({
       volumeState,
     ],
   );
-
-  const isForcedLowBandwidth =
-    groupStreamingSettings?.[camera]?.playerMode === "jsmpeg";
 
   // ui
 
@@ -278,16 +267,8 @@ export default function LiveContextMenu({
             <div className="text-primary-variant smart-capitalize">
               <CameraNameLabel camera={camera} />
             </div>
-            {preferredLiveMode == "jsmpeg" &&
-              isRestreamed &&
-              !isForcedLowBandwidth && (
-                <div className="flex flex-row items-center gap-1">
-                  <IoIosWarning className="mr-1 size-4 text-danger" />
-                  <p className="mr-2 text-xs">{t("lowBandwidthMode")}</p>
-                </div>
-              )}
           </div>
-          {preferredLiveMode != "jsmpeg" && isRestreamed && supportsAudio && (
+          {isRestreamed && supportsAudio && (
             <>
               <ContextMenuSeparator className="mb-1" />
               <div className="p-2 text-sm">
@@ -391,23 +372,6 @@ export default function LiveContextMenu({
               </ContextMenuItem>
             </>
           )}
-          {preferredLiveMode == "jsmpeg" &&
-            isRestreamed &&
-            !isForcedLowBandwidth && (
-              <>
-                <ContextMenuSeparator />
-                <ContextMenuItem disabled={!isEnabled}>
-                  <div
-                    className="flex w-full cursor-pointer items-center justify-start gap-2"
-                    onClick={isEnabled ? resetPreferredLiveMode : undefined}
-                  >
-                    <div className="text-primary">
-                      {t("button.reset", { ns: "common" })}
-                    </div>
-                  </div>
-                </ContextMenuItem>
-              </>
-            )}
           {notificationsEnabledInConfig && isEnabled && (
             <>
               <ContextMenuSeparator />

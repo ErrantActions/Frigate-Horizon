@@ -9,18 +9,26 @@ import { useVideoDimensions } from "@/hooks/use-video-dimensions";
 import HlsVideoPlayer from "./HlsVideoPlayer";
 import ActivityIndicator from "../indicators/activity-indicator";
 import useKeyboardListener from "@/hooks/use-keyboard-listener";
+import { useTranslation } from "react-i18next";
 
 type GenericVideoPlayerProps = {
   source: string;
   onPlaying?: () => void;
+  onPlaybackFailure?: () => void;
+  onPlayerLoaded?: () => void;
+  onClipEnded?: () => void;
   children?: React.ReactNode;
 };
 
 export function GenericVideoPlayer({
   source,
   onPlaying,
+  onPlaybackFailure,
+  onPlayerLoaded,
+  onClipEnded,
   children,
 }: GenericVideoPlayerProps) {
+  const { t } = useTranslation("components/player");
   const [isLoading, setIsLoading] = useState(true);
   const [sourceExists, setSourceExists] = useState(true);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -108,7 +116,7 @@ export function GenericVideoPlayer({
       <div className="relative flex flex-grow items-center justify-center">
         {!sourceExists ? (
           <div className="flex aspect-video w-full items-center justify-center bg-background_alt text-lg text-primary">
-            Video not available
+            {t("playbackFailed")}
           </div>
         ) : (
           <>
@@ -131,6 +139,9 @@ export function GenericVideoPlayer({
                   setIsLoading(false);
                   onPlaying?.();
                 }}
+                onPlaybackFailure={onPlaybackFailure}
+                onPlayerLoaded={onPlayerLoaded}
+                onClipEnded={onClipEnded}
                 setFullResolution={setVideoResolution}
               />
               {!isLoading && children}

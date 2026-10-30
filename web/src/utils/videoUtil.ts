@@ -115,6 +115,19 @@ export function calculateSeekPosition(
  * it temporarily mutes the video and tries to play again.
  * @param video - The HTMLVideoElement to play
  */
+export function isHlsPlaylistUrl(value: string): boolean {
+  try {
+    const url = new URL(value, window.location.href);
+    return (
+      (url.protocol === "https:" || url.protocol === "http:") &&
+      url.pathname.toLowerCase().endsWith(".m3u8")
+    );
+  } catch (error) {
+    if (error instanceof TypeError) return false;
+    throw error;
+  }
+}
+
 export function playWithTemporaryMuteFallback(
   video: Pick<HTMLVideoElement, "src" | "isConnected" | "muted" | "play">,
   cancelled: () => boolean = () => false,

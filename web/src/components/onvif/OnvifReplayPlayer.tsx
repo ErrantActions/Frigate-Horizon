@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { onvifPath } from "@/hooks/use-onvif";
 import type { ReplaySession } from "@/types/onvif";
 import { toast } from "sonner";
+import { GenericVideoPlayer } from "@/components/player/GenericVideoPlayer";
+import { isMseMimeTypeSupported } from "@/utils/codecSupport";
 
 /** Only a same-origin opaque session URL reaches the browser's video element. */
 export default function OnvifReplayPlayer({
@@ -23,7 +25,6 @@ export default function OnvifReplayPlayer({
   const [ended, setEnded] = useState(false);
   const [verificationFailed, setVerificationFailed] = useState(false);
   const current = useRef<string | undefined>(undefined);
-  const video = useRef<HTMLVideoElement>(null);
   const translationRef = useRef(t);
   useEffect(() => {
     translationRef.current = t;
@@ -66,6 +67,11 @@ export default function OnvifReplayPlayer({
           recording_token: recording.token,
           start: recording.start,
           end: recording.end,
+          audio:
+            isMseMimeTypeSupported('audio/mp4; codecs="mp4a.40.2"') ||
+            document
+              .createElement("video")
+              .canPlayType("application/vnd.apple.mpegurl") !== "",
         },
         { signal: controller.signal },
       )
@@ -103,17 +109,9 @@ export default function OnvifReplayPlayer({
         </p>
       )}
       {session && !failed && (
-        <video
-          ref={video}
-          className="max-h-[60dvh] w-full rounded bg-black"
-          aria-label={t("recordings.browserTitle")}
-          src={`${path(session.id)}/stream.mp4`}
-          controls
-          autoPlay
-          muted
-          playsInline
-          preload="auto"
-          onLoadedMetadata={() => {
+        <GenericVideoPlayer
+          source={`${path(session.id)}/hls/index.m3u8`}
+          onPlayerLoaded={() => {
             void axios
               .get<ReplaySession>(path(session.id), { timeout: 10000 })
               .then((response) => {
@@ -129,11 +127,11 @@ export default function OnvifReplayPlayer({
                 }
               });
           }}
-          onEnded={() => {
+          onClipEnded={() => {
             setEnded(true);
             release();
           }}
-          onError={() => {
+          onPlaybackFailure={() => {
             setFailed(true);
             release();
           }}
@@ -147,7 +145,6 @@ export default function OnvifReplayPlayer({
       <Button
         variant="secondary"
         onClick={() => {
-          video.current?.pause();
           release();
           onClose();
         }}

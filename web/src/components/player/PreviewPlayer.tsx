@@ -10,8 +10,8 @@ import useSWR from "swr";
 import { FrigateConfig } from "@/types/frigateConfig";
 import { Preview } from "@/types/preview";
 import { PreviewPlayback } from "@/types/playback";
-import { isCurrentOrPreviousHour } from "@/utils/dateUtil";
 import { baseUrl } from "@/api/baseUrl";
+import { isCurrentOrPreviousHour } from "@/utils/dateUtil";
 import { isAndroid, isChrome, isMobile } from "react-device-detect";
 import { TimeRange } from "@/types/timeline";
 import { Skeleton } from "../ui/skeleton";
@@ -24,6 +24,7 @@ import { useTranslation } from "react-i18next";
 import { useCameraFriendlyName } from "@/hooks/use-camera-friendly-name";
 import { PreviewController } from "./PreviewController";
 import RecordingPreviewPlayer from "./RecordingPreviewPlayer";
+import { previewHlsUrl, useHlsPreview } from "@/hooks/use-hls-preview";
 
 type PreviewPlayerProps = {
   previewRef?: (ref: HTMLDivElement | null) => void;
@@ -203,6 +204,11 @@ function PreviewVideoPlayer({
   }, [cameraPreviews]);
 
   const [currentPreview, setCurrentPreview] = useState(initialPreview);
+  const hlsFailed = useHlsPreview(
+    previewRef,
+    currentPreview ? previewHlsUrl(currentPreview) : undefined,
+    isVisible,
+  );
 
   const onPreviewSeeked = useCallback(() => {
     if (!controller) {
@@ -225,7 +231,6 @@ function PreviewVideoPlayer({
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [videoSize, setVideoSize] = useState<number[]>([0, 0]);
-  const [changeoverTimeout, setChangeoverTimeout] = useState<NodeJS.Timeout>();
 
   const changeSource = useCallback(
     (newPreview: Preview | undefined, video: HTMLVideoElement | null) => {
@@ -249,15 +254,6 @@ function PreviewVideoPlayer({
       }
 
       setCurrentPreview(newPreview);
-      const timeout = setTimeout(() => {
-        if (timeout) {
-          clearTimeout(timeout);
-          setChangeoverTimeout(undefined);
-        }
-
-        previewRef.current?.load();
-      }, 1000);
-      setChangeoverTimeout(timeout);
     },
     [setCurrentHourFrame, videoSize],
   );
@@ -297,14 +293,6 @@ function PreviewVideoPlayer({
       <img
         className={`absolute size-full object-contain ${currentHourFrame ? "visible" : "invisible"}`}
         src={currentHourFrame}
-        onLoad={() => {
-          if (changeoverTimeout) {
-            clearTimeout(changeoverTimeout);
-            setChangeoverTimeout(undefined);
-          }
-
-          previewRef.current?.load();
-        }}
       />
       {isVisible && (
         <video
@@ -340,14 +328,7 @@ function PreviewVideoPlayer({
               }
             }
           }}
-        >
-          {currentPreview != undefined && (
-            <source
-              src={`${baseUrl}${currentPreview.src.substring(1)}`}
-              type={currentPreview.type}
-            />
-          )}
-        </video>
+        />
       )}
       {cameraPreviews && !currentPreview && (
         <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-background_alt text-primary dark:bg-black md:rounded-2xl">
@@ -355,6 +336,14 @@ function PreviewVideoPlayer({
         </div>
       )}
       {firstLoad && <Skeleton className="absolute aspect-video size-full" />}
+      {hlsFailed && (
+        <div
+          role="alert"
+          className="absolute inset-0 flex items-center justify-center bg-background_alt p-2 text-center"
+        >
+          {t("playbackFailed")}
+        </div>
+      )}
     </div>
   );
 }

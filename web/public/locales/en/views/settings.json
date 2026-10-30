@@ -599,7 +599,8 @@
     },
     "save": {
       "success": "Successfully saved new camera {{cameraName}}.",
-      "failure": "Error saving {{cameraName}}."
+      "failure": "Saved {{cameraName}}, but its live sources could not be activated. Restart Frigate to load the saved configuration.",
+      "invalidData": "Camera name and streams are required."
     },
     "testResultLabels": {
       "resolution": "Resolution",
@@ -744,6 +745,7 @@
       }
     },
     "step4": {
+      "hlsPreviewAfterSave": "Connection details are verified here. Save the camera and configure its HLS renditions to preview live video.",
       "description": "Final validation and analysis before saving your new camera. Connect each stream before saving.",
       "validationTitle": "Stream Validation",
       "connectAllStreams": "Connect All Streams",

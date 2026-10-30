@@ -175,7 +175,7 @@ export default function CameraWizardDialog({
   const handleSave = useCallback(
     (wizardData: WizardFormData) => {
       if (!wizardData.cameraName || !wizardData.streams) {
-        toast.error("Invalid wizard data");
+        toast.error(t("cameraWizard.save.invalidData"));
         return;
       }
 
@@ -241,12 +241,28 @@ export default function CameraWizardDialog({
         }
       }
 
-      // Add live.streams configuration for go2rtc streams
       if (wizardData.streams && wizardData.streams.length > 0) {
+        const recordIndex = wizardData.streams.findIndex((stream) =>
+          stream.roles.includes("record"),
+        );
+        const sourceIndex = Math.max(0, recordIndex);
+        const source =
+          wizardData.streams.length === 1
+            ? finalCameraName
+            : `${finalCameraName}_${sourceIndex + 1}`;
         configData.cameras[finalCameraName].live = {
           streams: {},
+          transcode: {
+            enabled: true,
+            source,
+            qualities: [
+              { height: 720, bitrate: 1200 },
+              { height: 1080, bitrate: 2500 },
+            ],
+          },
         };
-        wizardData.streams.forEach((_, index) => {
+        const go2rtcStreams: Record<string, string[]> = {};
+        wizardData.streams.forEach((stream, index) => {
           const go2rtcStreamName =
             wizardData.streams!.length === 1
               ? finalCameraName
@@ -254,7 +270,13 @@ export default function CameraWizardDialog({
           configData.cameras[finalCameraName].live!.streams[
             `Stream ${index + 1}`
           ] = go2rtcStreamName;
+          go2rtcStreams[go2rtcStreamName] = [
+            stream.useFfmpeg
+              ? `ffmpeg:${stream.url}`
+              : `${stream.url}#backchannel=0`,
+          ];
         });
+        configData.go2rtc = { streams: go2rtcStreams };
       }
 
       // Write the ONVIF section when PTZ controls are enabled
@@ -279,7 +301,7 @@ export default function CameraWizardDialog({
 
       axios
         .put("config/set", requestBody)
-        .then((response) => {
+        .then(async (response) => {
           if (response.status === 200) {
             onCameraAdded?.({
               name: finalCameraName,
@@ -288,101 +310,31 @@ export default function CameraWizardDialog({
               )?.testResult?.videoCodec,
             });
 
-            // Configure go2rtc streams for all streams
-            if (wizardData.streams && wizardData.streams.length > 0) {
-              const go2rtcStreams: Record<string, string[]> = {};
-
-              wizardData.streams.forEach((stream, index) => {
-                // Use camera name with index suffix for multiple streams
-                const streamName =
-                  wizardData.streams!.length === 1
-                    ? finalCameraName
-                    : `${finalCameraName}_${index + 1}`;
-
-                const streamUrl = stream.useFfmpeg
-                  ? `ffmpeg:${stream.url}`
-                  : stream.url;
-
-                if (wizardData.hasBackchannel ?? false) {
-                  // Add two streams: one with #backchannel=0 and one without
-                  // in order to avoid taking control of the microphone during connections
-                  go2rtcStreams[streamName] = [
-                    `${streamUrl}#backchannel=0`,
-                    streamUrl,
-                  ];
-                } else {
-                  // Add single stream as normal
-                  go2rtcStreams[streamName] = [streamUrl];
-                }
-              });
-
-              if (Object.keys(go2rtcStreams).length > 0) {
-                // Update frigate go2rtc config for persistence
-                const go2rtcConfigData = {
-                  go2rtc: {
-                    streams: go2rtcStreams,
-                  },
-                };
-
-                const go2rtcRequestBody = {
-                  requires_restart: 0,
-                  config_data: go2rtcConfigData,
-                };
-
-                axios
-                  .put("config/set", go2rtcRequestBody)
-                  .then(() => {
-                    // also update the running go2rtc instance for immediate effect
-                    const updatePromises = Object.entries(go2rtcStreams).map(
-                      ([streamName, urls]) =>
-                        axios.put(
-                          `go2rtc/streams/${streamName}?src=${encodeURIComponent(urls[0])}`,
-                        ),
-                    );
-
-                    Promise.allSettled(updatePromises).then(() => {
-                      toast.success(
-                        t("cameraWizard.save.success", {
-                          cameraName: friendlyName || finalCameraName,
-                        }),
-                        { position: "top-center" },
-                      );
-                      updateConfig();
-                      onClose();
-                    });
-                  })
-                  .catch(() => {
-                    // log the error but don't fail the entire save
-                    toast.warning(
-                      t("cameraWizard.save.failure", {
-                        cameraName: friendlyName || finalCameraName,
-                      }),
-                      { position: "top-center" },
-                    );
-                    updateConfig();
-                    onClose();
-                  });
-              } else {
-                // No valid streams found
-                toast.success(
-                  t("cameraWizard.save.failure", {
-                    cameraName: friendlyName || finalCameraName,
-                  }),
-                  { position: "top-center" },
-                );
-                updateConfig();
-                onClose();
-              }
-            } else {
-              toast.success(
-                t("cameraWizard.save.success", {
+            const updates = await Promise.allSettled(
+              Object.entries(configData.go2rtc?.streams ?? {}).map(
+                ([streamName, urls]) =>
+                  axios.put(
+                    `go2rtc/streams/${streamName}?src=${encodeURIComponent(urls[0])}`,
+                  ),
+              ),
+            );
+            const failed = updates.some(
+              (result) => result.status === "rejected",
+            );
+            const notify = failed ? toast.warning : toast.success;
+            notify(
+              t(
+                failed
+                  ? "cameraWizard.save.failure"
+                  : "cameraWizard.save.success",
+                {
                   cameraName: friendlyName || finalCameraName,
-                }),
-                { position: "top-center" },
-              );
-              updateConfig();
-              onClose();
-            }
+                },
+              ),
+              { position: "top-center" },
+            );
+            updateConfig();
+            onClose();
           } else {
             throw new Error(response.statusText);
           }

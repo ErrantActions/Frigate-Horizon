@@ -105,6 +105,19 @@ class TestResolveMediaUri(unittest.TestCase):
         self._assert("/", MediaAuthResolution.UNKNOWN)
         self._assert("", MediaAuthResolution.UNKNOWN)
 
+    def test_preview_hls_children_keep_their_camera_scope(self):
+        for resource in ("index.m3u8", "init-v1.mp4", "seg-1-v1.m4s"):
+            allowed = f"/vod/preview/front_door/start/100/end/105/{resource}"
+            denied = f"/vod/preview/back_door/start/100/end/105/{resource}"
+            self._assert(allowed, MediaAuthResolution.CAMERA, "front_door")
+            self.assertIsNone(
+                deny_response_for_media_uri(allowed, "limited_user", self.config)
+            )
+            self.assertEqual(
+                deny_response_for_media_uri(denied, "limited_user", self.config),
+                403,
+            )
+
     def test_recordings(self):
         self._assert("/recordings/", MediaAuthResolution.LISTING_NEUTRAL)
         self._assert("/recordings/2026-05-11/", MediaAuthResolution.LISTING_NEUTRAL)

@@ -9,10 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from onvif import ONVIFError
-from starlette.requests import ClientDisconnect
 
 from frigate.api.auth import require_admin_by_default
-from frigate.api.onvif import ReplayStreamingResponse, router
+from frigate.api.onvif import router
 from frigate.config import FrigateConfig
 from frigate.ptz.imaging import ImagingWriteUnverified
 from frigate.ptz.recording_access import source_reference
@@ -370,7 +369,9 @@ class TestOnvifHttp(unittest.TestCase):
     def test_every_replay_status_stream_and_delete_request_requires_camera_access(self):
         for method, suffix in (
             ("GET", "/session"),
-            ("GET", "/session/stream.mp4"),
+            ("GET", "/session/hls/index.m3u8"),
+            ("GET", "/session/hls/init.mp4"),
+            ("GET", "/session/hls/segment_00000.m4s"),
             ("DELETE", "/session"),
         ):
             response = self.client.request(
@@ -436,31 +437,32 @@ class TestOnvifHttp(unittest.TestCase):
         for secret in ("private-password", "private-token", "rtsp://"):
             self.assertNotIn(secret, response.text)
 
-    def test_streaming_response_releases_session_and_is_not_cacheable(self):
-        async def content(*args):
-            yield b"bounded-mp4-content"
-
-        self.app.onvif_replay.prepare = AsyncMock(return_value=(object(), b"header"))
-        self.app.onvif_replay.stream = content
+    def test_hls_resources_are_private_and_do_not_release_the_shared_session(self):
+        self.app.onvif_replay.resource = AsyncMock(return_value=b"#EXTM3U\n")
         self.app.onvif_replay.close = AsyncMock()
         response = self.client.get(
-            "/onvif/cameras/front/replay/sessions/opaque/stream.mp4",
-            headers={**self.headers("front_only"), "Range": "bytes=0-1"},
+            "/onvif/cameras/front/replay/sessions/opaque/hls/index.m3u8",
+            headers=self.headers("front_only"),
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"bounded-mp4-content")
+        self.assertEqual(response.content, b"#EXTM3U\n")
         self.assertEqual(response.headers["cache-control"], "private, no-store")
-        self.assertEqual(response.headers["accept-ranges"], "none")
-        self.app.onvif_replay.close.assert_awaited_once()
+        self.assertEqual(
+            response.headers["content-type"], "application/vnd.apple.mpegurl"
+        )
+        self.app.onvif_replay.close.assert_not_awaited()
 
-    def test_arbitrary_byte_range_never_starts_or_contacts_the_camera(self):
-        self.app.onvif_replay.prepare = AsyncMock()
+    def test_hls_range_requests_return_the_complete_bounded_object(self):
+        self.app.onvif_replay.resource = AsyncMock(return_value=b"init")
         response = self.client.get(
-            "/onvif/cameras/front/replay/sessions/opaque/stream.mp4",
+            "/onvif/cameras/front/replay/sessions/opaque/hls/init.mp4",
             headers={**self.headers("front_only"), "Range": "bytes=500-1000"},
         )
-        self.assertEqual(response.status_code, 416)
-        self.app.onvif_replay.prepare.assert_not_awaited()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"init")
+        self.app.onvif_replay.resource.assert_awaited_once_with(
+            "front", "opaque", "init.mp4"
+        )
         self.owner.execute.assert_not_awaited()
 
     def test_native_events_are_explicitly_status_history_only(self):
@@ -602,20 +604,3 @@ class TestOnvifHttp(unittest.TestCase):
             headers=self.headers("front_only"),
         )
         self.assertEqual(response.status_code, 403)
-
-
-class TestReplayAsgiCleanup(unittest.IsolatedAsyncioTestCase):
-    async def test_disconnect_before_body_iteration_still_releases_the_session(self):
-        async def content():
-            yield b"mp4"
-
-        cleanup = AsyncMock()
-        response = ReplayStreamingResponse(content(), cleanup)
-
-        async def send(message):
-            raise OSError("synthetic disconnected browser")
-
-        scope = {"type": "http", "asgi": {"spec_version": "2.4"}}
-        with self.assertRaises((OSError, ClientDisconnect)):
-            await response(scope, AsyncMock(), send)
-        cleanup.assert_awaited_once()

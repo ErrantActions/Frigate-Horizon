@@ -2,17 +2,17 @@
  * Preview hour rollover -- MEDIUM tier.
  *
  * Tiles beside the main player must not collapse to "No Preview Found" when
- * the clock crosses an hour boundary with the page open: frames before, the
- * hour's mp4 after. The mp4 src resolves to the /clips/** mock, which serves
- * a PNG, so these assert the <source> is wired up, not that it decodes.
+ * the clock crosses an hour boundary with the page open: frames before,
+ * the hour's authenticated HLS mapping after.
  */
 
 import { test, expect } from "../fixtures/frigate-test";
 import { PLACEHOLDER_PNG } from "../helpers/api-mocker";
+import { mockHlsMedia } from "../helpers/hls-media";
 
 const HOUR_START = Date.UTC(2026, 8, 1, 10, 0, 0) / 1000;
 const HOUR_END = Date.UTC(2026, 8, 1, 11, 0, 0) / 1000;
-const REVIEW_START = HOUR_START + 900; // 10:15, inside the slot under test
+const REVIEW_START = HOUR_START + 5;
 
 // close to the boundary so fastForward skips few unrelated app timers
 const JUST_BEFORE_ROLLOVER = new Date(Date.UTC(2026, 8, 1, 10, 59, 50));
@@ -54,8 +54,39 @@ async function openAtRollover(frigateApp: {
   installDefaults: (o?: { reviews?: unknown[] }) => Promise<void>;
   goto: (p: string) => Promise<void>;
 }) {
+  test.setTimeout(60000);
   await frigateApp.page.clock.install({ time: JUST_BEFORE_ROLLOVER });
   await frigateApp.installDefaults({ reviews: [review] });
+  for (const pattern of [
+    "**/api/review/activity/motion?**",
+    "**/api/recordings/unavailable?**",
+  ]) {
+    await frigateApp.page.route(pattern, (route) =>
+      route.fulfill({ json: [] }),
+    );
+  }
+  await frigateApp.page.route(
+    "**/api/front_door/recordings/coverage?**",
+    (route) =>
+      route.fulfill({
+        json: {
+          spans: [
+            { start_time: HOUR_START, end_time: HOUR_END, streams: ["main"] },
+          ],
+          streams: { main: { video_codec: "h264", has_audio: false } },
+          timelines: {
+            auto: [
+              { start_time: HOUR_START, end_time: HOUR_END, duration: 3600000 },
+            ],
+            main: [
+              { start_time: HOUR_START, end_time: HOUR_END, duration: 3600000 },
+            ],
+            sub: [],
+          },
+        },
+      }),
+  );
+  await mockHlsMedia(frigateApp.page, /\/vod\/front_door\/.*(?:m3u8|mp4|m4s)/);
 
   let hourRolled = false;
 
@@ -78,12 +109,21 @@ async function openAtRollover(frigateApp: {
   await frigateApp.page.route("**/thumbnail.webp", (route) =>
     route.fulfill({ contentType: "image/png", body: PLACEHOLDER_PNG }),
   );
+  const hlsRequests = await mockHlsMedia(frigateApp.page, "**/vod/preview/**", {
+    audio: false,
+  });
 
   await frigateApp.goto("/review?id=review-rollover-001");
+  await expect(frigateApp.page.locator("video").first()).toHaveJSProperty(
+    "videoWidth",
+    1280,
+    { timeout: 15000 },
+  );
 
   return async () => {
     hourRolled = true;
     await frigateApp.page.clock.fastForward("00:40");
+    return hlsRequests;
   };
 }
 
@@ -107,9 +147,6 @@ test.describe("Preview hour rollover: desktop @medium", () => {
     // both handles are URLs only PreviewPlayer renders: the main camera's
     // scrub preview and one tile per other camera, all hit by the same bug
     const frameTiles = frigateApp.page.locator('img[src*="/thumbnail.webp"]');
-    const mp4Tiles = frigateApp.page.locator(
-      `video source[src*="${HOUR_START}-${HOUR_END}"]`,
-    );
     const barePanel = frigateApp.page.getByText("No Preview Found", {
       exact: true,
     });
@@ -117,9 +154,24 @@ test.describe("Preview hour rollover: desktop @medium", () => {
     await expect(frameTiles).toHaveCount(CAMERAS.length, { timeout: 15_000 });
     await expect(barePanel).toHaveCount(0);
 
-    await rollOver();
+    const hlsRequests = await rollOver();
 
-    await expect(mp4Tiles).toHaveCount(CAMERAS.length, { timeout: 15_000 });
+    await expect
+      .poll(
+        () =>
+          [
+            ...new Set(
+              hlsRequests.filter((url) => url.endsWith("/index.m3u8")),
+            ),
+          ].sort(),
+        { timeout: 15_000 },
+      )
+      .toEqual(
+        CAMERAS.map(
+          (camera) =>
+            `${new URL(frigateApp.page.url()).origin}/vod/preview/${camera}/start/${HOUR_START}/end/${HOUR_END + 0.4}/index.m3u8`,
+        ).sort(),
+      );
     await expect(barePanel).toHaveCount(0);
   });
 });
@@ -142,9 +194,6 @@ test.describe("Preview hour rollover: mobile @medium @mobile", () => {
     // the tile row is desktop-only, but the main player's scrub preview is a
     // PreviewPlayer too, so mobile has exactly one and it hits the same bug
     const frameTiles = frigateApp.page.locator('img[src*="/thumbnail.webp"]');
-    const mp4Tiles = frigateApp.page.locator(
-      `video source[src*="${HOUR_START}-${HOUR_END}"]`,
-    );
     const barePanel = frigateApp.page.getByText("No Preview Found", {
       exact: true,
     });
@@ -152,9 +201,19 @@ test.describe("Preview hour rollover: mobile @medium @mobile", () => {
     await expect(frameTiles).toHaveCount(1, { timeout: 15_000 });
     await expect(barePanel).toHaveCount(0);
 
-    await rollOver();
+    const hlsRequests = await rollOver();
 
-    await expect(mp4Tiles).toHaveCount(1, { timeout: 15_000 });
+    await expect
+      .poll(
+        () =>
+          hlsRequests.some((url) =>
+            url.includes(
+              `/vod/preview/front_door/start/${HOUR_START}/end/${HOUR_END + 0.4}/index.m3u8`,
+            ),
+          ),
+        { timeout: 15_000 },
+      )
+      .toBe(true);
     await expect(barePanel).toHaveCount(0);
   });
 });

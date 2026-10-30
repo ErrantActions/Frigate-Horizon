@@ -24,7 +24,7 @@ FFPROBE = os.environ.get("ONVIF_TEST_FFPROBE") or (
     FFMPEG, "Set ONVIF_TEST_FFMPEG to the image's existing FFmpeg binary"
 )
 class TestReplayRealFfmpeg(unittest.IsolatedAsyncioTestCase):
-    async def test_generated_h264_rtp_becomes_decodable_browser_mp4(self):
+    async def test_generated_h264_rtp_becomes_decodable_browser_hls(self):
         await self._replay(False)
 
     async def test_recorded_g711_audio_is_normalized_to_aac_lc_48k(self):
@@ -236,17 +236,20 @@ class TestReplayRealFfmpeg(unittest.IsolatedAsyncioTestCase):
                 FFMPEG,
                 configuration,
             )
-            session, first = await asyncio.wait_for(
-                manager.prepare("mock", public["id"]), 20
+            session = await asyncio.wait_for(manager.prepare("mock", public["id"]), 20)
+            await asyncio.wait_for(session.process.wait(), 15)
+            manifest = await manager.resource("mock", public["id"], "index.m3u8")
+            self.assertIn(b"#EXTM3U", manifest)
+            self.assertIn(b"#EXT-X-ENDLIST", manifest)
+            self.assertNotIn(b"rtsp:", manifest)
+            segment = next(
+                line
+                for line in manifest.decode().splitlines()
+                if line and not line.startswith("#")
             )
-
-            async def connected():
-                return True
-
-            chunks = [
-                chunk async for chunk in manager.stream(session, first, connected)
-            ]
-            content = b"".join(chunks)
+            content = await manager.resource(
+                "mock", public["id"], "init.mp4"
+            ) + await manager.resource("mock", public["id"], segment)
             self.assertIn(b"ftyp", content)
             self.assertIn(b"moof", content)
             self.assertIn(b"mdat", content)
@@ -263,15 +266,13 @@ class TestReplayRealFfmpeg(unittest.IsolatedAsyncioTestCase):
                 "-of",
                 "json",
                 "-i",
-                "pipe:0",
-                stdin=asyncio.subprocess.PIPE,
+                str(session.media_path / "index.m3u8"),
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             senders.append(probe)
-            probe_output, probe_error = await asyncio.wait_for(
-                probe.communicate(content), 10
-            )
+            probe_output, probe_error = await asyncio.wait_for(probe.communicate(), 10)
             self.assertEqual(probe.returncode, 0, probe_error.decode(errors="replace"))
             streams = json.loads(probe_output)["streams"]
             video = next(
@@ -293,16 +294,16 @@ class TestReplayRealFfmpeg(unittest.IsolatedAsyncioTestCase):
                 "-threads",
                 "1",
                 "-i",
-                "pipe:0",
+                str(session.media_path / "index.m3u8"),
                 "-f",
                 "null",
                 "-",
-                stdin=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
             senders.append(decoder)
-            _stdout, stderr = await asyncio.wait_for(decoder.communicate(content), 10)
+            _stdout, stderr = await asyncio.wait_for(decoder.communicate(), 10)
             self.assertEqual(decoder.returncode, 0, stderr.decode(errors="replace"))
             self.assertEqual(failures, [])
         finally:

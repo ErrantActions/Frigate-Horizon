@@ -1,10 +1,14 @@
-from pydantic import Field, field_validator
+import logging
+from typing import Any
+
+from pydantic import Field, field_validator, model_validator
 
 from frigate.util.live_streams import DEFAULT_TRANSCODE_QUALITIES
 
 from ..base import FrigateBaseModel
 
 __all__ = ["CameraLiveConfig", "LiveTranscodeConfig", "LiveTranscodeQualityConfig"]
+logger = logging.getLogger(__name__)
 
 
 class LiveTranscodeQualityConfig(FrigateBaseModel):
@@ -55,6 +59,21 @@ class LiveTranscodeConfig(FrigateBaseModel):
 
 
 class CameraLiveConfig(FrigateBaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def remove_retired_encoder_settings(cls, value: Any) -> Any:
+        """Migrate obsolete MPEG encoder options without selecting another transport."""
+        if isinstance(value, dict) and {"height", "quality"}.intersection(value):
+            logger.warning(
+                "Ignoring retired live height/quality settings; live viewing uses HLS renditions"
+            )
+            return {
+                key: item
+                for key, item in value.items()
+                if key not in {"height", "quality"}
+            }
+        return value
+
     streams: dict[str, str] = Field(
         default_factory=list,
         title="Live stream names",
@@ -64,16 +83,4 @@ class CameraLiveConfig(FrigateBaseModel):
         default_factory=LiveTranscodeConfig,
         title="Transcoded streams",
         description="Lower-quality live streams transcoded on demand by go2rtc.",
-    )
-    height: int = Field(
-        default=720,
-        title="Live height",
-        description="Height (pixels) to render the jsmpeg live stream in the Web UI; must be <= detect stream height.",
-    )
-    quality: int = Field(
-        default=8,
-        ge=1,
-        le=31,
-        title="Live quality",
-        description="Encoding quality for the jsmpeg stream (1 highest, 31 lowest).",
     )

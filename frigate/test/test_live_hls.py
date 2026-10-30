@@ -33,6 +33,9 @@ def configuration(*, enabled=True, manual=True):
     ]
     return SimpleNamespace(
         ui=SimpleNamespace(live_compatibility=True),
+        birdseye=SimpleNamespace(
+            enabled=False, restream=False, height=720, bitrate=2500
+        ),
         cameras={
             "front": SimpleNamespace(
                 enabled=enabled,
@@ -151,6 +154,35 @@ class TestLiveHls(unittest.TestCase):
                         "video1_stream.m3u8?session=private-test-1", uri
                     )
                 )
+
+    def test_video_only_master_does_not_advertise_audio_or_audio_codecs(self):
+        renditions = camera_renditions(configuration(), "front")
+        master = parse_packager_master(PRIVATE_MASTER)
+        text = master_playlist(
+            tuple((value, master) for value in renditions), audio=False
+        )
+        self.assertIn('CODECS="avc1.640029"', text)
+        self.assertNotIn("mp4a", text)
+        self.assertNotIn("#EXT-X-MEDIA:", text)
+        self.assertNotIn("AUDIO=", text)
+        self.assertIn("720p/video1_stream.m3u8", text)
+
+    def test_single_rendition_has_a_private_hls_path(self):
+        config = configuration()
+        del config.cameras["front"].live.streams["1080p"]
+        self.assertEqual(len(packager_config(config)["paths"]), 1)
+
+    def test_birdseye_requires_an_enabled_restream_and_uses_its_bitrate(self):
+        config = configuration()
+        self.assertEqual(camera_renditions(config, "birdseye"), ())
+        config.birdseye.enabled = True
+        self.assertEqual(camera_renditions(config, "birdseye"), ())
+        config.birdseye.restream = True
+        self.assertEqual(
+            camera_renditions(config, "birdseye"),
+            (LiveHlsRendition("birdseye", 720, 2500),),
+        )
+        self.assertIn(rendition_path("birdseye", 720), packager_config(config)["paths"])
 
     def test_private_sessions_are_removed_from_maps_parts_audio_and_segments(self):
         source = (

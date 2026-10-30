@@ -33,7 +33,39 @@ export function StreamingSettingsProvider({
 
   useEffect(() => {
     if (isPersistedStreamingSettingsLoaded) {
-      setAllGroupsStreamingSettings(persistedGroupStreamingSettings ?? {});
+      const saved = persistedGroupStreamingSettings ?? {};
+      const needsMigration = Object.values(saved).some((group) =>
+        Object.values(group).some(
+          (settings) =>
+            "playerMode" in settings ||
+            "compatibilityMode" in settings ||
+            settings.dataSaver === undefined,
+        ),
+      );
+      setAllGroupsStreamingSettings(
+        needsMigration
+          ? Object.fromEntries(
+              Object.entries(saved).map(([group, settings]) => [
+                group,
+                Object.fromEntries(
+                  Object.entries(settings).map(([camera, value]) => [
+                    camera,
+                    {
+                      streamName: value.streamName,
+                      streamType: value.streamType,
+                      dataSaver:
+                        value.dataSaver ??
+                        ("playerMode" in value &&
+                          value.playerMode === "jsmpeg"),
+                      playAudio: value.playAudio,
+                      volume: value.volume,
+                    },
+                  ]),
+                ),
+              ]),
+            )
+          : saved,
+      );
     }
   }, [isPersistedStreamingSettingsLoaded, persistedGroupStreamingSettings]);
 

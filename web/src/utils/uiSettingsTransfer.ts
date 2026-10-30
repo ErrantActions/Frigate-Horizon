@@ -7,14 +7,27 @@ export const UI_SETTINGS_FILE_VERSION = 1;
 
 export type TransferSection = "layouts" | "streaming" | "preferences";
 
-const cameraStreamingSettingsSchema = z.object({
-  streamName: z.string(),
-  streamType: z.enum(["no-streaming", "smart", "continuous"]),
-  playerMode: z.enum(["mse", "webrtc", "jsmpeg"]).optional().catch(undefined),
-  compatibilityMode: z.boolean(),
-  playAudio: z.boolean(),
-  volume: z.number(),
-});
+const cameraStreamingSettingsSchema = z.preprocess(
+  (value) => {
+    if (
+      value !== null &&
+      typeof value === "object" &&
+      !("dataSaver" in value) &&
+      "playerMode" in value &&
+      value.playerMode === "jsmpeg"
+    ) {
+      return { ...value, dataSaver: true };
+    }
+    return value;
+  },
+  z.object({
+    streamName: z.string(),
+    streamType: z.enum(["no-streaming", "smart", "continuous"]),
+    dataSaver: z.boolean().default(false),
+    playAudio: z.boolean(),
+    volume: z.number(),
+  }),
+);
 
 const allGroupsStreamingSettingsSchema = z.record(
   z.string(),

@@ -34,10 +34,10 @@ def plan_for(request: Request, camera_name: str) -> tuple[LiveHlsRendition, ...]
     config = request.app.frigate_config
     if not config.ui.live_hls:
         raise HTTPException(503, "live_hls_disabled")
-    if camera_name not in config.cameras:
+    if camera_name != "birdseye" and camera_name not in config.cameras:
         raise HTTPException(404, "camera_not_found")
     plan = camera_renditions(config, camera_name)
-    if len(plan) < 2:
+    if not plan:
         raise HTTPException(404, "live_hls_ladder_unavailable")
     return plan
 
@@ -57,10 +57,10 @@ async def live_hls_status(
     """Return whether this authorized camera has a configured live HLS ladder."""
     config = request.app.frigate_config
     response.headers.update(HEADERS)
-    if camera_name not in config.cameras:
+    if camera_name != "birdseye" and camera_name not in config.cameras:
         raise HTTPException(404, "camera_not_found")
     plan = camera_renditions(config, camera_name)
-    available = config.ui.live_hls and len(plan) >= 2
+    available = config.ui.live_hls and bool(plan)
     if available:
         try:
             await manager_for(request).sync_config()
@@ -90,11 +90,23 @@ async def live_hls_status(
         }
     },
 )
-async def live_hls_master(request: Request, camera_name: str) -> Response:
+async def live_hls_master(
+    request: Request,
+    camera_name: str,
+    audio: bool = Query(True),
+    height: int | None = Query(None, ge=144, le=2160),
+    max_height: int | None = Query(None, ge=144, le=2160),
+) -> Response:
     """Advertise a low-first bitrate ladder without exposing private upstream URLs."""
     plan = plan_for(request, camera_name)
+    if height is not None:
+        plan = tuple(value for value in plan if value.height == height)
+    if max_height is not None:
+        plan = tuple(value for value in plan if value.height <= max_height)
+    if not plan:
+        raise HTTPException(404, "live_hls_rendition_not_found")
     try:
-        text = await manager_for(request).master(camera_name, plan)
+        text = await manager_for(request).master(camera_name, plan, audio=audio)
     except LiveHlsError as error:
         raise HTTPException(error.status, error.code) from None
     return Response(

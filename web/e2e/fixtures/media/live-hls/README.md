@@ -13,3 +13,9 @@ names to the proxy's `.mp4` resource convention without changing media bytes.
 The browser regression uses actual HTTP media transfers and Chromium network
 throttling. It does not infer available bandwidth from a real-time WebSocket
 or use delayed mocked response bodies as a bandwidth substitute.
+
+The `video-only` directory contains a separate eight-second `testsrc2` pattern,
+1280x720 at 5 fps, with no audio stream. It was generated with FFmpeg 8.0,
+libx264 ultrafast, baseline/yuv420p, 200 kbps, a 400-kbit buffer, ten-frame
+closed GOPs, and two-second fMP4 HLS segments. The AAC-unavailable browser test
+decodes these actual video-only fragments, not relabeled multiplexed AAC media.

@@ -162,11 +162,22 @@ def require_admin_by_default():
                     "/onvif/cameras/{camera_name}/replay",
                     "/onvif/cameras/{camera_name}/replay/sessions",
                     "/onvif/cameras/{camera_name}/replay/sessions/{session_id}",
-                    "/onvif/cameras/{camera_name}/replay/sessions/{session_id}/stream.mp4",
+                    "/onvif/cameras/{camera_name}/replay/sessions/{session_id}/hls/{resource}",
                 }
             )
-            and request.path_params.get("camera_name")
-            in request.app.frigate_config.cameras
+            and (
+                request.path_params.get("camera_name")
+                in request.app.frigate_config.cameras
+                or (
+                    request.path_params.get("camera_name") == "birdseye"
+                    and route.path
+                    in {
+                        "/{camera_name}/live/hls/status",
+                        "/{camera_name}/live/hls/master.m3u8",
+                        "/{camera_name}/live/hls/{height}p/{resource:path}",
+                    }
+                )
+            )
         ):
             return
 

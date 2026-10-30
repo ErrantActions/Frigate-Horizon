@@ -23,7 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import BirdseyeLivePlayer from "@/components/player/BirdseyeLivePlayer";
+import BirdseyeLivePlayer from "@/components/player/BirdseyeHlsPlayer";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { useNavigate } from "react-router-dom";
@@ -368,7 +368,6 @@ function UIPlayground() {
                 {birdseyeConfig && (
                   <BirdseyeLivePlayer
                     birdseyeConfig={birdseyeConfig}
-                    liveMode={birdseyeConfig.restream ? "mse" : "jsmpeg"}
                     containerRef={containerRef}
                   />
                 )}

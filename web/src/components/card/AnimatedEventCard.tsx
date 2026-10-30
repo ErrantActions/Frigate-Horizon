@@ -1,6 +1,6 @@
 import TimeAgo from "../dynamic/TimeAgo";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { FrigateConfig } from "@/types/frigateConfig";
 import { REVIEW_PADDING, ReviewSegment } from "@/types/review";
@@ -24,6 +24,7 @@ import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { getTranslatedLabel } from "@/utils/i18n";
 import { formatList } from "@/utils/stringUtil";
+import { useHlsPreview } from "@/hooks/use-hls-preview";
 
 type AnimatedEventCardProps = {
   event: ReviewSegment;
@@ -147,6 +148,18 @@ export function AnimatedEventCard({
     const detect = config.cameras[event.camera].detect;
     return detect.width / detect.height;
   }, [alertVideos, config, event]);
+  const fallbackVideo = useRef<HTMLVideoElement | null>(null);
+  const fallbackPlaylist =
+    `${baseUrl}vod/${encodeURIComponent(event.camera)}` +
+    `/start/${initialTimeRange.after}/end/${initialTimeRange.before}/index-v1.m3u8`;
+  const fallbackFailed = useHlsPreview(
+    fallbackVideo,
+    fallbackPlaylist,
+    !!alertVideos &&
+      windowVisible &&
+      previews !== undefined &&
+      previews.length === 0,
+  );
 
   return (
     <Tooltip>
@@ -228,8 +241,24 @@ export function AnimatedEventCard({
                       }}
                       windowVisible={windowVisible}
                     />
+                  ) : fallbackFailed ? (
+                    <>
+                      <img
+                        className="size-full object-contain"
+                        src={`${apiHost}${event.thumb_path.replace("/media/frigate/", "")}`}
+                        alt={tooltipText}
+                        onLoad={() => setIsLoaded(true)}
+                      />
+                      <span
+                        role="alert"
+                        className="absolute inset-x-0 bottom-0 bg-background_alt/90 text-center text-xs"
+                      >
+                        {t("playbackFailed", { ns: "components/player" })}
+                      </span>
+                    </>
                   ) : (
                     <video
+                      ref={fallbackVideo}
                       preload="auto"
                       autoPlay
                       playsInline
@@ -242,12 +271,7 @@ export function AnimatedEventCard({
                           setIsLoaded(true);
                         }
                       }}
-                    >
-                      <source
-                        src={`${baseUrl}api/review/${event.id}/preview?format=mp4`}
-                        type="video/mp4"
-                      />
-                    </video>
+                    />
                   )}
                 </>
               )}

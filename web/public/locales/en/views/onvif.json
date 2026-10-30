@@ -292,6 +292,7 @@
     "browserHelp": "Authenticated replay of the selected fixed range, transcoded to H.264 with optional AAC-LC audio at 48 kHz. Use the player's controls to unmute recorded audio. Camera URLs, passwords, and vendor query tokens stay on the server. To seek beyond buffered media, close this replay and search a new start time. A camera may include up to five seconds of decoder preroll.",
     "audio": {
       "pending": "Recorded audio is being verified",
+      "not_requested": "Recorded audio is disabled for this browser",
       "available": "Recorded audio available: AAC-LC at 48 kHz",
       "not_recorded": "This recording reports no recorded audio",
       "not_present": "No audio track is present in this replay stream",

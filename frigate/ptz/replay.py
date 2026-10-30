@@ -2,10 +2,13 @@
 
 import asyncio
 import contextlib
+import re
 import secrets
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 from frigate.ptz.replay_transport import ReplayGateway, ReplaySource, ReplayUnsupported
 
@@ -14,6 +17,10 @@ MAX_SESSIONS = 2
 UNCLAIMED_SECONDS = 20
 READ_TIMEOUT = 15
 WALL_TIMEOUT = 360
+IDLE_TIMEOUT = 30
+MAX_RESOURCE_BYTES = 8 * 1024 * 1024
+MAX_SESSION_BYTES = 256 * 1024 * 1024
+HLS_RESOURCE = re.compile(r"(?:index\.m3u8|init\.mp4|segment_\d{5}\.m4s)")
 
 
 class ReplayCapacityError(RuntimeError):
@@ -28,6 +35,7 @@ class ReplaySession:
     end: datetime
     ffmpeg: str
     configuration: object = field(repr=False)
+    audio_requested: bool = True
     identifier: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     created: float = field(default_factory=time.monotonic)
     phase: str = "ready"
@@ -42,6 +50,11 @@ class ReplaySession:
     error_code: str | None = None
     audio: bool | None = None
     audio_status: str = "pending"
+    directory: tempfile.TemporaryDirectory | None = field(default=None, repr=False)
+    media_path: Path | None = field(default=None, repr=False)
+    prepare_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    monitor: asyncio.Task | None = field(default=None, repr=False)
+    last_request: float = field(default_factory=time.monotonic)
 
     def public(self):
         """Return only an opaque identity, fixed range, and non-secret status."""
@@ -59,6 +72,7 @@ class ReplaySession:
             "audio_codec": "aac_lc" if self.audio else None,
             "audio_sample_rate": 48000 if self.audio else None,
             "error_code": self.error_code,
+            "protocol": "hls",
         }
 
 
@@ -95,7 +109,7 @@ class OnvifReplayManager:
         self.resolving.discard(camera)
         self.discovery_tasks.pop(camera, None)
 
-    def create(self, camera, source, start, end, ffmpeg, configuration):
+    def create(self, camera, source, start, end, ffmpeg, configuration, *, audio=True):
         """Reserve a bounded, unclaimed session; do not start any process yet."""
         duration = (end - start).total_seconds()
         if self.closing:
@@ -109,7 +123,9 @@ class OnvifReplayManager:
             session.camera == camera for session in self.sessions.values()
         ):
             raise ReplayCapacityError("Replay capacity is in use")
-        session = ReplaySession(camera, source, start, end, ffmpeg, configuration)
+        session = ReplaySession(
+            camera, source, start, end, ffmpeg, configuration, audio_requested=audio
+        )
         if source.recorded_audio is False:
             session.audio = False
             session.audio_status = "not_recorded"
@@ -149,6 +165,8 @@ class OnvifReplayManager:
 
     def command(self, session, local_uri):
         """Pass no camera URI, password, or query token to FFmpeg argv."""
+        if session.media_path is None:
+            raise ReplayUnsupported("Replay HLS storage is unavailable")
         return [
             session.ffmpeg,
             "-hide_banner",
@@ -165,8 +183,7 @@ class OnvifReplayManager:
             local_uri,
             "-map",
             "0:v:0",
-            "-map",
-            "0:a:0?",
+            *(["-map", "0:a:0?"] if session.audio_requested else []),
             "-map_metadata",
             "-1",
             "-map_metadata:s:v",
@@ -191,16 +208,22 @@ class OnvifReplayManager:
             "avc1",
             "-pix_fmt",
             "yuv420p",
-            "-c:a",
-            "aac",
-            "-profile:a",
-            "aac_low",
-            "-ar",
-            "48000",
-            "-ac",
-            "2",
-            "-b:a",
-            "128k",
+            *(
+                [
+                    "-c:a",
+                    "aac",
+                    "-profile:a",
+                    "aac_low",
+                    "-ar",
+                    "48000",
+                    "-ac",
+                    "2",
+                    "-b:a",
+                    "128k",
+                ]
+                if session.audio_requested
+                else ["-an"]
+            ),
             "-threads",
             "2",
             "-filter_threads",
@@ -215,28 +238,51 @@ class OnvifReplayManager:
             "8000k",
             "-avoid_negative_ts",
             "make_zero",
-            "-frag_duration",
-            "1000000",
-            "-movflags",
-            "frag_keyframe+empty_moov+default_base_moof",
             "-f",
-            "mp4",
-            "pipe:1",
+            "hls",
+            "-hls_time",
+            "1",
+            "-hls_list_size",
+            "0",
+            "-hls_playlist_type",
+            "event",
+            "-hls_segment_type",
+            "fmp4",
+            "-hls_fmp4_init_filename",
+            "init.mp4",
+            "-hls_flags",
+            "independent_segments+temp_file",
+            "-hls_segment_filename",
+            str(session.media_path / "segment_%05d.m4s"),
+            str(session.media_path / "index.m3u8"),
         ]
 
     async def prepare(self, camera, identifier):
-        """Claim once and verify initial media before committing an HTTP 200."""
+        """Coalesce HLS startup and verify real initialization and fragment data."""
         session = self.get(camera, identifier)
+        async with session.prepare_lock:
+            session.last_request = time.monotonic()
+            if session.released:
+                raise KeyError("Replay session is not available")
+            if self.config_provider() is not session.configuration:
+                await self.close(session)
+                raise ReplayUnsupported("Saved camera configuration changed")
+            if session.phase in ("streaming", "complete"):
+                return session
+            return await self._prepare(session)
+
+    async def _prepare(self, session):
         if session.phase != "ready" or session.released:
-            raise ReplayUnsupported("Replay sessions may only be consumed once")
-        if self.config_provider() is not session.configuration:
-            await self.close(session)
-            raise ReplayUnsupported("Saved camera configuration changed")
+            raise ReplayUnsupported("Replay session is not ready")
         session.phase = "starting"
         if session.deadline:
             session.deadline.cancel()
         session.deadline = asyncio.create_task(self._expire(session, WALL_TIMEOUT))
         try:
+            session.directory = await asyncio.to_thread(
+                tempfile.TemporaryDirectory, prefix="frigate-onvif-hls-"
+            )
+            session.media_path = Path(session.directory.name)
             session.gateway = self.gateway_factory(
                 session.source, session.start, session.end
             )
@@ -245,7 +291,7 @@ class OnvifReplayManager:
                 self.process_factory(
                     *self.command(session, uri),
                     stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
             )
@@ -254,24 +300,22 @@ class OnvifReplayManager:
             )
             if session.released:
                 raise ReplayUnsupported("Replay was cancelled")
-            if session.process.stdout is None:
-                raise ReplayUnsupported("Replay video pipe is unavailable")
-            first = bytearray()
             async with asyncio.timeout(READ_TIMEOUT):
-                while not self._has_fragment(first):
-                    chunk = await session.process.stdout.read(65536)
-                    if not chunk:
+                while True:
+                    first = await asyncio.to_thread(self._startup_media, session)
+                    if first is not None:
+                        break
+                    if session.process.returncode is not None:
                         raise ReplayUnsupported(
                             "Camera did not provide replay video frames"
                         )
-                    first.extend(chunk)
-                    if len(first) > 2_000_000:
-                        raise ReplayUnsupported(
-                            "Replay startup exceeds the supported size"
-                        )
+                    await asyncio.sleep(0.05)
             if session.gateway.error_code not in (None, "camera_ended"):
                 raise ReplayUnsupported("Camera did not provide bounded replay video")
-            audio = self.audio_track(bytes(first))
+            initialization, fragment = first
+            if not self._has_fragment(initialization + fragment):
+                raise ReplayUnsupported("Replay HLS did not contain a video fragment")
+            audio = self.audio_track(initialization)
             if audio is not None and audio != ("mp4a", 48000):
                 raise ReplayUnsupported(
                     "Replay did not produce browser-compatible AAC at 48 kHz"
@@ -280,6 +324,8 @@ class OnvifReplayManager:
             session.audio_status = (
                 "available"
                 if session.audio
+                else "not_requested"
+                if not session.audio_requested
                 else "not_recorded"
                 if session.source.recorded_audio is False
                 else "unavailable"
@@ -287,10 +333,89 @@ class OnvifReplayManager:
                 else "not_present"
             )
             session.phase = "streaming"
-            return session, bytes(first)
+            session.monitor = asyncio.create_task(self._watch(session))
+            return session
         except BaseException:
             await self.close(session)
             raise
+
+    @staticmethod
+    def _read_resource(path, maximum=MAX_RESOURCE_BYTES):
+        with path.open("rb") as source:
+            data = source.read(maximum + 1)
+        if len(data) > maximum:
+            raise ReplayUnsupported("Replay HLS resource exceeds its size limit")
+        return data
+
+    @classmethod
+    def _startup_media(cls, session):
+        try:
+            manifest = cls._read_resource(
+                session.media_path / "index.m3u8", 65536
+            ).decode("utf-8")
+            segments = [
+                line
+                for line in manifest.splitlines()
+                if line and not line.startswith("#")
+            ]
+            if not segments:
+                return None
+            if not all(re.fullmatch(r"segment_\d{5}\.m4s", name) for name in segments):
+                raise ReplayUnsupported("Invalid replay HLS segment path")
+            return (
+                cls._read_resource(session.media_path / "init.mp4", 2_000_000),
+                cls._read_resource(session.media_path / segments[0], 2_000_000),
+            )
+        except FileNotFoundError:
+            return None
+
+    async def resource(self, camera, identifier, resource):
+        """Read only one bounded file from this camera's authorized replay session."""
+        if HLS_RESOURCE.fullmatch(resource) is None:
+            raise KeyError("Replay HLS resource is not available")
+        session = await self.prepare(camera, identifier)
+        data = await asyncio.to_thread(
+            self._read_resource, session.media_path / resource
+        )
+        if session.released or self.config_provider() is not session.configuration:
+            raise ReplayUnsupported("Saved replay session changed")
+        session.last_request = time.monotonic()
+        return data
+
+    @staticmethod
+    def _storage_bytes(session):
+        total = 0
+        for path in session.media_path.iterdir():
+            try:
+                total += path.stat().st_size
+            except FileNotFoundError:
+                continue
+        return total
+
+    async def _watch(self, session):
+        while not session.released:
+            if time.monotonic() - session.last_request > IDLE_TIMEOUT:
+                session.phase = "expired"
+                await self.close(session)
+                return
+            if (
+                self.config_provider() is not session.configuration
+                or session.gateway.error_code not in (None, "camera_ended")
+                or await asyncio.to_thread(self._storage_bytes, session)
+                > MAX_SESSION_BYTES
+            ):
+                session.phase = "failed"
+                session.error_code = "replay_unavailable"
+                await self.close(session)
+                return
+            if session.process.returncode is not None:
+                if session.process.returncode != 0:
+                    session.phase = "failed"
+                    session.error_code = "replay_encoding_failed"
+                    await self.close(session)
+                    return
+                session.phase = "complete"
+            await asyncio.sleep(0.5)
 
     @staticmethod
     def audio_track(content):
@@ -366,45 +491,25 @@ class OnvifReplayManager:
             offset += size
         return False
 
-    async def stream(self, session, first, connected):
-        """Stream bounded fragmented MP4 and release every resource on disconnect."""
-        try:
-            if session.process is None or session.process.stdout is None:
-                raise ReplayUnsupported("Replay video pipe is unavailable")
-            if not await connected():
-                return
-            yield first
-            while (
-                not session.released
-                and self.config_provider() is session.configuration
-                and await connected()
-            ):
-                chunk = await asyncio.wait_for(
-                    session.process.stdout.read(65536), READ_TIMEOUT
-                )
-                if not chunk:
-                    break
-                if session.gateway.error_code not in (None, "camera_ended"):
-                    session.error_code = session.gateway.error_code
-                    break
-                yield chunk
-            session.phase = "ended"
-        except (OSError, TimeoutError):
-            session.error_code = "camera_unavailable"
-            session.phase = "failed"
-        finally:
-            await self.close(session)
-
     async def close(self, session):
         """Shield cleanup from HTTP cancellation and await its single owned task."""
         if session.cleanup_task is None:
-            session.cleanup_task = asyncio.create_task(self._cleanup(session))
+            session.cleanup_task = asyncio.create_task(
+                self._cleanup(session, asyncio.current_task())
+            )
         await asyncio.shield(session.cleanup_task)
 
-    async def _cleanup(self, session):
+    async def _cleanup(self, session, initiator=None):
         session.released = True
-        if session.deadline and session.deadline is not asyncio.current_task():
-            session.deadline.cancel()
+        background = [
+            task
+            for task in (session.deadline, session.monitor)
+            if task is not None and task is not initiator
+        ]
+        for task in background:
+            task.cancel()
+        if background:
+            await asyncio.gather(*background, return_exceptions=True)
         try:
             try:
                 if session.spawn_task and session.process is None:
@@ -427,8 +532,12 @@ class OnvifReplayManager:
                         with contextlib.suppress(TimeoutError):
                             await asyncio.wait_for(process.wait(), 2)
             finally:
-                if session.gateway:
-                    await session.gateway.close()
+                try:
+                    if session.gateway:
+                        await session.gateway.close()
+                finally:
+                    if session.directory is not None:
+                        await asyncio.to_thread(session.directory.cleanup)
         finally:
             self.finished[session.identifier] = (
                 session.camera,

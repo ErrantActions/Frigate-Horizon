@@ -4,10 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 import { test, expect } from "../../fixtures/frigate-test";
 import { configFactory } from "../../fixtures/mock-data/config";
-import {
-  ONVIF_AAC_MP4,
-  ONVIF_VIDEO_ONLY_MP4,
-} from "../../fixtures/mock-data/onvif-media";
+import { mockHlsMedia } from "../../helpers/hls-media";
 
 const SETTINGS = "/settings?page=cameraOnvif&camera=front_door";
 const schema = JSON.parse(
@@ -111,14 +108,10 @@ test.describe("ONVIF browser replay @mobile", () => {
                 : status,
           }),
       );
-      await frigateApp.page.route(
-        `**/api/onvif/cameras/front_door/replay/sessions/${identifier}/stream.mp4`,
-        (route) =>
-          route.fulfill({
-            contentType: "video/mp4",
-            headers: { "Accept-Ranges": "none" },
-            body: withAudio ? ONVIF_AAC_MP4 : ONVIF_VIDEO_ONLY_MP4,
-          }),
+      await mockHlsMedia(
+        frigateApp.page,
+        `**/api/onvif/cameras/front_door/replay/sessions/${identifier}/hls/**`,
+        { audio: withAudio },
       );
       await frigateApp.goto(SETTINGS);
       await search(frigateApp.page);
@@ -145,7 +138,7 @@ test.describe("ONVIF browser replay @mobile", () => {
         ),
       ).toBeVisible();
       await frigateApp.page
-        .locator("video[aria-label]")
+        .locator("section video")
         .evaluate((element) => element.dispatchEvent(new Event("ended")));
       await ended;
       await expect(
@@ -187,20 +180,15 @@ test.describe("ONVIF browser replay @mobile", () => {
       `**/api/onvif/cameras/front_door/replay/sessions/${identifier}`,
       (route) => route.fulfill({ json: { state: "closed" } }),
     );
-    await frigateApp.page.route(
-      `**/api/onvif/cameras/front_door/replay/sessions/${identifier}/stream.mp4`,
-      (route) =>
-        route.fulfill({
-          contentType: "video/mp4",
-          headers: { "Accept-Ranges": "none" },
-          // Incomplete media intentionally exercises the player's error cleanup.
-          body: Buffer.from([0, 0, 0, 8, 102, 116, 121, 112]),
-        }),
+    await mockHlsMedia(
+      frigateApp.page,
+      `**/api/onvif/cameras/front_door/replay/sessions/${identifier}/hls/**`,
+      { broken: true },
     );
     await frigateApp.goto(SETTINGS);
     await search(frigateApp.page);
     const stream = frigateApp.page.waitForRequest((request) =>
-      request.url().endsWith(`${identifier}/stream.mp4`),
+      request.url().endsWith(`${identifier}/hls/index.m3u8`),
     );
     const closed = frigateApp.page.waitForRequest(
       (request) =>
@@ -211,7 +199,7 @@ test.describe("ONVIF browser replay @mobile", () => {
       .getByRole("button", { name: "Play camera recording", exact: true })
       .click();
     expect((await stream).url()).toContain(
-      `/api/onvif/cameras/front_door/replay/sessions/${identifier}/stream.mp4`,
+      `/api/onvif/cameras/front_door/replay/sessions/${identifier}/hls/index.m3u8`,
     );
     await closed;
     await expect(
@@ -240,8 +228,7 @@ test.describe("ONVIF browser replay @mobile", () => {
     await installRecordings(frigateApp.page);
     const mediaRequests: string[] = [];
     frigateApp.page.on("request", (request) => {
-      if (request.url().includes("/stream.mp4"))
-        mediaRequests.push(request.url());
+      if (request.url().includes("/hls/")) mediaRequests.push(request.url());
     });
     await frigateApp.page.route(
       "**/api/onvif/cameras/front_door/replay/sessions",
@@ -306,13 +293,10 @@ test.describe("ONVIF browser replay @mobile", () => {
             });
           },
         );
-        await frigateApp.page.route(
-          `**/api/onvif/cameras/front_door/replay/sessions/${identifier}/stream.mp4`,
-          (route) =>
-            route.fulfill({
-              contentType: "video/mp4",
-              body: ONVIF_VIDEO_ONLY_MP4,
-            }),
+        await mockHlsMedia(
+          frigateApp.page,
+          `**/api/onvif/cameras/front_door/replay/sessions/${identifier}/hls/**`,
+          { audio: false },
         );
         await frigateApp.goto(SETTINGS);
         await search(frigateApp.page);
@@ -320,9 +304,7 @@ test.describe("ONVIF browser replay @mobile", () => {
           .getByRole("button", { name: "Play camera recording", exact: true })
           .click();
         if (failure === "cleanup") {
-          await expect(
-            frigateApp.page.locator("video[aria-label]"),
-          ).toBeVisible();
+          await expect(frigateApp.page.locator("section video")).toBeVisible();
           await frigateApp.page
             .getByRole("button", { name: "Close camera replay", exact: true })
             .click();

@@ -285,14 +285,6 @@
           "description": "Target and maximum video bitrate in kbps."
         }
       }
-    },
-    "height": {
-      "label": "Live height",
-      "description": "Height (pixels) to render the jsmpeg live stream in the Web UI; must be <= detect stream height."
-    },
-    "quality": {
-      "label": "Live quality",
-      "description": "Encoding quality for the jsmpeg stream (1 highest, 31 lowest)."
     }
   },
   "lpr": {

@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, Path, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pathvalidate import sanitize_filename
 from peewee import DoesNotExist, fn
@@ -42,12 +42,14 @@ from frigate.config import FrigateConfig
 from frigate.config.camera.snapshots import SnapshotsConfig
 from frigate.const import (
     CACHE_DIR,
+    CLIPS_DIR,
+    EXPORT_DIR,
     INSTALL_DIR,
     PREVIEW_FRAME_TYPE,
     STREAM_TYPE_MAIN,
     STREAM_TYPE_SUB,
 )
-from frigate.models import Event, Previews, Recordings, Regions, ReviewSegment
+from frigate.models import Event, Export, Previews, Recordings, Regions, ReviewSegment
 from frigate.output.preview import get_most_recent_preview_frame
 from frigate.record.lease_async import AsyncRecordingLease, AsyncRecordingLeaseLost
 from frigate.track.object_processing import TrackedObjectProcessor
@@ -1118,7 +1120,99 @@ async def vod_clip(
     )
 
 
-# registered after /vod/clip/... on purpose: both routes are six path
+@router.get(
+    "/vod/export/{export_id}",
+    dependencies=[Depends(allow_any_authenticated())],
+    openapi_extra={"x-required-role": "camera"},
+)
+async def vod_export(request: Request, export_id: str):
+    """Package a completed export for HLS without changing its original file."""
+    try:
+        export = await asyncio.to_thread(Export.get, Export.id == export_id)
+    except DoesNotExist:
+        raise HTTPException(404, "Export is not available") from None
+    await require_camera_access(export.camera, request=request)
+    if export.in_progress:
+        raise HTTPException(409, "Export is not complete")
+    try:
+        path, root = await asyncio.gather(
+            asyncio.to_thread(FilePath(export.video_path).resolve, strict=True),
+            asyncio.to_thread(FilePath(EXPORT_DIR).resolve, strict=True),
+        )
+    except OSError:
+        logger.warning("HLS export file is unavailable for %s", export.camera)
+        raise HTTPException(404, "Export is not available") from None
+    if (
+        not path.is_relative_to(root)
+        or path.suffix != ".mp4"
+        or not await asyncio.to_thread(path.is_file)
+    ):
+        logger.warning("Invalid HLS export source for %s", export.camera)
+        raise HTTPException(404, "Export is not available")
+    return JSONResponse(
+        {
+            "cache": True,
+            "sequences": [{"clips": [{"type": "source", "path": str(path)}]}],
+        }
+    )
+
+
+@router.get(
+    "/vod/preview/{camera_name}/start/{start_ts}/end/{end_ts}",
+    dependencies=[Depends(require_camera_access)],
+    description="Return an HLS mapping for an existing camera preview. Append /index.m3u8 for playback.",
+)
+async def vod_preview(
+    request: Request,
+    camera_name: str,
+    start_ts: float,
+    end_ts: float,
+):
+    """Package the existing preview file without rewriting source recordings."""
+    if camera_name not in request.app.frigate_config.cameras:
+        raise HTTPException(404, "Camera is not configured")
+    if not math.isfinite(start_ts) or not math.isfinite(end_ts) or end_ts <= start_ts:
+        raise HTTPException(422, "A valid preview range is required")
+    try:
+        preview = await asyncio.to_thread(
+            Previews.get,
+            (Previews.camera == camera_name)
+            & (Previews.start_time == start_ts)
+            & (Previews.end_time == end_ts),
+        )
+    except DoesNotExist:
+        raise HTTPException(404, "Preview is not available") from None
+    try:
+        path, root = await asyncio.gather(
+            asyncio.to_thread(FilePath(preview.path).resolve, strict=True),
+            asyncio.to_thread(
+                (FilePath(CLIPS_DIR) / "previews" / camera_name).resolve,
+                strict=True,
+            ),
+        )
+    except OSError:
+        logger.warning("HLS preview file is unavailable for %s", camera_name)
+        raise HTTPException(404, "Preview is not available") from None
+    if (
+        not path.is_relative_to(root)
+        or path.suffix != ".mp4"
+        or not await asyncio.to_thread(path.is_file)
+        or not math.isfinite(preview.duration)
+        or preview.duration <= 0
+    ):
+        logger.warning("Invalid HLS preview source for %s", camera_name)
+        raise HTTPException(404, "Preview is not available")
+    return JSONResponse(
+        {
+            "cache": True,
+            "consistentSequenceMediaInfo": True,
+            "durations": [round(preview.duration * 1000)],
+            "sequences": [{"clips": [{"type": "source", "path": str(path)}]}],
+        }
+    )
+
+
+# registered after /vod/clip/... and /vod/preview/... on purpose: the routes share
 # segments, Starlette matches structurally in registration order, and the
 # enum validation on {stream} would otherwise 422 every /vod/clip request
 @router.get(

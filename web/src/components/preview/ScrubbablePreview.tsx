@@ -11,7 +11,8 @@ import { isFirefox, isMobile, isSafari } from "react-device-detect";
 import { TimelineScrubMode, TimeRange } from "@/types/timeline";
 import { NoThumbSlider } from "../ui/slider";
 import { PREVIEW_FPS, PREVIEW_PADDING, Preview } from "@/types/preview";
-import { baseUrl } from "@/api/baseUrl";
+import { previewHlsUrl, useHlsPreview } from "@/hooks/use-hls-preview";
+import { useTranslation } from "react-i18next";
 
 type VideoPreviewProps = {
   relevantPreview: Preview;
@@ -37,6 +38,7 @@ export function VideoPreview({
   onTimeUpdate,
   windowVisible,
 }: VideoPreviewProps) {
+  const { t } = useTranslation("components/player");
   const playerRef = useRef<HTMLVideoElement | null>(null);
   const sliderRef = useRef<HTMLDivElement | null>(null);
 
@@ -62,6 +64,12 @@ export function VideoPreview({
     [],
   );
   const [lastPercent, setLastPercent] = useState(0.0);
+  const hlsFailed = useHlsPreview(
+    playerRef,
+    previewHlsUrl(relevantPreview),
+    windowVisible,
+    playerStartTime,
+  );
 
   // initialize player correctly
 
@@ -237,12 +245,15 @@ export function VideoPreview({
         preload="auto"
         muted
         onTimeUpdate={onProgress}
-      >
-        <source
-          src={`${baseUrl}${relevantPreview.src.substring(1)}`}
-          type={relevantPreview.type}
-        />
-      </video>
+      />
+      {hlsFailed && (
+        <div
+          role="alert"
+          className="absolute inset-0 flex items-center justify-center bg-background_alt p-2 text-center"
+        >
+          {t("playbackFailed")}
+        </div>
+      )}
       {showProgress && (
         <NoThumbSlider
           ref={sliderRef}

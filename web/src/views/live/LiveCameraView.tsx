@@ -12,13 +12,10 @@ import {
 import CameraFeatureToggle from "@/components/dynamic/CameraFeatureToggle";
 import FilterSwitch from "@/components/filter/FilterSwitch";
 import LivePlayer from "@/components/player/LivePlayer";
-import StreamTechnologySelect from "@/components/player/StreamTechnologySelect";
 import LiveStreamSelect from "@/components/player/LiveStreamSelect";
-import { useAutoLiveStream } from "@/hooks/use-auto-live-stream";
 import {
   adaptiveLiveStreams,
-  hasGpu4kLiveStream,
-  viewportLiveRung,
+  dashboardLiveStreams,
 } from "@/utils/adaptiveLive";
 import { Button } from "@/components/ui/button";
 import { Drawer, DrawerContent, DrawerTrigger } from "@/components/ui/drawer";
@@ -34,18 +31,8 @@ import {
 } from "@/components/ui/popover";
 import { useResizeObserver } from "@/hooks/resize-observer";
 import useKeyboardListener from "@/hooks/use-keyboard-listener";
-import { useWebRTCAvailableForStream } from "@/hooks/use-webrtc-availability";
-import { resolveLivePlayerMode } from "@/utils/liveMode";
 import { CameraConfig, FrigateConfig } from "@/types/frigateConfig";
-import {
-  LiveAutoReason,
-  LivePlayerError,
-  TwoWayTalkError,
-  LivePlayerMode,
-  LiveStreamMetadata,
-  VideoResolutionType,
-  WebRTCUnavailableReason,
-} from "@/types/live";
+import { LiveStreamMetadata, VideoResolutionType } from "@/types/live";
 import { RecordingStartingPoint } from "@/types/record";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -56,13 +43,7 @@ import {
   isTablet,
   useMobileOrientation,
 } from "react-device-detect";
-import {
-  FaCog,
-  FaCompress,
-  FaExpand,
-  FaMicrophone,
-  FaMicrophoneSlash,
-} from "react-icons/fa";
+import { FaCog, FaCompress, FaExpand } from "react-icons/fa";
 import { GiSpeaker, GiSpeakerOff } from "react-icons/gi";
 import {
   TbCameraDown,
@@ -71,7 +52,7 @@ import {
   TbViewfinder,
   TbViewfinderOff,
 } from "react-icons/tb";
-import { IoIosWarning, IoMdArrowRoundBack } from "react-icons/io";
+import { IoMdArrowRoundBack } from "react-icons/io";
 import {
   LuCheck,
   LuEar,
@@ -91,7 +72,6 @@ import {
   MdClosedCaption,
   MdClosedCaptionDisabled,
   MdNoPhotography,
-  MdOutlineRestartAlt,
   MdPersonOff,
   MdPersonSearch,
   MdPhotoCamera,
@@ -162,12 +142,6 @@ export default function LiveCameraView({
   const [pinnedStream, setPinnedStream, streamNameLoaded, clearPinnedStream] =
     useUserPersistence<string>(`${camera.name}-stream`);
 
-  const [
-    userPreferredLiveMode,
-    setUserPreferredLiveMode,
-    userPreferredLiveModeLoaded,
-  ] = useUserPersistence<LivePlayerMode>(`${camera.name}-preferred-live-mode`);
-
   const [forceLowBandwidth, setForceLowBandwidth, forceLowBandwidthLoaded] =
     useUserPersistence<boolean>(`${camera.name}-force-low-bandwidth`, false);
   const [showResolution, setShowResolution] = useUserPersistence(
@@ -177,25 +151,13 @@ export default function LiveCameraView({
 
   // useUserPersistence seeds state with the defaults and loads asynchronously,
   // so until this is true the values above are not the user's choices.
-  const preferencesLoaded =
-    streamNameLoaded && userPreferredLiveModeLoaded && forceLowBandwidthLoaded;
+  const preferencesLoaded = streamNameLoaded && forceLowBandwidthLoaded;
 
-  const [mic, setMic] = useState(false);
   const [debug, setDebug] = useState(false);
-  // error fallback latches, layered on top in preferredLiveMode
-  const [webRTC, setWebRTC] = useState(false);
-  const [lowBandwidth, setLowBandwidth] = useState(false);
 
   const liveStreams = useMemo(
     () =>
-      (camera.live.transcode?.enabled ||
-      hasGpu4kLiveStream(camera) ||
-      Object.values(camera.live.streams).some((name) =>
-        isTranscodeStreamName(camera.name, name),
-      )
-        ? adaptiveLiveStreams(camera, true)
-        : Object.values(camera.live.streams || {})
-      ).filter(
+      adaptiveLiveStreams(camera).filter(
         (name) =>
           config?.ui.live_compatibility !== false ||
           !isTranscodeStreamName(camera.name, name),
@@ -203,45 +165,11 @@ export default function LiveCameraView({
     [camera, config?.ui.live_compatibility],
   );
   const autoAvailable = liveStreams.length > 1;
-  const adaptiveResolution = liveStreams.some((name) =>
-    isTranscodeStreamName(camera.name, name),
-  );
   const autoSelected = autoAvailable && pinnedStream == undefined;
 
-  const autoStream = useAutoLiveStream({
-    cameraName: camera.name,
-    streams: liveStreams,
-    selected: autoSelected,
-    startLow: adaptiveResolution,
-    allowFloor: camera.capture_mode !== "recording_only" && !adaptiveResolution,
-    minimumRung: hasGpu4kLiveStream(camera)
-      ? 0
-      : adaptiveResolution
-        ? viewportLiveRung(
-            camera,
-            liveStreams,
-            windowHeight,
-            window.devicePixelRatio,
-          )
-        : 0,
-    paused:
-      !preferencesLoaded ||
-      mic ||
-      debug ||
-      webRTC ||
-      lowBandwidth ||
-      (forceLowBandwidth ?? false),
-  });
-  const {
-    handleError: autoHandleError,
-    reset: resetAutoStream,
-    onHealthSample,
-  } = autoStream;
-
   // the stream actually playing; everything downstream keys off it
-  const streamName = autoSelected
-    ? autoStream.streamName
-    : (pinnedStream ?? liveStreams[0]);
+  const streamName = pinnedStream ?? liveStreams[0];
+  const [playingStream, setPlayingStream] = useState<string>();
 
   const selectStream = useCallback(
     (stream: string | undefined) => {
@@ -264,17 +192,13 @@ export default function LiveCameraView({
   useEffect(() => {
     if (!streamNameLoaded || pinnedStream == undefined) return;
 
-    const selectable = Object.values(camera.live.streams).filter(
-      (name) =>
-        config?.ui.live_compatibility !== false ||
-        !isTranscodeStreamName(camera.name, name),
-    );
+    const selectable = liveStreams;
     if (selectable.length > 0 && !selectable.includes(pinnedStream)) {
       clearPinnedStream();
     }
   }, [
     streamNameLoaded,
-    camera.live.streams,
+    liveStreams,
     camera.name,
     config?.ui.live_compatibility,
     pinnedStream,
@@ -282,7 +206,7 @@ export default function LiveCameraView({
   ]);
 
   const { data: cameraMetadata } = useSWR<LiveStreamMetadata>(
-    isRestreamed ? `go2rtc/streams/${streamName}` : null,
+    isRestreamed ? `go2rtc/streams/${playingStream ?? streamName}` : null,
     {
       revalidateOnFocus: false,
       revalidateOnReconnect: false,
@@ -291,46 +215,10 @@ export default function LiveCameraView({
     },
   );
 
-  const webRTCAvailability = useWebRTCAvailableForStream(
-    cameraMetadata,
-    streamName,
+  const { audioOutput: supportsAudioOutput } = useMemo(
+    () => detectCameraAudioFeatures(cameraMetadata),
+    [cameraMetadata],
   );
-  const isWebRTCAvailable = webRTCAvailability.available;
-
-  // "checking" means the probe has not answered yet, and it re-enters that on
-  // every mount, so treating it as unavailable downgrades the saved choice.
-  const webRTCVerdictPending = webRTCAvailability.reason === "checking";
-  const webRTCUsable = isWebRTCAvailable || webRTCVerdictPending;
-
-  // Two-way talk is a sendonly backchannel, so playback audio that WebRTC
-  // can't carry doesn't rule it out, but the stream's video must connect
-  const talkAvailable =
-    isWebRTCAvailable || webRTCAvailability.reason === "audio-codec";
-
-  // Resolves the saved preference without overwriting it. Transient error
-  // fallbacks layer on top in preferredLiveMode.
-  const resolvedUserMode = useMemo<LivePlayerMode>(() => {
-    const mseSupported =
-      "MediaSource" in window || "ManagedMediaSource" in window;
-    return resolveLivePlayerMode({
-      isRestreamed: !!isRestreamed,
-      mseSupported,
-      webRTCAvailable: isWebRTCAvailable,
-      webRTCChecking: webRTCVerdictPending,
-      preferMse: adaptiveResolution,
-      requested:
-        userPreferredLiveMode === "jsmpeg" ? undefined : userPreferredLiveMode,
-    });
-  }, [
-    userPreferredLiveMode,
-    isWebRTCAvailable,
-    webRTCVerdictPending,
-    adaptiveResolution,
-    isRestreamed,
-  ]);
-
-  const { twoWayAudio: supports2WayTalk, audioOutput: supportsAudioOutput } =
-    useMemo(() => detectCameraAudioFeatures(cameraMetadata), [cameraMetadata]);
 
   // camera enabled state
   const { payload: enabledState } = useEnabledState(camera.name);
@@ -477,14 +365,6 @@ export default function LiveCameraView({
 
   const [audio, setAudio] = useSessionPersistence("liveAudio", false);
 
-  // the mic only connects through the WebRTC player, so it can't stay on
-  // for a stream that has lost it
-  useEffect(() => {
-    if (!talkAvailable) {
-      setMic(false);
-    }
-  }, [talkAvailable]);
-
   const [pip, setPip] = useState(false);
 
   const [playInBackground, setPlayInBackground] = useUserPersistence<boolean>(
@@ -507,66 +387,6 @@ export default function LiveCameraView({
     height: 0,
   });
 
-  const preferredLiveMode = useMemo(() => {
-    if (mic && talkAvailable) {
-      return "webrtc";
-    }
-
-    if (forceLowBandwidth || autoStream.atFloor) {
-      return "jsmpeg";
-    }
-
-    if (webRTC && isRestreamed && isWebRTCAvailable) {
-      return "webrtc";
-    }
-
-    if (webRTC && !isRestreamed) {
-      return "jsmpeg";
-    }
-
-    if (lowBandwidth) {
-      return "jsmpeg";
-    }
-
-    if (
-      !("MediaSource" in window || "ManagedMediaSource" in window) &&
-      isWebRTCAvailable
-    ) {
-      return "webrtc";
-    }
-
-    return resolvedUserMode;
-  }, [
-    lowBandwidth,
-    forceLowBandwidth,
-    mic,
-    talkAvailable,
-    webRTC,
-    isRestreamed,
-    resolvedUserMode,
-    isWebRTCAvailable,
-    autoStream.atFloor,
-  ]);
-
-  // A latched error fallback would keep overriding the user's new choice.
-  useEffect(() => {
-    setWebRTC(false);
-    setLowBandwidth(false);
-  }, [
-    userPreferredLiveMode,
-    streamName,
-    forceLowBandwidth,
-    config?.ui.live_compatibility,
-  ]);
-
-  // A fallback chosen before the verdict arrived was made on incomplete info.
-  useEffect(() => {
-    if (!webRTCVerdictPending) {
-      setWebRTC(false);
-      setLowBandwidth(false);
-    }
-  }, [webRTCVerdictPending]);
-
   useKeyboardListener(["m", "Escape"], (key, modifiers) => {
     if (!modifiers.down) {
       return true;
@@ -576,12 +396,6 @@ export default function LiveCameraView({
       case "m":
         if (supportsAudioOutput) {
           setAudio(!audio);
-          return true;
-        }
-        break;
-      case "t":
-        if (supports2WayTalk && talkAvailable) {
-          setMic(!mic);
           return true;
         }
         break;
@@ -673,40 +487,6 @@ export default function LiveCameraView({
 
     return () => screenOrientation.unlock();
   }, [fullscreen, cameraAspectRatio]);
-
-  const handleError = useCallback(
-    (e: LivePlayerError) => {
-      if (e) {
-        // auto answers congestion and codec failures with a lower stream
-        if (autoHandleError(e)) {
-          return;
-        }
-
-        // WebRTC can now be the user's own choice, so the fallback flag no
-        // longer implies untried: hopping to the mode that just failed sticks.
-        if (preferredLiveMode !== "webrtc" && webRTCUsable) {
-          setWebRTC(true);
-        } else {
-          setWebRTC(false);
-          setLowBandwidth(true);
-        }
-      }
-    },
-    [autoHandleError, preferredLiveMode, webRTCUsable],
-  );
-
-  const resetStream = useCallback(() => {
-    setLowBandwidth(false);
-    resetAutoStream();
-  }, [resetAutoStream]);
-
-  const handleMicrophoneError = useCallback(
-    (error: TwoWayTalkError) => {
-      setMic(false);
-      toast.error(t(`twoWayTalk.error.${error}`), { position: "top-center" });
-    },
-    [t],
-  );
 
   return (
     <TransformWrapper
@@ -810,7 +590,7 @@ export default function LiveCameraView({
                 onClick={toggleFullscreen}
               />
             )}
-            {!isIOS && !isFirefox && preferredLiveMode != "jsmpeg" && (
+            {!isIOS && !isFirefox && (
               <CameraFeatureToggle
                 className="p-2 md:p-0"
                 variant={fullscreen ? "overlay" : "primary"}
@@ -832,33 +612,7 @@ export default function LiveCameraView({
                 disabled={!cameraEnabled || debug}
               />
             )}
-            {supports2WayTalk && (
-              <CameraFeatureToggle
-                className="p-2 md:p-0"
-                variant={fullscreen ? "overlay" : "primary"}
-                Icon={mic ? FaMicrophone : FaMicrophoneSlash}
-                isActive={mic}
-                title={
-                  webRTCVerdictPending
-                    ? t("stream.technology.unavailable.checking", {
-                        ns: "views/live",
-                      })
-                    : !talkAvailable
-                      ? t("twoWayTalk.requiresWebRTC", { ns: "views/live" })
-                      : mic
-                        ? t("twoWayTalk.disable", { ns: "views/live" })
-                        : t("twoWayTalk.enable", { ns: "views/live" })
-                }
-                onClick={() => {
-                  setMic(!mic);
-                  if (!mic && !audio) {
-                    setAudio(true);
-                  }
-                }}
-                disabled={!cameraEnabled || debug || !talkAvailable}
-              />
-            )}
-            {supportsAudioOutput && preferredLiveMode != "jsmpeg" && (
+            {supportsAudioOutput && (
               <CameraFeatureToggle
                 className="p-2 md:p-0"
                 variant={fullscreen ? "overlay" : "primary"}
@@ -883,25 +637,17 @@ export default function LiveCameraView({
               }
               fullscreen={fullscreen}
               pinnedStream={pinnedStream}
-              playingStream={streamName ?? ""}
+              playingStream={playingStream ?? streamName ?? ""}
               autoAvailable={autoAvailable}
-              autoReason={autoStream.reason}
               onSelectStream={selectStream}
-              userPreferredLiveMode={resolvedUserMode}
-              setUserPreferredLiveMode={setUserPreferredLiveMode}
               forceLowBandwidth={forceLowBandwidth ?? false}
               setForceLowBandwidth={setForceLowBandwidth}
-              preferredLiveMode={preferredLiveMode}
               playInBackground={playInBackground ?? false}
               setPlayInBackground={setPlayInBackground}
               showStats={showStats}
               setShowStats={setShowStats}
               isRestreamed={isRestreamed ?? false}
-              isWebRTCAvailable={isWebRTCAvailable}
-              webRTCUnavailableReason={webRTCAvailability.reason}
-              onResetStream={resetStream}
               supportsAudioOutput={supportsAudioOutput}
-              supports2WayTalk={supports2WayTalk}
               cameraEnabled={cameraEnabled}
               debug={debug}
               setDebug={setDebug}
@@ -979,19 +725,14 @@ export default function LiveCameraView({
                   playAudio={audio}
                   playInBackground={playInBackground ?? false}
                   showStats={showStats}
-                  micEnabled={mic}
-                  iOSCompatFullScreen={isIOS}
-                  preferredLiveMode={preferredLiveMode}
                   autoLive={preferencesLoaded}
-                  useWebGL={true}
                   streamName={streamName ?? ""}
                   pip={pip}
                   containerRef={containerRef}
                   setFullResolution={setFullResolution}
-                  onError={handleError}
-                  onHealthSample={autoSelected ? onHealthSample : undefined}
                   streamAuto={autoSelected}
-                  onMicrophoneError={handleMicrophoneError}
+                  dataSaver={forceLowBandwidth}
+                  onStreamChange={(_camera, stream) => setPlayingStream(stream)}
                 />
               </div>
             </TransformComponent>
@@ -1047,23 +788,15 @@ type FrigateCameraFeaturesProps = {
   pinnedStream: string | undefined;
   playingStream: string;
   autoAvailable: boolean;
-  autoReason?: LiveAutoReason;
   onSelectStream: (stream: string | undefined) => void;
-  userPreferredLiveMode: LivePlayerMode;
-  setUserPreferredLiveMode: (value: LivePlayerMode | undefined) => void;
   forceLowBandwidth: boolean;
   setForceLowBandwidth: (value: boolean | undefined) => void;
-  preferredLiveMode: LivePlayerMode;
   playInBackground: boolean;
   setPlayInBackground: (value: boolean | undefined) => void;
   showStats: boolean;
   setShowStats: (value: boolean) => void;
   isRestreamed: boolean;
-  isWebRTCAvailable: boolean;
-  webRTCUnavailableReason?: WebRTCUnavailableReason;
-  onResetStream: () => void;
   supportsAudioOutput: boolean;
-  supports2WayTalk: boolean;
   cameraEnabled: boolean;
   debug: boolean;
   setDebug: (debug: boolean) => void;
@@ -1078,23 +811,15 @@ function FrigateCameraFeatures({
   pinnedStream,
   playingStream,
   autoAvailable,
-  autoReason,
   onSelectStream,
-  userPreferredLiveMode,
-  setUserPreferredLiveMode,
   forceLowBandwidth,
   setForceLowBandwidth,
-  preferredLiveMode,
   playInBackground,
   setPlayInBackground,
   showStats,
   setShowStats,
   isRestreamed,
-  isWebRTCAvailable,
-  webRTCUnavailableReason,
-  onResetStream,
   supportsAudioOutput,
-  supports2WayTalk,
   cameraEnabled,
   debug,
   setDebug,
@@ -1227,11 +952,9 @@ function FrigateCameraFeatures({
     try {
       let result: SnapshotResult;
 
-      if (isRestreamed && preferredLiveMode !== "jsmpeg") {
-        // For restreamed streams with video elements (MSE/WebRTC), grab directly from video element
+      if (isRestreamed) {
         result = await grabVideoSnapshot();
       } else {
-        // For detect stream or JSMpeg players, use the API endpoint
         result = await fetchCameraSnapshot(camera.name);
       }
 
@@ -1246,7 +969,7 @@ function FrigateCameraFeatures({
     } finally {
       setIsSnapshotLoading(false);
     }
-  }, [camera.name, isRestreamed, preferredLiveMode, t]);
+  }, [camera.name, isRestreamed, t]);
 
   useEffect(() => {
     // Handle page unload/close (browser close, tab close, refresh, navigation to external site)
@@ -1483,13 +1206,12 @@ function FrigateCameraFeatures({
                         {t("stream.title")}
                       </Label>
                       <LiveStreamSelect
-                        streams={camera.live.streams}
+                        streams={dashboardLiveStreams(camera)}
                         pinnedStream={pinnedStream}
                         playingStream={playingStream}
                         autoAvailable={autoAvailable}
-                        autoReason={autoReason}
                         onSelect={onSelectStream}
-                        onRetry={onResetStream}
+
                         disabled={debug || forceLowBandwidth}
                       />
 
@@ -1502,150 +1224,50 @@ function FrigateCameraFeatures({
                         </div>
                       )}
 
-                      {preferredLiveMode != "jsmpeg" &&
-                        !debug &&
-                        isRestreamed && (
-                          <div className="flex flex-row items-center gap-1 text-sm text-muted-foreground">
-                            {supportsAudioOutput ? (
-                              <>
-                                <LuCheck className="size-4 text-success" />
-                                <div>{t("stream.audio.available")}</div>
-                              </>
-                            ) : (
-                              <>
-                                <LuX className="size-4 text-danger" />
-                                <div>{t("stream.audio.unavailable")}</div>
-                                <Popover>
-                                  <PopoverTrigger asChild>
-                                    <div className="cursor-pointer p-0">
-                                      <LuInfo className="size-4" />
-                                      <span className="sr-only">
-                                        {t("button.info", { ns: "common" })}
-                                      </span>
-                                    </div>
-                                  </PopoverTrigger>
-                                  <PopoverContent className="w-80 text-xs">
-                                    {t("stream.audio.tips.title")}
-                                    <div className="mt-2 flex items-center text-primary">
-                                      <Link
-                                        to={getLocaleDocUrl(
-                                          "configuration/live",
-                                        )}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="inline"
-                                      >
-                                        {t("readTheDocumentation", {
-                                          ns: "common",
-                                        })}
-                                        <LuExternalLink className="ml-2 inline-flex size-3" />
-                                      </Link>
-                                    </div>
-                                  </PopoverContent>
-                                </Popover>
-                              </>
-                            )}
-                          </div>
-                        )}
-                      {preferredLiveMode != "jsmpeg" &&
-                        !debug &&
-                        isRestreamed &&
-                        supportsAudioOutput && (
-                          <div className="flex flex-row items-center gap-1 text-sm text-muted-foreground">
-                            {supports2WayTalk ? (
-                              <>
-                                <LuCheck className="size-4 text-success" />
-                                <div>{t("stream.twoWayTalk.available")}</div>
-                              </>
-                            ) : (
-                              <>
-                                <LuX className="size-4 text-danger" />
-                                <div>{t("stream.twoWayTalk.unavailable")}</div>
-                                <Popover>
-                                  <PopoverTrigger asChild>
-                                    <div className="cursor-pointer p-0">
-                                      <LuInfo className="size-4" />
-                                      <span className="sr-only">
-                                        {t("button.info", { ns: "common" })}
-                                      </span>
-                                    </div>
-                                  </PopoverTrigger>
-                                  <PopoverContent className="w-80 text-xs">
-                                    {t("stream.twoWayTalk.tips")}
-                                    <div className="mt-2 flex items-center text-primary">
-                                      <Link
-                                        to={getLocaleDocUrl(
-                                          "configuration/live/#webrtc-extra-configuration",
-                                        )}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="inline"
-                                      >
-                                        {t("readTheDocumentation", {
-                                          ns: "common",
-                                        })}
-                                        <LuExternalLink className="ml-2 inline-flex size-3" />
-                                      </Link>
-                                    </div>
-                                  </PopoverContent>
-                                </Popover>
-                              </>
-                            )}
-                          </div>
-                        )}
-
-                      {preferredLiveMode == "jsmpeg" &&
-                        userPreferredLiveMode != "jsmpeg" &&
-                        !forceLowBandwidth &&
-                        !debug &&
-                        isRestreamed && (
-                          <div className="flex flex-col items-center gap-3">
-                            <div className="flex flex-row items-center gap-2">
-                              <IoIosWarning className="mr-1 size-8 text-danger" />
-
-                              <p className="text-sm">
-                                {t("stream.lowBandwidth.tips")}
-                              </p>
-                            </div>
-                            <Button
-                              className={`flex items-center gap-2.5 rounded-lg`}
-                              aria-label={t("stream.lowBandwidth.resetStream")}
-                              variant="outline"
-                              size="sm"
-                              onClick={onResetStream}
-                            >
-                              <MdOutlineRestartAlt className="size-5 text-primary-variant" />
-                              <div className="text-primary-variant">
-                                {t("stream.lowBandwidth.resetStream")}
-                              </div>
-                            </Button>
-                          </div>
-                        )}
-                    </div>
-                  )}
-                {isRestreamed &&
-                  Object.values(camera.live.streams).length > 0 && (
-                    <div className="flex flex-col gap-1">
-                      <Label htmlFor="streaming-mode">{t("stream.mode")}</Label>
-                      <StreamTechnologySelect
-                        value={userPreferredLiveMode}
-                        onValueChange={setUserPreferredLiveMode}
-                        isWebRTCAvailable={isWebRTCAvailable}
-                        webRTCUnavailableReason={webRTCUnavailableReason}
-                        disabled={debug || forceLowBandwidth}
-                      />
-                      {debug ? (
+                      {!debug && isRestreamed && (
                         <div className="flex flex-row items-center gap-1 text-sm text-muted-foreground">
-                          <LuX className="size-4 text-danger" />
-                          <div>{t("stream.debug.technology")}</div>
+                          {supportsAudioOutput ? (
+                            <>
+                              <LuCheck className="size-4 text-success" />
+                              <div>{t("stream.audio.available")}</div>
+                            </>
+                          ) : (
+                            <>
+                              <LuX className="size-4 text-danger" />
+                              <div>{t("stream.audio.unavailable")}</div>
+                              <Popover>
+                                <PopoverTrigger asChild>
+                                  <div className="cursor-pointer p-0">
+                                    <LuInfo className="size-4" />
+                                    <span className="sr-only">
+                                      {t("button.info", { ns: "common" })}
+                                    </span>
+                                  </div>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-80 text-xs">
+                                  {t("stream.audio.tips.title")}
+                                  <div className="mt-2 flex items-center text-primary">
+                                    <Link
+                                      to={getLocaleDocUrl("configuration/live")}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline"
+                                    >
+                                      {t("readTheDocumentation", {
+                                        ns: "common",
+                                      })}
+                                      <LuExternalLink className="ml-2 inline-flex size-3" />
+                                    </Link>
+                                  </div>
+                                </PopoverContent>
+                              </Popover>
+                            </>
+                          )}
                         </div>
-                      ) : (
-                        <p className="text-sm text-muted-foreground">
-                          {t("stream.technology.description")}
-                        </p>
                       )}
                     </div>
                   )}
+
                 {isRestreamed &&
                   Object.values(camera.live.streams).length > 0 && (
                     <div className="flex flex-col gap-1">
@@ -1875,13 +1497,12 @@ function FrigateCameraFeatures({
                   <div className="mt-1 p-2">
                     <div className="mb-1 text-sm">{t("stream.title")}</div>
                     <LiveStreamSelect
-                      streams={camera.live.streams}
+                      streams={dashboardLiveStreams(camera)}
                       pinnedStream={pinnedStream}
                       playingStream={playingStream}
                       autoAvailable={autoAvailable}
-                      autoReason={autoReason}
                       onSelect={onSelectStream}
-                      onRetry={onResetStream}
+
                       disabled={debug || forceLowBandwidth}
                     />
 
@@ -1894,139 +1515,50 @@ function FrigateCameraFeatures({
                       </div>
                     )}
 
-                    {preferredLiveMode != "jsmpeg" &&
-                      !debug &&
-                      isRestreamed && (
-                        <div className="mt-1 flex flex-row items-center gap-1 text-sm text-muted-foreground">
-                          {supportsAudioOutput ? (
-                            <>
-                              <LuCheck className="size-4 text-success" />
-                              <div>{t("stream.audio.available")}</div>
-                            </>
-                          ) : (
-                            <>
-                              <LuX className="size-4 text-danger" />
-                              <div>{t("stream.audio.unavailable")}</div>
-                              <Popover>
-                                <PopoverTrigger asChild>
-                                  <div className="cursor-pointer p-0">
-                                    <LuInfo className="size-4" />
-                                    <span className="sr-only">
-                                      {t("button.info", { ns: "common" })}
-                                    </span>
-                                  </div>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-52 text-xs">
-                                  {t("stream.audio.tips.title")}
-                                  <div className="mt-2 flex items-center text-primary">
-                                    <Link
-                                      to={getLocaleDocUrl("configuration/live")}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="inline"
-                                    >
-                                      {t("readTheDocumentation", {
-                                        ns: "common",
-                                      })}
-                                      <LuExternalLink className="ml-2 inline-flex size-3" />
-                                    </Link>
-                                  </div>
-                                </PopoverContent>
-                              </Popover>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    {preferredLiveMode != "jsmpeg" &&
-                      !debug &&
-                      isRestreamed &&
-                      supportsAudioOutput && (
-                        <div className="flex flex-row items-center gap-1 text-sm text-muted-foreground">
-                          {supports2WayTalk ? (
-                            <>
-                              <LuCheck className="size-4 text-success" />
-                              <div>{t("stream.twoWayTalk.available")}</div>
-                            </>
-                          ) : (
-                            <>
-                              <LuX className="size-4 text-danger" />
-                              <div>{t("stream.twoWayTalk.unavailable")}</div>
-                              <Popover>
-                                <PopoverTrigger asChild>
-                                  <div className="cursor-pointer p-0">
-                                    <LuInfo className="size-4" />
-                                    <span className="sr-only">
-                                      {t("button.info", { ns: "common" })}
-                                    </span>
-                                  </div>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-52 text-xs">
-                                  {t("stream.twoWayTalk.tips")}
-                                  <div className="mt-2 flex items-center text-primary">
-                                    <Link
-                                      to={getLocaleDocUrl(
-                                        "configuration/live/#webrtc-extra-configuration",
-                                      )}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="inline"
-                                    >
-                                      {t("readTheDocumentation", {
-                                        ns: "common",
-                                      })}
-                                      <LuExternalLink className="ml-2 inline-flex size-3" />
-                                    </Link>
-                                  </div>
-                                </PopoverContent>
-                              </Popover>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    {preferredLiveMode == "jsmpeg" &&
-                      userPreferredLiveMode != "jsmpeg" &&
-                      !forceLowBandwidth &&
-                      isRestreamed && (
-                        <div className="mt-2 flex flex-col items-center gap-3">
-                          <div className="flex flex-row items-center gap-2">
-                            <IoIosWarning className="mr-1 size-8 text-danger" />
-                            <p className="text-sm">
-                              {t("stream.lowBandwidth.tips")}
-                            </p>
-                          </div>
-                          <Button
-                            className={`flex items-center gap-2.5 rounded-lg`}
-                            aria-label={t("stream.lowBandwidth.resetStream")}
-                            variant="outline"
-                            size="sm"
-                            disabled={debug}
-                            onClick={onResetStream}
-                          >
-                            <MdOutlineRestartAlt className="size-5 text-primary-variant" />
-                            <div className="text-primary-variant">
-                              {t("stream.lowBandwidth.resetStream")}
-                            </div>
-                          </Button>
-                        </div>
-                      )}
+                    {!debug && isRestreamed && (
+                      <div className="mt-1 flex flex-row items-center gap-1 text-sm text-muted-foreground">
+                        {supportsAudioOutput ? (
+                          <>
+                            <LuCheck className="size-4 text-success" />
+                            <div>{t("stream.audio.available")}</div>
+                          </>
+                        ) : (
+                          <>
+                            <LuX className="size-4 text-danger" />
+                            <div>{t("stream.audio.unavailable")}</div>
+                            <Popover>
+                              <PopoverTrigger asChild>
+                                <div className="cursor-pointer p-0">
+                                  <LuInfo className="size-4" />
+                                  <span className="sr-only">
+                                    {t("button.info", { ns: "common" })}
+                                  </span>
+                                </div>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-52 text-xs">
+                                {t("stream.audio.tips.title")}
+                                <div className="mt-2 flex items-center text-primary">
+                                  <Link
+                                    to={getLocaleDocUrl("configuration/live")}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline"
+                                  >
+                                    {t("readTheDocumentation", {
+                                      ns: "common",
+                                    })}
+                                    <LuExternalLink className="ml-2 inline-flex size-3" />
+                                  </Link>
+                                </div>
+                              </PopoverContent>
+                            </Popover>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
-              {isRestreamed &&
-                Object.values(camera.live.streams).length > 0 && (
-                  <div className="px-2">
-                    <div className="mb-1 text-sm">{t("stream.mode")}</div>
-                    <StreamTechnologySelect
-                      value={userPreferredLiveMode}
-                      onValueChange={setUserPreferredLiveMode}
-                      isWebRTCAvailable={isWebRTCAvailable}
-                      webRTCUnavailableReason={webRTCUnavailableReason}
-                      disabled={debug || forceLowBandwidth}
-                    />
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      {t("stream.technology.description")}
-                    </p>
-                  </div>
-                )}
+
               {isRestreamed &&
                 Object.values(camera.live.streams).length > 0 && (
                   <div className="flex flex-col gap-2">

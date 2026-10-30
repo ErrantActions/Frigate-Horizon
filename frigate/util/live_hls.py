@@ -37,6 +37,11 @@ def camera_renditions(
     config: "FrigateConfig", camera_name: str
 ) -> tuple[LiveHlsRendition, ...]:
     """Use only advertised main-derived profiles, including manually defined ones."""
+    if camera_name == "birdseye":
+        birdseye = config.birdseye
+        if not birdseye.enabled or not birdseye.restream:
+            return ()
+        return (LiveHlsRendition("birdseye", birdseye.height, birdseye.bitrate),)
     camera = config.cameras.get(camera_name)
     if camera is None or not camera.enabled or not config.ui.live_compatibility:
         return ()
@@ -56,9 +61,9 @@ def camera_renditions(
 def packager_config(config: "FrigateConfig") -> dict:
     """Generate an on-demand packager bound only to the Frigate network loopback."""
     paths = {}
-    for camera_name in config.cameras:
+    for camera_name in (*config.cameras, "birdseye"):
         renditions = camera_renditions(config, camera_name)
-        if len(renditions) < 2:
+        if not renditions:
             continue
         for rendition in renditions:
             paths[rendition_path(camera_name, rendition.height)] = {
@@ -174,11 +179,13 @@ def parse_packager_master(text: str) -> PackagerMaster:
 
 def master_playlist(
     variants: tuple[tuple[LiveHlsRendition, PackagerMaster], ...],
+    *,
+    audio: bool = True,
 ) -> str:
     """Combine measured codec metadata while keeping packager sessions private."""
     lines = ["#EXTM3U", "#EXT-X-VERSION:10"]
     for rendition, master in variants:
-        if master.audio:
+        if audio and master.audio:
             lines.append(
                 f'#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio{rendition.height}",'
                 f'NAME="Audio",AUTOSELECT=YES,DEFAULT=YES,'
@@ -189,12 +196,24 @@ def master_playlist(
             f"BANDWIDTH={rendition.bandwidth}",
             f"AVERAGE-BANDWIDTH={rendition.bitrate * 1000}",
         ]
-        attributes.extend(
-            f"{name}={master.attributes[name]}"
-            for name in ("CODECS", "RESOLUTION", "FRAME-RATE")
-            if name in master.attributes
-        )
-        if master.audio:
+        for name in ("CODECS", "RESOLUTION", "FRAME-RATE"):
+            if name not in master.attributes:
+                continue
+            value = master.attributes[name]
+            if name == "CODECS" and not audio:
+                codecs = [
+                    codec
+                    for codec in value.strip('"').split(",")
+                    if codec.startswith(
+                        ("avc1.", "avc3.", "hvc1.", "hev1.", "av01.", "vp09.")
+                    )
+                ]
+                if codecs:
+                    value = '"' + ",".join(codecs) + '"'
+                else:
+                    continue
+            attributes.append(f"{name}={value}")
+        if audio and master.audio:
             attributes.append(f'AUDIO="audio{rendition.height}"')
         lines.extend(
             [

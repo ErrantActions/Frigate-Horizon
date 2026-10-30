@@ -1,6 +1,5 @@
 import { IconName } from "@/components/icons/IconPicker";
 import { TriggerAction, TriggerType } from "./trigger";
-import { LivePlayerMode } from "./live";
 import { RecordingStorageSettings } from "./storage";
 import type { CameraEnvironmentSettings, WeatherSettings } from "./environment";
 
@@ -20,7 +19,7 @@ export interface BirdseyeConfig {
   enabled: boolean;
   height: number;
   modes: BirdseyeMode[];
-  quality: number;
+  bitrate: number;
   restream: boolean;
   width: number;
 }
@@ -129,8 +128,6 @@ export interface CameraConfig {
     roles: string[];
   }[];
   live: {
-    height: number;
-    quality: number;
     streams: { [key: string]: string };
     transcode: LiveTranscodeConfig;
   };
@@ -391,8 +388,7 @@ export type StreamType = "no-streaming" | "smart" | "continuous";
 export type CameraStreamingSettings = {
   streamName: string;
   streamType: StreamType;
-  playerMode?: LivePlayerMode;
-  compatibilityMode: boolean;
+  dataSaver?: boolean;
   playAudio: boolean;
   volume: number;
 };

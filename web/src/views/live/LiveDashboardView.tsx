@@ -3,7 +3,7 @@ import Logo from "@/components/Logo";
 import { CameraGroupSelector } from "@/components/filter/CameraGroupSelector";
 import { LiveGridIcon, LiveListIcon } from "@/components/icons/LiveIcons";
 import { AnimatedEventCard } from "@/components/card/AnimatedEventCard";
-import BirdseyeLivePlayer from "@/components/player/BirdseyeLivePlayer";
+import BirdseyeLivePlayer from "@/components/player/BirdseyeHlsPlayer";
 import LivePlayer from "@/components/player/LivePlayer";
 import { Button } from "@/components/ui/button";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
@@ -40,15 +40,9 @@ import DraggableGridLayout from "./DraggableGridLayout";
 import { IoClose } from "react-icons/io5";
 import { LuLayoutDashboard } from "react-icons/lu";
 import { cn } from "@/lib/utils";
-import {
-  AudioState,
-  LivePlayerError,
-  LivePlayerMode,
-  StatsState,
-  VolumeState,
-} from "@/types/live";
+import { AudioState, StatsState, VolumeState } from "@/types/live";
 import { FaCompress, FaExpand } from "react-icons/fa";
-import useCameraLiveMode from "@/hooks/use-camera-live-mode";
+import useCameraStreamMetadata from "@/hooks/use-camera-stream-metadata";
 import { useResizeObserver } from "@/hooks/resize-observer";
 import LiveContextMenu from "@/components/menu/LiveContextMenu";
 import { useStreamingSettings } from "@/context/streaming-settings-provider";
@@ -314,45 +308,10 @@ export default function LiveDashboardView({
     [cameras, currentGroupStreamingSettings, adaptiveStreams, requestedStreams],
   );
 
-  // Per-camera streaming-technology choice from the camera group settings.
-  const preferredModes = useMemo(() => {
-    const modes: { [cameraName: string]: LivePlayerMode | undefined } = {};
-    cameras.forEach((camera) => {
-      modes[camera.name] =
-        currentGroupStreamingSettings?.[camera.name]?.playerMode;
-    });
-    return modes;
-  }, [cameras, currentGroupStreamingSettings]);
-
-  const {
-    preferredLiveModes,
-    setPreferredLiveModes,
-    resetPreferredLiveMode,
-    isRestreamedStates,
-    supportsAudioOutputStates,
-    streamMetadata,
-    webRTCUsableStates,
-  } = useCameraLiveMode(cameras, windowVisible, activeStreams, preferredModes);
+  const { isRestreamedStates, supportsAudioOutputStates, streamMetadata } =
+    useCameraStreamMetadata(cameras, activeStreams);
 
   const birdseyeConfig = useMemo(() => config?.birdseye, [config]);
-
-  const handleError = useCallback(
-    (cameraName: string, error: LivePlayerError) => {
-      setPreferredLiveModes((prevModes) => {
-        const newModes = { ...prevModes };
-        if (
-          (error === "mse-decode" || error === "mse-codec") &&
-          webRTCUsableStates[cameraName]
-        ) {
-          newModes[cameraName] = "webrtc";
-        } else {
-          newModes[cameraName] = "jsmpeg";
-        }
-        return newModes;
-      });
-    },
-    [setPreferredLiveModes, webRTCUsableStates],
-  );
 
   // audio states
 
@@ -572,7 +531,6 @@ export default function LiveDashboardView({
                   >
                     <BirdseyeLivePlayer
                       birdseyeConfig={birdseyeConfig}
-                      liveMode={birdseyeConfig.restream ? "mse" : "jsmpeg"}
                       onClick={() => onSelectCamera("birdseye")}
                       containerRef={birdseyeContainerRef}
                     />
@@ -613,9 +571,6 @@ export default function LiveDashboardView({
                   const showStillWithoutActivity =
                     currentGroupStreamingSettings?.[camera.name]?.streamType !==
                     "continuous";
-                  const useWebGL =
-                    currentGroupStreamingSettings?.[camera.name]
-                      ?.compatibilityMode || false;
                   return (
                     <LiveContextMenu
                       className={grow}
@@ -623,9 +578,6 @@ export default function LiveDashboardView({
                       camera={camera.name}
                       cameraGroup={cameraGroup}
                       streamName={streamName}
-                      preferredLiveMode={
-                        preferredLiveModes[camera.name] ?? "mse"
-                      }
                       isRestreamed={isRestreamedStates[camera.name]}
                       supportsAudio={
                         supportsAudioOutputStates[streamName]?.supportsAudio ??
@@ -646,9 +598,6 @@ export default function LiveDashboardView({
                       }
                       muteAll={muteAll}
                       unmuteAll={unmuteAll}
-                      resetPreferredLiveMode={() =>
-                        resetPreferredLiveMode(camera.name)
-                      }
                       config={config}
                       streamMetadata={streamMetadata}
                     >
@@ -660,26 +609,22 @@ export default function LiveDashboardView({
                           windowVisible && visibleCameras.includes(camera.name)
                         }
                         cameraConfig={camera}
-                        preferredLiveMode={
-                          preferredLiveModes[camera.name] ?? "mse"
-                        }
                         autoLive={autoLive ?? globalAutoLive}
                         showStillWithoutActivity={
                           showStillWithoutActivity ?? true
                         }
                         alwaysShowCameraName={displayCameraNames}
                         showResolution={showResolution}
-                        useWebGL={useWebGL}
                         playInBackground={false}
                         showStats={statsStates[camera.name]}
                         streamName={requestedStreams[camera.name]}
                         adaptive={!streamExists}
+                        dataSaver={
+                          currentGroupStreamingSettings?.[camera.name]
+                            ?.dataSaver
+                        }
                         onStreamChange={handleStreamChange}
                         onClick={() => onSelectCamera(camera.name)}
-                        onError={(e) => handleError(camera.name, e)}
-                        onResetLiveMode={() =>
-                          resetPreferredLiveMode(camera.name)
-                        }
                         playAudio={audioStates[camera.name] ?? false}
                         volume={volumeStates[camera.name]}
                       />
@@ -733,9 +678,6 @@ export default function LiveDashboardView({
               setIsEditMode={setIsEditMode}
               fullscreen={fullscreen}
               toggleFullscreen={toggleFullscreen}
-              preferredLiveModes={preferredLiveModes}
-              handleError={handleError}
-              resetPreferredLiveMode={resetPreferredLiveMode}
               isRestreamedStates={isRestreamedStates}
               supportsAudioOutputStates={supportsAudioOutputStates}
               streamMetadata={streamMetadata}

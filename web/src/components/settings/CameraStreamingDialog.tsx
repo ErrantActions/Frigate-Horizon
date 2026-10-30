@@ -19,7 +19,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
   FrigateConfig,
@@ -30,17 +29,14 @@ import ActivityIndicator from "../indicators/activity-indicator";
 import useSWR from "swr";
 import { LuCheck, LuExternalLink, LuInfo, LuX } from "react-icons/lu";
 import { Link } from "react-router-dom";
-import { LivePlayerMode, LiveStreamMetadata } from "@/types/live";
+import { LiveStreamMetadata } from "@/types/live";
 import { Trans, useTranslation } from "react-i18next";
 import { useDocDomain } from "@/hooks/use-doc-domain";
 import { useCameraFriendlyName } from "@/hooks/use-camera-friendly-name";
 import { detectCameraAudioFeatures } from "@/utils/cameraUtil";
 import { isRestreamedStream } from "@/utils/liveTranscode";
 import { dashboardLiveStreams } from "@/utils/adaptiveLive";
-import { resolveLivePlayerMode } from "@/utils/liveMode";
 import { Switch } from "@/components/ui/switch";
-import { useWebRTCAvailableForStream } from "@/hooks/use-webrtc-availability";
-import StreamTechnologySelect from "@/components/player/StreamTechnologySelect";
 
 type CameraStreamingDialogProps = {
   camera: string;
@@ -82,9 +78,7 @@ export function CameraStreamingDialog({
     )[0]?.[1] || "",
   );
   const [streamType, setStreamType] = useState<StreamType>("smart");
-  const [playerMode, setPlayerMode] = useState<LivePlayerMode>();
   const [forceLowBandwidth, setForceLowBandwidth] = useState(false);
-  const [compatibilityMode, setCompatibilityMode] = useState(false);
 
   // metadata
 
@@ -116,23 +110,6 @@ export function CameraStreamingDialog({
     [cameraMetadata],
   );
 
-  const { available: isWebRTCAvailable, reason: webRTCUnavailableReason } =
-    useWebRTCAvailableForStream(cameraMetadata, streamName);
-
-  // The chosen technology resolved for the currently selected stream, WITHOUT
-  // rewriting the saved choice
-  const resolvedPlayerMode = useMemo<LivePlayerMode>(
-    () =>
-      resolveLivePlayerMode({
-        isRestreamed: !!isRestreamed,
-        mseSupported: "MediaSource" in window || "ManagedMediaSource" in window,
-        webRTCAvailable: isWebRTCAvailable,
-        webRTCChecking: webRTCUnavailableReason === "checking",
-        requested: playerMode,
-      }),
-    [playerMode, isWebRTCAvailable, isRestreamed, webRTCUnavailableReason],
-  );
-
   // handlers
 
   useEffect(() => {
@@ -156,16 +133,15 @@ export function CameraStreamingDialog({
 
       setStreamName(streamExists ? streamNameFromSettings : firstStreamEntry);
       setStreamType(cameraSettings.streamType || "smart");
-      const savedPlayerMode = cameraSettings.playerMode;
-      setPlayerMode(savedPlayerMode === "jsmpeg" ? undefined : savedPlayerMode);
-      setForceLowBandwidth(savedPlayerMode === "jsmpeg");
-      setCompatibilityMode(cameraSettings.compatibilityMode || false);
+      setForceLowBandwidth(
+        cameraSettings.dataSaver ??
+          ("playerMode" in cameraSettings &&
+            cameraSettings.playerMode === "jsmpeg"),
+      );
     } else {
       setStreamName(firstStreamEntry);
       setStreamType("smart");
-      setPlayerMode(undefined);
       setForceLowBandwidth(false);
-      setCompatibilityMode(false);
     }
   }, [groupStreamingSettings, camera, config]);
 
@@ -176,8 +152,7 @@ export function CameraStreamingDialog({
       [camera]: {
         streamName,
         streamType,
-        playerMode: forceLowBandwidth ? "jsmpeg" : playerMode,
-        compatibilityMode,
+        dataSaver: forceLowBandwidth,
         playAudio: groupStreamingSettings?.[camera]?.playAudio ?? false,
         volume: groupStreamingSettings?.[camera]?.volume ?? 1,
       },
@@ -193,9 +168,7 @@ export function CameraStreamingDialog({
     camera,
     streamName,
     streamType,
-    playerMode,
     forceLowBandwidth,
-    compatibilityMode,
     setIsDialogOpen,
     onSave,
   ]);
@@ -221,16 +194,15 @@ export function CameraStreamingDialog({
 
       setStreamName(streamExists ? streamNameFromSettings : firstStreamEntry);
       setStreamType(cameraSettings.streamType || "smart");
-      const savedPlayerMode = cameraSettings.playerMode || "mse";
-      setPlayerMode(savedPlayerMode === "jsmpeg" ? "mse" : savedPlayerMode);
-      setForceLowBandwidth(savedPlayerMode === "jsmpeg");
-      setCompatibilityMode(cameraSettings.compatibilityMode || false);
+      setForceLowBandwidth(
+        cameraSettings.dataSaver ??
+          ("playerMode" in cameraSettings &&
+            cameraSettings.playerMode === "jsmpeg"),
+      );
     } else {
       setStreamName(firstStreamEntry);
       setStreamType("smart");
-      setPlayerMode("mse");
       setForceLowBandwidth(false);
-      setCompatibilityMode(false);
     }
 
     setIsDialogOpen(false);
@@ -367,24 +339,6 @@ export function CameraStreamingDialog({
         {isRestreamed &&
           Object.entries(config?.cameras[camera].live.streams).length > 0 && (
             <div className="flex flex-col items-start gap-2">
-              <Label htmlFor="streaming-technology" className="text-right">
-                {t("stream.mode", { ns: "views/live" })}
-              </Label>
-              <StreamTechnologySelect
-                value={resolvedPlayerMode}
-                onValueChange={setPlayerMode}
-                isWebRTCAvailable={isWebRTCAvailable}
-                webRTCUnavailableReason={webRTCUnavailableReason}
-                disabled={forceLowBandwidth}
-              />
-              <p className="text-sm text-muted-foreground">
-                {t("stream.technology.description", { ns: "views/live" })}
-              </p>
-            </div>
-          )}
-        {isRestreamed &&
-          Object.entries(config?.cameras[camera].live.streams).length > 0 && (
-            <div className="flex flex-col items-start gap-2">
               <div className="flex w-full items-center justify-between">
                 <Label htmlFor="force-low-bandwidth" className="cursor-pointer">
                   {t("stream.lowBandwidth.force.label", { ns: "views/live" })}
@@ -460,27 +414,6 @@ export function CameraStreamingDialog({
               </div>
             </>
           )}
-        </div>
-        <div className="flex flex-col items-start gap-2">
-          <div className="flex items-center gap-2">
-            <Checkbox
-              id="compatibility"
-              className="size-5 text-white accent-white data-[state=checked]:bg-selected data-[state=checked]:text-white"
-              checked={compatibilityMode}
-              onCheckedChange={() => setCompatibilityMode(!compatibilityMode)}
-            />
-            <Label
-              htmlFor="compatibility"
-              className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-            >
-              {t("group.camera.setting.compatibilityMode.label")}
-            </Label>
-          </div>
-          <div className="flex flex-col gap-2 leading-none">
-            <p className="text-sm text-muted-foreground">
-              {t("group.camera.setting.compatibilityMode.desc")}
-            </p>
-          </div>
         </div>
       </div>
       <div className="flex flex-1 flex-col justify-end">
