@@ -16,13 +16,16 @@ docker run --rm --network none --read-only --cap-drop ALL \
     --security-opt no-new-privileges --cpus=2 --memory=6g --pids-limit=256 \
     -e NVIDIA_VISIBLE_DEVICES=void -e PYTHONDONTWRITEBYTECODE=1 \
     -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 \
+    -e ONVIF_TEST_FFMPEG=/usr/lib/ffmpeg/8.0/bin/ffmpeg \
+    -e ONVIF_TEST_FFPROBE=/usr/lib/ffmpeg/8.0/bin/ffprobe \
     -e PYTHONPATH=/opt/frigate:/source \
     --tmpfs /tmp:rw,exec,size=1g --tmpfs /config:rw,size=64m \
     --tmpfs /media/frigate:rw,size=64m \
     --mount "type=bind,src=$root,dst=/source,readonly" \
     --entrypoint bash "$image_id" -c '
       set -euo pipefail
-      cd /opt/frigate
+      cd /tmp
+      ln -s /opt/frigate/migrations migrations
       python3 -u -m unittest \
         frigate.test.test_native_preferences \
         frigate.test.test_native_device_preferences_api \
@@ -32,7 +35,17 @@ docker run --rm --network none --read-only --cap-drop ALL \
         frigate.test.test_native_features_api \
         frigate.test.test_native_signing_generation \
         frigate.test.test_native_control_leases \
-        frigate.test.test_native_talkback_leases \
+        frigate.test.test_live_hls \
+        frigate.test.test_live_hls_manager \
+        frigate.test.test_live_hls_api \
+        frigate.test.test_live_streams \
+        frigate.test.test_preview_hls \
+        frigate.test.test_media_auth \
+        frigate.test.test_birdseye_hls_output \
+        frigate.test.test_birdseye \
+        frigate.test.test_onvif_replay \
+        frigate.test.test_onvif_replay_ffmpeg \
+        frigate.test.http_api.test_http_onvif \
         frigate.test.test_export_protection \
         frigate.test.test_playback_shared_lifespan \
         frigate.test.test_api_auth_spec \
@@ -43,6 +56,17 @@ docker run --rm --network none --read-only --cap-drop ALL \
         --ffmpeg /usr/lib/ffmpeg/8.0/bin/ffmpeg
       test -s /usr/local/share/licenses/go2rtc/LICENSE
     '
+
+docker run --rm --user 1000:1000 --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --cpus=2 --memory=2g --pids-limit=128 \
+    -e NVIDIA_VISIBLE_DEVICES=void -e PYTHONDONTWRITEBYTECODE=1 \
+    -e PYTHONPATH=/opt/frigate:/source \
+    -e ONVIF_TEST_FFMPEG=/usr/lib/ffmpeg/8.0/bin/ffmpeg \
+    -e HLS_TEST_NGINX=/usr/local/nginx/sbin/nginx \
+    --tmpfs /tmp:rw,size=512m,mode=1777 \
+    --mount "type=bind,src=$root,dst=/source,readonly" \
+    --workdir /tmp --entrypoint python3 "$image_id" \
+    -m unittest frigate.test.test_preview_hls_nginx
 
 cat > "$stage/config.yml" <<'YAML'
 mqtt:
