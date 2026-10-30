@@ -36,6 +36,10 @@ operational receipts belong outside Git and the image. Source-path checks and
 secret scanning are required before publication. A successful scan is not a
 general security certification.
 
+Linux build scripts and service entrypoints must retain their executable Git
+modes, including when preparing source on Windows. The source check rejects
+lost script modes before starting the image build.
+
 ## TrueNAS Custom App
 
 Use a **Custom App**, which TrueNAS manages as Docker containers, rather than a
