@@ -19,12 +19,14 @@ startup check. No real camera, microphone, production database or APNs provider
 is used.
 
 Use **Actions > Horizon source image > Run workflow** and enable **cold_build**
-to ignore image-layer cache and perform a full build. Normal pushes can reuse
-the dedicated build cache. Both paths compile the pinned go2rtc addon and include
+to ignore image-layer cache and perform a full build. Manual runs default to
+using cache, just like normal pushes. Both paths build the pinned go2rtc addon
+from its reviewed source inputs (or reuse their matching cached result) and include
 its license and build receipt. A cold build is intentionally slower.
 
 Only a successful test run publishes
-`ghcr.io/errantactions/frigate-horizon:sha-<full-commit>`. Download the
+`ghcr.io/errantactions/frigate-horizon:sha-<full-commit>`. A rerun can replace
+that tag; the content digest, not the tag, is immutable. Download the
 `horizon-image-receipt` artifact and use its **digest reference**, not a mutable
 tag, for installation. The workflow does not change package visibility, deploy
 an NVR, or attest to production acceptance. If a hosted runner runs out of disk
@@ -88,4 +90,24 @@ After configuration, verify recording progress for every intended camera,
 detector availability, current account/camera authorization and unchanged
 notification rules. Do not enable alerts or send real pushes as an installation
 test. Keep the prior image and consistent backups, and use only a
-schema/protection-compatible rollback.
+schema/protection-compatible rollback. Registry images are separate source
+candidates, not proof of equivalence to a recovered production image.
+
+## Routine updates
+
+1. Push reviewed source to this repository's `main` branch, or run the workflow
+   manually with `cold_build` left disabled.
+2. Wait for the image build, Linux checks, owned-media checks and authenticated
+   startup gate to pass. A green build is not production or native-provider readiness.
+3. Use the resulting receipt's immutable digest. Update only the image reference
+   in the managed TrueNAS App, preserving its current configuration/database,
+   NFS mounts, network interfaces, GPUs and resource settings.
+4. Schedule the App restart and verify fresh recording progress afterward.
+   Never restore an older source snapshot or database just to change an image.
+
+The initial source build can be much slower than an incremental build. The
+workflow imports and exports its dedicated BuildKit layer cache. Dependency
+manifests precede frontend source in the Dockerfile, so ordinary UI edits do not
+reinstall frontend dependencies or rebuild unchanged native prerequisites.
+Caches can expire or be evicted; leave cold rebuilding available as an explicit
+diagnostic and reproducibility check. Cache reuse never skips image tests.

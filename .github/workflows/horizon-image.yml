@@ -8,7 +8,7 @@ on:
       cold_build:
         description: Ignore build cache and rebuild all image layers
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
@@ -80,7 +80,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish the tested image with an immutable commit tag
+      - name: Publish the tested image and record its immutable digest
         run: |
           set -euo pipefail
           docker tag "$LOCAL_IMAGE" "$REGISTRY_IMAGE"
@@ -99,7 +99,9 @@ jobs:
               "image": references[0],
               "image_id": value["Id"],
               "linux_image_checks": "passed",
+              "build_mode": "cold" if os.environ.get("COLD_BUILD") == "true" else "cache-enabled",
               "production_acceptance": False,
+              "native_provider_readiness": False,
               "export_protection": False,
           }
           Path("horizon-image-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
@@ -108,6 +110,8 @@ jobs:
               summary.write("No cameras, production configuration, credentials or hardware were used.\n")
               summary.write("Production acceptance and export-protection admission remain separate gates.\n")
           PY
+        env:
+          COLD_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.cold_build }}
       - name: Save the verified pull reference
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
