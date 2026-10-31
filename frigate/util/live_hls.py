@@ -196,7 +196,9 @@ def master_playlist(
             f"BANDWIDTH={rendition.bandwidth}",
             f"AVERAGE-BANDWIDTH={rendition.bitrate * 1000}",
         ]
-        for name in ("CODECS", "RESOLUTION", "FRAME-RATE"):
+        # Startup FPS samples differ between independent muxers and can make
+        # players reject a higher-resolution rendition as a frame-rate downgrade.
+        for name in ("CODECS", "RESOLUTION"):
             if name not in master.attributes:
                 continue
             value = master.attributes[name]

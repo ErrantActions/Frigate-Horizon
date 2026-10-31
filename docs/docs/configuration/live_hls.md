@@ -80,6 +80,9 @@ All paths below are relative to the configured Frigate API base:
 
 The master accepts `audio=false` to omit the audio group and audio codecs,
 `height` to pin an advertised rung, and `max_height` to cap advertised heights.
+It omits optional `FRAME-RATE` metadata: independent muxers' startup FPS samples
+can differ slightly, causing players to reject a resolution upgrade as a
+frame-rate downgrade. Encoded frame timing is unchanged.
 Height bounds are 144 through 2160; unavailable selections return 404 rather
 than inventing a source. These options also apply to native HLS clients.
 Birdseye uses the same routes with `birdseye` as the camera name and retains

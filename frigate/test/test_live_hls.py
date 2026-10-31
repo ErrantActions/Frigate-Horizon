@@ -155,6 +155,25 @@ class TestLiveHls(unittest.TestCase):
                     )
                 )
 
+    def test_master_omits_sampled_frame_rates_that_can_block_quality_upgrades(self):
+        renditions = camera_renditions(configuration(), "front")
+        variants = tuple(
+            (
+                value,
+                parse_packager_master(
+                    PRIVATE_MASTER.replace(
+                        "FRAME-RATE=25.000",
+                        f"FRAME-RATE={25 if value.height == 720 else 24.583}",
+                    )
+                ),
+            )
+            for value in renditions
+        )
+        text = master_playlist(variants)
+        self.assertNotIn("FRAME-RATE", text)
+        self.assertEqual(text.count("CODECS="), 2)
+        self.assertEqual(text.count("RESOLUTION="), 2)
+
     def test_video_only_master_does_not_advertise_audio_or_audio_codecs(self):
         renditions = camera_renditions(configuration(), "front")
         master = parse_packager_master(PRIVATE_MASTER)
