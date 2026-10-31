@@ -3,7 +3,9 @@
 import asyncio
 import logging
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING
 
 import httpx
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 MAX_RESOURCE_BYTES = 8 * 1024 * 1024
+WARM_INTERVAL_SECONDS = 3
 
 
 class _PrivateHlsHttpLog(logging.Filter):
@@ -62,6 +65,8 @@ class LiveHlsManager:
         self.startup_error: LiveHlsError | None = None
         self.sessions: dict[tuple[str, int], PackagerMaster] = {}
         self.session_locks: dict[tuple[str, int], asyncio.Lock] = {}
+        self.last_warm_attempt: dict[tuple[str, int], float] = {}
+        self.warm_tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
 
     async def start(self) -> None:
         """Create the bounded local client without starting camera producers."""
@@ -90,6 +95,10 @@ class LiveHlsManager:
                 raise LiveHlsError(503, "live_hls_configuration_unavailable") from None
             self.last_config = rendered
             self.sessions.clear()
+            self.last_warm_attempt.clear()
+            for task in self.warm_tasks.values():
+                task.cancel()
+            self.warm_tasks.clear()
             self.startup_error = None
             logger.info("Updated private live HLS paths: %s", len(rendered["paths"]))
 
@@ -177,14 +186,63 @@ class LiveHlsManager:
             tuple(zip(renditions, masters, strict=True)), audio=audio
         )
 
+    def _warm_done(self, key: tuple[str, int], task: asyncio.Task[None]) -> None:
+        if self.warm_tasks.get(key) is task:
+            del self.warm_tasks[key]
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "Unexpected live HLS warm-up failure",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    async def _warm_rendition(self, camera: str, height: int) -> None:
+        try:
+            master = await self.bootstrap(camera, height)
+            await self.fetch(camera, height, master.video, {})
+        except LiveHlsError as error:
+            logger.warning(
+                "Could not warm live HLS %sp for %s: %s", height, camera, error.code
+            )
+
+    def _queue_warm(
+        self, camera: str, height: int, renditions: tuple[LiveHlsRendition, ...]
+    ) -> None:
+        now = monotonic()
+        for rendition in renditions:
+            key = (camera, rendition.height)
+            previous = self.last_warm_attempt.get(key)
+            if (
+                rendition.height == height
+                or key in self.warm_tasks
+                or (previous is not None and now - previous < WARM_INTERVAL_SECONDS)
+            ):
+                continue
+            self.last_warm_attempt[key] = now
+            task = asyncio.create_task(self._warm_rendition(camera, rendition.height))
+            self.warm_tasks[key] = task
+            task.add_done_callback(partial(self._warm_done, key))
+
     async def fetch(
-        self, camera: str, height: int, resource: str, params: dict[str, str]
+        self,
+        camera: str,
+        height: int,
+        resource: str,
+        params: dict[str, str],
+        *,
+        warm_renditions: tuple[LiveHlsRendition, ...] = (),
     ) -> bytes:
         """Keep packager sessions behind the camera-authenticated proxy."""
         if resource == "index.m3u8":
             raise LiveHlsError(404, "live_hls_resource_not_found")
         await self.sync_config()
         master = await self.bootstrap(camera, height)
+        if resource == master.video:
+            self.last_warm_attempt[(camera, height)] = monotonic()
+            if warm_renditions:
+                self._queue_warm(camera, height, warm_renditions)
         try:
             data = await self._read(
                 camera, height, resource, {**params, "session": master.session}
@@ -226,6 +284,13 @@ class LiveHlsManager:
 
     async def close(self) -> None:
         """Release local connections when the Frigate API stops."""
+        tasks = tuple(self.warm_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.warm_tasks.clear()
+        self.last_warm_attempt.clear()
         if self.client is not None:
             await self.client.aclose()
             self.client = None

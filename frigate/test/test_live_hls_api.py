@@ -153,8 +153,35 @@ class TestLiveHlsApi(unittest.TestCase):
             720,
             "video1_stream.m3u8",
             {"_HLS_msn": "42", "_HLS_part": "2", "_HLS_skip": "YES"},
+            warm_renditions=(),
         )
         self.assertEqual(result.headers["cache-control"], "private, no-store")
+
+    def test_adaptive_warming_is_bounded_by_current_camera_plan(self):
+        response = self.client.get(
+            "/front/live/hls/720p/video1_stream.m3u8?warm_max_height=1080"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [
+                value.height
+                for value in self.manager.fetch.await_args.kwargs["warm_renditions"]
+            ],
+            [720, 1080],
+        )
+        self.assertEqual(self.manager.fetch.await_args.args[3], {})
+        self.manager.fetch.reset_mock()
+        for query, height, expected in (
+            ("warm_max_height=2161", 720, 422),
+            ("warm_max_height=invalid", 720, 422),
+            ("warm_max_height=720", 1080, 400),
+        ):
+            with self.subTest(query=query):
+                result = self.client.get(
+                    f"/front/live/hls/{height}p/video1_stream.m3u8?{query}"
+                )
+                self.assertEqual(result.status_code, expected)
+        self.manager.fetch.assert_not_awaited()
 
     def test_invalid_reload_sequences_are_explicit_errors(self):
         for query, code in (

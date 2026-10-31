@@ -136,6 +136,12 @@ async def live_hls_resource(
     msn: int | None = Query(None, ge=0, le=2**63 - 1, alias="_HLS_msn"),
     part: int | None = Query(None, ge=0, le=1_000_000, alias="_HLS_part"),
     skip: Literal["YES", "v2"] | None = Query(None, alias="_HLS_skip"),
+    warm_max_height: int | None = Query(
+        None,
+        ge=144,
+        le=2160,
+        description="Warm advertised rungs during active Auto playback",
+    ),
 ) -> Response:
     """Proxy only this camera's advertised variants and bounded flat resources."""
     plan = plan_for(request, camera_name)
@@ -145,6 +151,13 @@ async def live_hls_resource(
         raise HTTPException(404, "live_hls_resource_not_found")
     if part is not None and msn is None:
         raise HTTPException(400, "live_hls_part_requires_sequence")
+    if warm_max_height is not None and warm_max_height < height:
+        raise HTTPException(400, "live_hls_invalid_warm_limit")
+    warm = (
+        tuple(value for value in plan if value.height <= warm_max_height)
+        if warm_max_height is not None
+        else ()
+    )
     params = {}
     if msn is not None:
         params["_HLS_msn"] = str(msn)
@@ -153,7 +166,9 @@ async def live_hls_resource(
     if skip is not None:
         params["_HLS_skip"] = skip
     try:
-        data = await manager_for(request).fetch(camera_name, height, resource, params)
+        data = await manager_for(request).fetch(
+            camera_name, height, resource, params, warm_renditions=warm
+        )
     except LiveHlsError as error:
         raise HTTPException(error.status, error.code) from None
     return Response(

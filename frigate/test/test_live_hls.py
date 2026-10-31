@@ -186,6 +186,16 @@ class TestLiveHls(unittest.TestCase):
         self.assertNotIn("AUDIO=", text)
         self.assertIn("720p/video1_stream.m3u8", text)
 
+    def test_only_adaptive_masters_request_demand_driven_ladder_warming(self):
+        renditions = camera_renditions(configuration(), "front")
+        master = parse_packager_master(PRIVATE_MASTER)
+        adaptive = master_playlist(tuple((value, master) for value in renditions))
+        self.assertIn("720p/video1_stream.m3u8?warm_max_height=1080", adaptive)
+        self.assertIn("1080p/video1_stream.m3u8?warm_max_height=1080", adaptive)
+        for rendition in renditions:
+            pinned = master_playlist(((rendition, master),))
+            self.assertNotIn("warm_max_height", pinned)
+
     def test_single_rendition_has_a_private_hls_path(self):
         config = configuration()
         del config.cameras["front"].live.streams["1080p"]

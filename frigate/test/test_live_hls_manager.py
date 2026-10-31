@@ -1,5 +1,6 @@
 """Private HLS proxy limits, lifecycle, errors and credential isolation."""
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,7 @@ import httpx
 
 from frigate.comms.live_hls import MAX_RESOURCE_BYTES, LiveHlsError, LiveHlsManager
 from frigate.test.test_live_hls import PRIVATE_MASTER, configuration
+from frigate.util.live_hls import camera_renditions
 
 
 class TestLiveHlsManager(unittest.IsolatedAsyncioTestCase):
@@ -36,6 +38,103 @@ class TestLiveHlsManager(unittest.IsolatedAsyncioTestCase):
             follow_redirects=False,
             trust_env=False,
         )
+
+    async def test_adaptive_playlists_warm_other_rungs_at_a_bounded_rate(self):
+        requests = []
+        media = "#EXTM3U\n#EXTINF:2,\npart1.mp4?session=private-test-1\n"
+
+        def handle(request):
+            requests.append(request)
+            return httpx.Response(200, text=media)
+
+        await self.transport(handle)
+        plan = camera_renditions(self.config, "front")
+        with patch("frigate.comms.live_hls.monotonic", return_value=10) as clock:
+            for _ in range(2):
+                await self.manager.fetch(
+                    "front", 720, "video1_stream.m3u8", {}, warm_renditions=plan
+                )
+                await asyncio.gather(*tuple(self.manager.warm_tasks.values()))
+            self.assertEqual(
+                sum("_1080p/" in request.url.path for request in requests), 1
+            )
+            clock.return_value = 13.01
+            await self.manager.fetch(
+                "front", 720, "video1_stream.m3u8", {}, warm_renditions=plan
+            )
+            await asyncio.gather(*tuple(self.manager.warm_tasks.values()))
+        self.assertEqual(sum("_1080p/" in request.url.path for request in requests), 2)
+        self.assertTrue(
+            all(set(request.url.params) == {"session"} for request in requests)
+        )
+        self.assertEqual(self.manager.warm_tasks, {})
+
+    async def test_pinned_playlists_and_fragments_do_not_warm_other_rungs(self):
+        calls = []
+
+        def handle(request):
+            calls.append(request)
+            return httpx.Response(200, text="#EXTM3U\n")
+
+        await self.transport(handle)
+        await self.manager.fetch("front", 720, "video1_stream.m3u8", {})
+        await self.manager.fetch(
+            "front",
+            720,
+            "part1.mp4",
+            {},
+            warm_renditions=camera_renditions(self.config, "front"),
+        )
+        self.assertFalse(any("_1080p/" in request.url.path for request in calls))
+        self.assertEqual(self.manager.warm_tasks, {})
+
+    async def test_slow_warmup_never_blocks_playback_and_is_cancelled_on_close(self):
+        started = asyncio.Event()
+        never = asyncio.Event()
+
+        async def handle(request):
+            if "_1080p/" in request.url.path:
+                started.set()
+                await never.wait()
+            return httpx.Response(200, text="#EXTM3U\n")
+
+        await self.transport(handle)
+        result = await asyncio.wait_for(
+            self.manager.fetch(
+                "front",
+                720,
+                "video1_stream.m3u8",
+                {},
+                warm_renditions=camera_renditions(self.config, "front"),
+            ),
+            timeout=2,
+        )
+        self.assertEqual(result, b"#EXTM3U\n")
+        await asyncio.wait_for(started.wait(), timeout=2)
+        self.assertEqual(len(self.manager.warm_tasks), 1)
+        await self.manager.close()
+        self.assertEqual(self.manager.warm_tasks, {})
+        self.assertIsNone(self.manager.client)
+
+    async def test_warmup_failure_is_logged_without_failing_the_active_rung(self):
+        def handle(request):
+            if "_1080p/" in request.url.path:
+                return httpx.Response(500)
+            return httpx.Response(200, text="#EXTM3U\n")
+
+        await self.transport(handle)
+        with self.assertLogs("frigate.comms.live_hls", level="WARNING") as logs:
+            result = await self.manager.fetch(
+                "front",
+                720,
+                "video1_stream.m3u8",
+                {},
+                warm_renditions=camera_renditions(self.config, "front"),
+            )
+            await asyncio.gather(*tuple(self.manager.warm_tasks.values()))
+        self.assertEqual(result, b"#EXTM3U\n")
+        self.assertIn("Could not warm live HLS 1080p", "\n".join(logs.output))
+        self.assertNotIn("private-test-1", "\n".join(logs.output))
 
     async def test_upstream_is_fixed_local_and_only_explicit_hls_queries_are_sent(self):
         requests = []

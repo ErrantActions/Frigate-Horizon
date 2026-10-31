@@ -184,6 +184,11 @@ def master_playlist(
 ) -> str:
     """Combine measured codec metadata while keeping packager sessions private."""
     lines = ["#EXTM3U", "#EXT-X-VERSION:10"]
+    warm_query = (
+        f"?warm_max_height={max(rendition.height for rendition, _ in variants)}"
+        if len(variants) > 1
+        else ""
+    )
     for rendition, master in variants:
         if audio and master.audio:
             lines.append(
@@ -220,7 +225,7 @@ def master_playlist(
         lines.extend(
             [
                 "#EXT-X-STREAM-INF:" + ",".join(attributes),
-                f"{rendition.height}p/{master.video}",
+                f"{rendition.height}p/{master.video}{warm_query}",
             ]
         )
     return "\n".join(lines) + "\n"

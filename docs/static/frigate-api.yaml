@@ -8793,6 +8793,18 @@ paths:
                 type: string
               - type: 'null'
             title: ' Hls Skip'
+        - name: warm_max_height
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - type: integer
+                maximum: 2160
+                minimum: 144
+              - type: 'null'
+            description: Warm advertised rungs during active Auto playback
+            title: Warm Max Height
+          description: Warm advertised rungs during active Auto playback
       responses:
         '200':
           description: Successful Response

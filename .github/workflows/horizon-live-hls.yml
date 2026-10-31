@@ -1,0 +1,128 @@
+name: Horizon shared-clock live HLS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/horizon-live-hls.yml
+      - docker/live-hls/**
+      - tools/build_live_hls_packager.py
+      - tools/test_live_hls_packager.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: horizon-live-hls-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-test-publish:
+    if: github.repository == 'ErrantActions/Frigate-Horizon' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      LOCAL_IMAGE: horizon-live-hls:${{ github.sha }}
+      REGISTRY_IMAGE: ghcr.io/errantactions/frigate-horizon-live-hls:sha-${{ github.sha }}
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check source publication boundaries
+        run: python3 tools/check_public_source.py
+      - name: Scan source for secrets
+        run: |
+          go run github.com/zricethezav/gitleaks/v8@v8.24.2 dir . \
+            --redact --no-banner --exit-code 1
+      - name: Set up dedicated Buildx builder
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build and test actual shared-clock packager
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: docker/live-hls/Dockerfile
+          target: live-hls
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.LOCAL_IMAGE }}
+          cache-from: type=gha,scope=horizon-live-hls-amd64
+          cache-to: type=gha,mode=max,scope=horizon-live-hls-amd64
+          labels: |
+            org.opencontainers.image.source=https://github.com/ErrantActions/Frigate-Horizon
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: false
+      - name: Verify packaged binary, receipt, license and non-root runtime
+        run: |
+          set -euo pipefail
+          container="$(docker create --network none "$LOCAL_IMAGE")"
+          trap 'docker rm "$container" >/dev/null' EXIT
+          docker cp "$container:/mediamtx" "$RUNNER_TEMP/mediamtx"
+          docker cp "$container:/usr/local/share/live-hls/shared-clock.json" "$RUNNER_TEMP/shared-clock.json"
+          docker cp "$container:/usr/local/share/licenses/mediamtx/LICENSE.mediamtx" "$RUNNER_TEMP/LICENSE.mediamtx"
+          docker cp "$container:/usr/local/share/licenses/mediamtx/LICENSE.hls-js" "$RUNNER_TEMP/LICENSE.hls-js"
+          docker image inspect "$LOCAL_IMAGE" > "$RUNNER_TEMP/live-hls-image.json"
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges "$LOCAL_IMAGE" --version
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          receipt = json.loads((root / "shared-clock.json").read_text())
+          image = json.loads((root / "live-hls-image.json").read_text())[0]
+          assert receipt["source_commit"] == "9540cb6c1d9f1e9351fcc4ded3afc249ffff22bc"
+          assert receipt["protocol"] == "horizon-live-hls-shared-clock-v1"
+          assert receipt["binary_sha256"] == hashlib.sha256((root / "mediamtx").read_bytes()).hexdigest()
+          assert receipt["recording_paths_modified"] is False
+          assert image["Config"]["User"] == "1000:1000"
+          assert "HORIZON_HLS_SHARED_CLOCK=1" in image["Config"]["Env"]
+          assert (root / "LICENSE.mediamtx").stat().st_size > 0
+          assert (root / "LICENSE.hls-js").stat().st_size > 0
+          print("Packaged shared-clock binary, license, opt-in and non-root checks passed")
+          PY
+      - name: Authenticate to GHCR only after all tests pass
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish tested packager and immutable image receipt
+        run: |
+          set -euo pipefail
+          docker tag "$LOCAL_IMAGE" "$REGISTRY_IMAGE"
+          docker push "$REGISTRY_IMAGE"
+          docker image inspect "$REGISTRY_IMAGE" > "$RUNNER_TEMP/published-live-hls.json"
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          value = json.loads((root / "published-live-hls.json").read_text())[0]
+          references = [ref for ref in value["RepoDigests"] if re.fullmatch(
+              r"ghcr\.io/errantactions/frigate-horizon-live-hls@sha256:[0-9a-f]{64}", ref)]
+          if len(references) != 1:
+              raise SystemExit("Published packager digest is missing or ambiguous")
+          receipt = {
+              "commit": os.environ["GITHUB_SHA"],
+              "image": references[0],
+              "image_id": value["Id"],
+              "protocol": "horizon-live-hls-shared-clock-v1",
+              "linux_image_checks": "passed",
+              "synthetic_restart_clock_checks": "passed",
+              "production_acceptance": False,
+          }
+          Path("horizon-live-hls-image-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          PY
+      - name: Save verified packager receipt
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: horizon-live-hls-image-receipt
+          path: horizon-live-hls-image-receipt.json
+          if-no-files-found: error
+      - name: Remove registry session
+        if: always()
+        run: docker logout ghcr.io

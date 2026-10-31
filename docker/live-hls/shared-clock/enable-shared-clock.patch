@@ -1,0 +1,90 @@
+diff --git a/internal/protocols/hls/from_stream.go b/internal/protocols/hls/from_stream.go
+index 3cc331fe1f6e3148285faa836837963f045ddeda..5fbdfc21698307323dff3066294daa932ce59925 100644
+--- a/internal/protocols/hls/from_stream.go
++++ b/internal/protocols/hls/from_stream.go
+@@ -52,6 +52,7 @@ func setupVideoTrack(
+ 	outDesc *description.Session,
+ 	r *stream.Reader,
+ 	muxer *gohlslib.Muxer,
++	clock *horizonSharedClock,
+ ) {
+ 	addTrack := func(
+ 		media *description.Media,
+@@ -60,7 +61,7 @@ func setupVideoTrack(
+ 		onData stream.OnDataFunc,
+ 	) {
+ 		muxer.Tracks = append(muxer.Tracks, track)
+-		r.OnData(media, forma, onData)
++		r.OnData(media, forma, horizonSharedClockCallback(clock, forma.ClockRate(), len(muxer.Tracks) == 1, onData))
+ 	}
+ 
+ 	var videoFormatAV1 *format.AV1
+@@ -212,6 +213,7 @@ func setupAudioTracks(
+ 	_ *description.Session,
+ 	r *stream.Reader,
+ 	muxer *gohlslib.Muxer,
++	clock *horizonSharedClock,
+ ) error {
+ 	addTrack := func(
+ 		medi *description.Media,
+@@ -220,7 +222,7 @@ func setupAudioTracks(
+ 		onData stream.OnDataFunc,
+ 	) {
+ 		muxer.Tracks = append(muxer.Tracks, track)
+-		r.OnData(medi, forma, onData)
++		r.OnData(medi, forma, horizonSharedClockCallback(clock, forma.ClockRate(), len(muxer.Tracks) == 1, onData))
+ 	}
+ 
+ 	for _, media := range origDesc.Medias {
+@@ -381,6 +383,7 @@ func setupDataTracks(
+ 	_ *description.Session,
+ 	r *stream.Reader,
+ 	muxer *gohlslib.Muxer,
++	clock *horizonSharedClock,
+ ) {
+ 	addTrack := func(
+ 		media *description.Media,
+@@ -389,7 +392,7 @@ func setupDataTracks(
+ 		onData stream.OnDataFunc,
+ 	) {
+ 		muxer.Tracks = append(muxer.Tracks, track)
+-		r.OnData(media, forma, onData)
++		r.OnData(media, forma, horizonSharedClockCallback(clock, forma.ClockRate(), len(muxer.Tracks) == 1, onData))
+ 	}
+ 
+ 	for _, media := range origDesc.Medias {
+@@ -432,18 +435,25 @@ func FromStream(
+ 	r *stream.Reader,
+ 	muxer *gohlslib.Muxer,
+ ) error {
++	clockOrigin, err := horizonSharedClockOrigin()
++	if err != nil {
++		return err
++	}
++	clock := &horizonSharedClock{origin: clockOrigin}
+ 	setupVideoTrack(
+ 		origDesc,
+ 		outDesc,
+ 		r,
+ 		muxer,
++		clock,
+ 	)
+ 
+-	err := setupAudioTracks(
++	err = setupAudioTracks(
+ 		origDesc,
+ 		outDesc,
+ 		r,
+ 		muxer,
++		clock,
+ 	)
+ 	if err != nil {
+ 		return err
+@@ -454,6 +464,7 @@ func FromStream(
+ 		outDesc,
+ 		r,
+ 		muxer,
++		clock,
+ 	)
+ 
+ 	if len(muxer.Tracks) == 0 {

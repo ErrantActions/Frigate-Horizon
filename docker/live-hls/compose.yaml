@@ -1,6 +1,8 @@
 services:
   live-hls:
-    image: bluenviron/mediamtx:1.21.3@sha256:59e43552f3be43695b70c19424dc2a42fcec18075f88d91561a24ac5d70a586c
+    image: ${HORIZON_LIVE_HLS_IMAGE:?Set the verified shared-clock packager digest}
+    environment:
+      HORIZON_HLS_SHARED_CLOCK: "1"
     network_mode: service:frigate
     depends_on:
       - frigate
