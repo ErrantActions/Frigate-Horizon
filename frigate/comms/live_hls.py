@@ -190,12 +190,22 @@ class LiveHlsManager:
                 camera, height, resource, {**params, "session": master.session}
             )
         except LiveHlsError as error:
-            if error.status != 401:
+            missing_playlist = error.status == 404 and resource in (
+                master.video,
+                master.audio,
+            )
+            if error.status != 401 and not missing_playlist:
                 raise
             master = await self.bootstrap(camera, height, expired=master)
+            # A recreated muxer starts a new sequence; old blocking reload
+            # positions can otherwise wait for segments from its previous lifetime.
+            retry_params = {} if resource.endswith(".m3u8") else params
             try:
                 data = await self._read(
-                    camera, height, resource, {**params, "session": master.session}
+                    camera,
+                    height,
+                    resource,
+                    {**retry_params, "session": master.session},
                 )
             except LiveHlsError as retry_error:
                 if retry_error.status != 401:

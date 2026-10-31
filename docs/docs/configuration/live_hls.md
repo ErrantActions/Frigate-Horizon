@@ -111,6 +111,10 @@ cookies upstream. Requalify this private protocol before changing packager versi
 Producer shutdown also waits for the packager's upstream session inactivity
 timeout, not just its muxer timeout. Allow up to 60 seconds after the last viewer
 request when checking that this companion has released its RTSP readers.
+When an idle muxer closes, the proxy renews a missing known media playlist once.
+The first request after renewal omits old blocking-reload positions because the
+new muxer starts a new media sequence. Missing fragments and unknown playlist
+names remain errors instead of being replaced with unrelated media.
 
 Native clients must send their existing authenticated session cookies and keep
 same-origin and certificate checks. A native AVPlayer integration should set

@@ -188,6 +188,71 @@ class TestLiveHlsManager(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(calls), 4)
 
+    async def test_expired_media_playlist_restarts_without_old_blocking_positions(self):
+        for status in (401, 404):
+            with self.subTest(status=status):
+                self.manager.sessions.clear()
+                calls = []
+
+                def handle(request):
+                    calls.append(request)
+                    if request.url.path.endswith("/index.m3u8"):
+                        session = "renewed" if len(calls) > 1 else "private-test-1"
+                        return httpx.Response(
+                            200, text=PRIVATE_MASTER.replace("private-test-1", session)
+                        )
+                    if request.url.params["session"] == "private-test-1":
+                        return httpx.Response(status)
+                    return httpx.Response(
+                        200,
+                        text=(
+                            "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2,\n"
+                            "video1_seg0.mp4?session=renewed\n"
+                        ),
+                    )
+
+                await self.transport(handle, bootstrap=False)
+                params = {"_HLS_msn": "500", "_HLS_part": "8", "_HLS_skip": "YES"}
+                result = await self.manager.fetch(
+                    "front", 720, "video1_stream.m3u8", params
+                )
+                self.assertIn(b"#EXT-X-MEDIA-SEQUENCE:0", result)
+                self.assertNotIn(b"session=", result)
+                self.assertEqual(len(calls), 4)
+                self.assertEqual(calls[1].url.params["_HLS_msn"], "500")
+                self.assertEqual(dict(calls[-1].url.params), {"session": "renewed"})
+                self.assertEqual(params["_HLS_msn"], "500")
+
+    async def test_unknown_playlist_does_not_restart_the_muxer(self):
+        calls = []
+
+        def handle(request):
+            calls.append(request)
+            if request.url.path.endswith("/index.m3u8"):
+                return httpx.Response(200, text=PRIVATE_MASTER)
+            return httpx.Response(404)
+
+        await self.transport(handle, bootstrap=False)
+        with self.assertRaises(LiveHlsError) as error:
+            await self.manager.fetch("front", 720, "unknown.m3u8", {})
+        self.assertEqual(error.exception.status, 404)
+        self.assertEqual(len(calls), 2)
+
+    async def test_missing_known_playlist_is_retried_only_once(self):
+        calls = []
+
+        def handle(request):
+            calls.append(request)
+            if request.url.path.endswith("/index.m3u8"):
+                return httpx.Response(200, text=PRIVATE_MASTER)
+            return httpx.Response(404)
+
+        await self.transport(handle, bootstrap=False)
+        with self.assertRaises(LiveHlsError) as error:
+            await self.manager.fetch("front", 720, "video1_stream.m3u8", {})
+        self.assertEqual(error.exception.status, 404)
+        self.assertEqual(len(calls), 4)
+
     async def test_config_error_does_not_abort_unrelated_recorder_startup(self):
         await self.manager.close()
         other = LiveHlsManager(
