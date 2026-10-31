@@ -120,6 +120,9 @@ export default function LiveHlsPlayer({
         lowLatencyMode: true,
         startLevel: 0,
         abrEwmaDefaultEstimate: 500_000,
+        // Forget LAN throughput before a slower connection drains the live buffer.
+        abrEwmaFastLive: 0.5,
+        abrEwmaSlowLive: 2,
         maxBufferLength: 6,
         maxMaxBufferLength: 12,
         backBufferLength: 0,

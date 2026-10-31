@@ -82,6 +82,11 @@ In Auto quality mode, all supported players use the HLS ladder. The web
 player starts at the lowest advertised bitrate and delegates subsequent bitrate
 selection to hls.js's throughput and buffer policy. Display size and Data Saver
 cap the maximum level. Explicit quality selections pin an advertised HLS rung.
+The web player uses short live bandwidth-estimation windows (0.5 and 2 seconds)
+so an earlier fast LAN connection does not keep a 4K stream selected after
+available bandwidth drops below its requirements. A sudden network loss can
+still require buffering; adaptive quality is not a guarantee of uninterrupted
+playback on an unavailable connection.
 Auto can keep multiple renditions active for the viewed camera to preserve
 seamless switching; this can use more encoder capacity than a pinned rung.
 
