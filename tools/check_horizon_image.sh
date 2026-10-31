@@ -20,7 +20,7 @@ docker run --rm --network none --read-only --cap-drop ALL \
     -e ONVIF_TEST_FFPROBE=/usr/lib/ffmpeg/8.0/bin/ffprobe \
     -e PYTHONPATH=/opt/frigate:/source \
     --tmpfs /tmp:rw,exec,size=1g --tmpfs /config:rw,size=64m \
-    --tmpfs /media/frigate:rw,size=64m \
+    --tmpfs /media/frigate:rw,exec,size=64m \
     --mount "type=bind,src=$root,dst=/source,readonly" \
     --entrypoint bash "$image_id" -c '
       set -euo pipefail
