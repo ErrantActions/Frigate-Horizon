@@ -56,6 +56,21 @@ class APNsConfig(FrigateBaseModel):
         title="Enable private notification images",
         description="Advertise the installation-scoped authenticated thumbnail service and let compatible native apps request opt-in image previews. No media or URLs are included in push payloads.",
     )
+    minimum_confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        strict=True,
+        allow_inf_nan=False,
+        title="Minimum native notification confidence",
+        description="Minimum stored detection confidence for native activity notifications, from 0 to 1. Zero preserves existing eligibility. Does not change detection thresholds, recording, browser notifications, tests, or health alerts.",
+    )
+    require_coral_confirmation: bool = Field(
+        default=False,
+        strict=True,
+        title="Require Coral-confirmed native notifications",
+        description="Require a linked tracked object from an Edge TPU before sending native activity notifications. Camera alarms without a matching Coral detection are not sufficient. Review notifications wait for completion; this does not enable additional analysis.",
+    )
 
     @field_validator("team_id", "key_id")
     @classmethod

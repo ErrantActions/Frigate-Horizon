@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import json
 import logging
+import math
 import os
 import queue
 import threading
@@ -28,7 +29,7 @@ from frigate.config.camera.updater import (
     CameraConfigUpdateSubscriber,
 )
 from frigate.const import BASE_DIR, CONFIG_DIR
-from frigate.models import User
+from frigate.models import Event, User
 
 logger = logging.getLogger(__name__)
 
@@ -466,6 +467,63 @@ class WebPushClient(Communicator):
     def _notification_users(self) -> set[str]:
         return set(self.web_pushers) | set(getattr(self, "user_cameras", {}))
 
+    def _native_notification_allowed(self, message: APNsMessage) -> bool:
+        """Require stored, camera-scoped evidence instead of trusting alarm scores."""
+        settings = self.config.apns
+        if message.notification_type in ("test", "health") or (
+            settings.minimum_confidence == 0 and not settings.require_coral_confirmation
+        ):
+            return True
+        after = message.payload.get("after")
+        if isinstance(after, dict):
+            if settings.require_coral_confirmation and message.payload.get(
+                "type"
+            ) not in (
+                "end",
+                "genai",
+            ):
+                logger.debug(
+                    "Deferring native activity notification until review completion"
+                )
+                return False
+            data = after.get("data")
+            identifiers = data.get("detections", []) if isinstance(data, dict) else []
+        else:
+            identifier = message.payload.get("event_id")
+            identifiers = [identifier] if isinstance(identifier, str) else []
+        if (
+            message.camera is None
+            or not isinstance(identifiers, list)
+            or not identifiers
+            or not all(isinstance(identifier, str) for identifier in identifiers)
+        ):
+            logger.debug(
+                "Skipping native activity notification without detection evidence"
+            )
+            return False
+        events = Event.select(Event.data, Event.detector_type).where(
+            Event.camera == message.camera,
+            Event.id.in_(identifiers),
+            Event.false_positive == False,
+        )
+        for event in events:
+            data = event.data or {}
+            if settings.require_coral_confirmation and (
+                event.detector_type != "edgetpu" or data.get("type") != "object"
+            ):
+                continue
+            score = data.get("top_score")
+            if (
+                type(score) in (int, float)
+                and math.isfinite(score)
+                and settings.minimum_confidence <= score <= 1
+            ):
+                return True
+        logger.debug(
+            "Skipping native activity notification below confidence or verification policy"
+        )
+        return False
+
     async def _send_native_notification(
         self, notification: PushNotification, transport: APNsTransport
     ) -> None:
@@ -525,6 +583,8 @@ class WebPushClient(Communicator):
                 or self.is_camera_suspended(camera)
             ):
                 return
+        if not await asyncio.to_thread(self._native_notification_allowed, message):
+            return
         outcomes = await transport.send(message, devices)
         for outcome in outcomes:
             if outcome.invalidated_at is not None:
@@ -608,6 +668,12 @@ class WebPushClient(Communicator):
         from frigate.motion.native_person import defer_person_alert
 
         if defer_person_alert(self.config.cameras[camera], payload):
+            return
+        if (
+            not self.config.notifications.email
+            and self._native_enabled()
+            and not self._native_notification_allowed(APNsMessage("", payload, "", ""))
+        ):
             return
         camera_name: str = getattr(
             self.config.cameras[camera], "friendly_name", None
@@ -719,6 +785,12 @@ class WebPushClient(Communicator):
         if not self.config.notifications.email and not self._native_enabled():
             return
 
+        if (
+            not self.config.notifications.email
+            and self._native_enabled()
+            and not self._native_notification_allowed(APNsMessage("", payload, "", ""))
+        ):
+            return
         camera: str = payload["camera"]
         camera_name: str = getattr(
             self.config.cameras[camera], "friendly_name", None

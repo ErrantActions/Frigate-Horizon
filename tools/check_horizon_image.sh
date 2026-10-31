@@ -53,6 +53,9 @@ docker run --rm --network none --read-only --cap-drop ALL \
         frigate.test.test_playback_shared_lifespan \
         frigate.test.test_api_auth_spec \
         frigate.test.test_apns
+      python3 -u -m unittest \
+        frigate.test.test_apns_pipeline \
+        frigate.test.test_native_push_images
       python3 /source/tools/test_native_owned_media.py \
         --binary /usr/local/go2rtc/bin/go2rtc \
         --receipt /usr/local/share/go2rtc/horizon-owned-webrtc.json \

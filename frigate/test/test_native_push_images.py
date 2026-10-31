@@ -25,7 +25,7 @@ from frigate.models import Event, ReviewSegment, User
 from frigate.test import test_native_push_api as native_api_tests
 
 
-class TestNativeImageAPI(native_api_tests.TestNativePushAPI):
+class TestNativeImageAPI(native_api_tests.NativePushAPITestCase):
     def setUp(self):
         super().setUp()
         for model in (Event, ReviewSegment):

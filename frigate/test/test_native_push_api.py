@@ -22,7 +22,7 @@ from frigate.config import FrigateConfig
 from frigate.models import User
 
 
-class TestNativePushAPI(unittest.TestCase):
+class NativePushAPITestCase(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -96,6 +96,8 @@ class TestNativePushAPI(unittest.TestCase):
             "camera_ids": ["front"],
         }
 
+
+class TestNativePushAPI(NativePushAPITestCase):
     def test_contract_uses_database_role_not_header_role_and_never_exposes_tokens(self):
         status = self.client.get("/notifications/apns", headers=self.headers)
         self.assertEqual(

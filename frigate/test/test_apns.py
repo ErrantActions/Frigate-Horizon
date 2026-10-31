@@ -28,6 +28,7 @@ from frigate.comms.apns import (
     APNsTransport,
 )
 from frigate.comms.apns_registry import APNsRegistry, NativePushDevice
+from frigate.config.apns import APNsConfig
 
 
 class TestAPNsRegistry(unittest.TestCase):
@@ -207,6 +208,24 @@ class TestAPNsRegistry(unittest.TestCase):
 
 
 class TestAPNsRequestModels(unittest.TestCase):
+    def test_native_confidence_policy_defaults_and_boundaries(self):
+        config = APNsConfig()
+        self.assertEqual(config.minimum_confidence, 0)
+        self.assertFalse(config.require_coral_confirmation)
+        for score in (0.0, 0.85, 1.0):
+            with self.subTest(score=score):
+                self.assertEqual(
+                    APNsConfig(minimum_confidence=score).minimum_confidence, score
+                )
+        for score in (-0.01, 1.01, float("nan"), float("inf"), True, "0.85"):
+            with self.subTest(score=score), self.assertRaises(ValidationError):
+                APNsConfig(minimum_confidence=score)
+        self.assertTrue(
+            APNsConfig(require_coral_confirmation=True).require_coral_confirmation
+        )
+        with self.assertRaises(ValidationError):
+            APNsConfig(require_coral_confirmation="true")
+
     def body(self):
         return {
             "installation_id": str(uuid4()),
