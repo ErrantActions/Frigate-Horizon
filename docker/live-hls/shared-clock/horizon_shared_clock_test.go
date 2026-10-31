@@ -78,6 +78,31 @@ func TestHorizonSharedClockRejectsMissingTiming(t *testing.T) {
 	}
 }
 
+func TestHorizonSharedClockProgramDateFollowsPresentationNotArrival(t *testing.T) {
+	origin := time.Unix(0, 0)
+	wall := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	for _, rate := range []int{90000, 48000, 44100} {
+		clock := &horizonSharedClock{origin: origin}
+		var mapped []*unit.Unit
+		callback := horizonSharedClockCallback(clock, rate, true, func(u *unit.Unit) error {
+			mapped = append(mapped, u)
+			return nil
+		})
+		for i, jitter := range []time.Duration{0, 4 * time.Second, -2 * time.Second} {
+			pts := int64(i) * int64(rate) / 25
+			arrival := wall.Add(time.Duration(i)*40*time.Millisecond + jitter)
+			source := &unit.Unit{PTS: pts, NTP: arrival, Payload: unit.PayloadH264([][]byte{{5}})}
+			require.NoError(t, callback(source))
+			require.Equal(t, pts, source.PTS)
+			require.Equal(t, arrival, source.NTP)
+			require.WithinDuration(t, wall.Add(time.Duration(i)*40*time.Millisecond), mapped[i].NTP, time.Second/time.Duration(rate))
+			presentation := time.Duration(mapped[i].PTS/int64(rate))*time.Second +
+				time.Duration(mapped[i].PTS%int64(rate))*time.Second/time.Duration(rate)
+			require.Equal(t, origin.Add(presentation).UTC(), mapped[i].NTP.UTC())
+		}
+	}
+}
+
 func TestHorizonSharedClockOptIn(t *testing.T) {
 	for _, value := range []string{"", "0", "1", "invalid"} {
 		t.Run(value, func(t *testing.T) {
@@ -137,9 +162,16 @@ func TestHorizonSharedClockActualFMP4Clocks(t *testing.T) {
 				codec := track.Codec.(*codecs.H264)
 				payload = unit.PayloadH264([][]byte{codec.SPS, codec.PPS, {5}})
 			}
+			arrivalJitter := time.Duration(0)
+			if i > 0 {
+				arrivalJitter = 3 * time.Second
+				if sourceStart == 0 {
+					arrivalJitter = -2 * time.Second
+				}
+			}
 			require.NoError(t, mapper(&unit.Unit{
 				PTS:     (sourceStart + i) * 90000,
-				NTP:     wall.Add(time.Duration(620+i) * time.Second),
+				NTP:     wall.Add(time.Duration(620+i)*time.Second + arrivalJitter),
 				Payload: payload,
 			}))
 		}

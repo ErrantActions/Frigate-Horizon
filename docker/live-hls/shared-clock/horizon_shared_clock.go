@@ -63,6 +63,11 @@ func horizonSharedClockCallback(
 			int64(clock.offset%time.Second)*int64(clockRate)/int64(time.Second)
 		mapped := *u
 		mapped.PTS += offset
+		// Players align rungs with program dates as well as decode timestamps.
+		// Arrival jitter must not give those two clocks different origins.
+		presentation := time.Duration(mapped.PTS/int64(clockRate))*time.Second +
+			time.Duration(mapped.PTS%int64(clockRate))*time.Second/time.Duration(clockRate)
+		mapped.NTP = clock.origin.Add(presentation)
 		return onData(&mapped)
 	}
 }

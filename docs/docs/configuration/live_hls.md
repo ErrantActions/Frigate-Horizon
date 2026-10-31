@@ -50,6 +50,9 @@ timestamps share the Unix epoch, including after a rendition or packager
 restart. Each rendition retains one leading-track offset shared by video and
 audio, preserving their original timing without following packet-arrival
 jitter. The muxer's normal decode-time headroom is common to all rungs.
+Program dates follow that same presentation timeline instead of subsequent
+packet-arrival timestamps, keeping the playlist alignment clock consistent with
+the fMP4 clock during source jitter or pacing drift.
 The original shared media units, encoded payloads, and recorder
 inputs are not changed. Stock independent per-rendition clocks are not an
 equivalent substitute for this companion.
