@@ -88,6 +88,7 @@ docker run --rm --user 1000:1000 --network none --read-only --cap-drop ALL \
     -m unittest frigate.test.test_preview_hls_nginx
 
 cat > "$stage/config.yml" <<'YAML'
+version: "0.19-0"
 mqtt:
   enabled: false
 auth:
