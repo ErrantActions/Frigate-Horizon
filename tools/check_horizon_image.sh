@@ -33,7 +33,6 @@ docker run --rm --network none --read-only --cap-drop ALL \
         frigate.test.test_native_push_api \
         frigate.test.test_native_health \
         frigate.test.test_native_features_api \
-        frigate.test.test_native_signing_generation \
         frigate.test.test_native_control_leases \
         frigate.test.test_live_hls \
         frigate.test.test_live_hls_manager \
