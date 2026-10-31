@@ -80,7 +80,12 @@ def review_storage_column():
         ~Recordings.delete_requested,
     )
     local = fn.EXISTS(recordings.where(Recordings.storage_tier == "local"))
-    archive = fn.EXISTS(recordings.where(Recordings.storage_tier == "archive"))
+    archive = fn.EXISTS(
+        recordings.where(
+            (Recordings.storage_tier == "archive")
+            | Recordings.archive_bytes.is_null(False)
+        )
+    )
     return Case(
         None,
         ((local & archive, "mixed"), (archive, "archive"), (local, "local")),

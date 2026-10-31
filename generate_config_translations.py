@@ -6,14 +6,14 @@ This script dynamically extracts all top-level config sections from FrigateConfi
 and generates JSON translation files with titles and descriptions for the web UI.
 """
 
+import argparse
+import importlib
 import json
 import logging
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any, get_args, get_origin
-
-from frigate.config.config import FrigateConfig
-from frigate.util.schema import get_config_schema
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -210,16 +210,63 @@ def generate_section_translation(config_class: type) -> dict[str, Any]:
     return extract_translations_from_schema(schema)
 
 
+def load_storage_model() -> type:
+    """Load the actual standalone storage models without Linux detector imports."""
+    import frigate
+
+    namespace = "_frigate_storage_models"
+    if namespace not in sys.modules:
+        package = ModuleType(namespace)
+        package.__path__ = [str(Path(frigate.__path__[0]) / "config")]
+        sys.modules[namespace] = package
+    return importlib.import_module(f"{namespace}.storage").StorageConfig
+
+
 def main():
     """Main function to generate config translations."""
 
-    # Define output directory
-    if len(sys.argv) > 1:
-        output_dir = Path(sys.argv[1])
-    else:
-        output_dir = (
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "output_dir",
+        nargs="?",
+        type=Path,
+        default=(
             Path(__file__).parent / "web" / "public" / "locales" / "en" / "config"
+        ),
+    )
+    parser.add_argument(
+        "--storage-only",
+        action="store_true",
+        help="Regenerate only storage fields without loading Linux detector dependencies",
+    )
+    args = parser.parse_args()
+    output_dir = args.output_dir
+    if args.storage_only:
+        global_file = output_dir / "global.json"
+        translations = json.loads(global_file.read_text(encoding="utf-8"))
+        previous = translations["storage"]
+        nested = generate_section_translation(load_storage_model())
+        translations["storage"] = {
+            **{
+                key: value
+                for key, value in previous.items()
+                if key in ("label", "description")
+            },
+            **{
+                key: value
+                for key, value in nested.items()
+                if key not in ("label", "description")
+            },
+        }
+        global_file.write_text(
+            json.dumps(translations, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
         )
+        logger.info("Generated storage fields in global.json")
+        return
+
+    from frigate.config.config import FrigateConfig
+    from frigate.util.schema import get_config_schema
 
     logger.info(f"Output directory: {output_dir}")
 

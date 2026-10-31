@@ -12,7 +12,13 @@ from peewee import SqliteDatabase
 
 from frigate.api.event import set_retain
 from frigate.config import FrigateConfig, RetainModeEnum
-from frigate.models import Event, Recordings, ReviewSegment
+from frigate.models import (
+    ArchiveTransfer,
+    Event,
+    RecordingLease,
+    Recordings,
+    ReviewSegment,
+)
 from frigate.record.cleanup import RecordingCleanup
 from frigate.record.policy import delete_automatic_recording
 from frigate.storage import StorageMaintainer
@@ -23,13 +29,14 @@ class TestEmergencyRecordingProtection(unittest.TestCase):
     def setUp(self):
         self.directory = self.enterContext(tempfile.TemporaryDirectory())
         self.db = SqliteDatabase(":memory:")
-        self.enterContext(self.db.bind_ctx([Event, Recordings, ReviewSegment]))
+        models = [Event, Recordings, ReviewSegment, RecordingLease, ArchiveTransfer]
+        self.enterContext(self.db.bind_ctx(models))
         self.addCleanup(self.db.close)
         with (
             patch.object(Event.end_time, "null", True),
             patch.object(ReviewSegment.end_time, "null", True),
         ):
-            self.db.create_tables([Event, Recordings, ReviewSegment])
+            self.db.create_tables(models)
         self.config = FrigateConfig(
             mqtt={"enabled": False},
             cameras={

@@ -73,6 +73,7 @@ class TestArchiveWorker(unittest.TestCase):
         worker = object.__new__(ArchiveProcess)
         worker.config = SimpleNamespace(
             storage=SimpleNamespace(
+                mode="move",
                 mount_id="test",
                 transfer_mib_per_second=0,
                 max_archive_gib=None,

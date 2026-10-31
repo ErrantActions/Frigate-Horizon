@@ -198,6 +198,7 @@ def delete_automatic_recording(
     reason: AutomaticDeletionReason,
     padding: CapturePadding = CapturePadding(),
     clear: bool = False,
+    preserve_unverified: bool = False,
 ) -> float | None:
     """Delete eligible local footage with a fresh protection check under the path lock.
 
@@ -207,6 +208,10 @@ def delete_automatic_recording(
     """
     recording = Recordings.get_or_none(Recordings.id == recording_id)
     if recording is None:
+        return None
+    if recording.archive_bytes is not None or (
+        reason == "retention" and preserve_unverified
+    ):
         return None
     path = Path(recording.path)
     claimed = False

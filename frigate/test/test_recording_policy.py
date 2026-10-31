@@ -3,6 +3,7 @@
 import importlib
 import sqlite3
 import tempfile
+import time
 import unittest
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
@@ -11,7 +12,13 @@ from unittest.mock import patch
 
 from peewee import SqliteDatabase
 
-from frigate.models import Event, Recordings, ReviewSegment
+from frigate.models import (
+    ArchiveTransfer,
+    Event,
+    RecordingLease,
+    Recordings,
+    ReviewSegment,
+)
 from frigate.record.archive import request_recording_deletion
 from frigate.record.policy import (
     CapturePadding,
@@ -65,13 +72,14 @@ class _RecordingPolicyFixture(unittest.TestCase):
             if self._use_file_database
             else ":memory:"
         )
-        self.enterContext(self.db.bind_ctx([Event, Recordings, ReviewSegment]))
+        models = [Event, Recordings, ReviewSegment, RecordingLease, ArchiveTransfer]
+        self.enterContext(self.db.bind_ctx(models))
         self.addCleanup(self.db.close)
         with (
             patch.object(Event.end_time, "null", True),
             patch.object(ReviewSegment.end_time, "null", True),
         ):
-            self.db.create_tables([Event, Recordings, ReviewSegment])
+            self.db.create_tables(models)
         self.enterContext(
             patch("frigate.record.archive.storage_lock", lambda: nullcontext())
         )
@@ -118,6 +126,19 @@ class _RecordingPolicyFixture(unittest.TestCase):
 
 
 class TestRecordingDeletionPolicy(_RecordingPolicyFixture):
+    def test_active_recording_lease_prevents_local_deletion(self):
+        recording = self.recording()
+        RecordingLease.create(
+            id="active-reader",
+            camera=recording.camera,
+            start_time=recording.start_time,
+            end_time=recording.end_time,
+            expires=time.time() + 300,
+        )
+        self.assertIsNone(delete_automatic_recording(recording.id, "emergency"))
+        self.assertTrue(Path(recording.path).is_file())
+        self.assertFalse(Recordings.get_by_id(recording.id).delete_requested)
+
     def test_saved_event_with_cleared_clip_flag_still_protects_content(self):
         recording = self.recording()
         self.event(clip=False)

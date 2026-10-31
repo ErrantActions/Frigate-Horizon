@@ -9,7 +9,7 @@ from frigate.config.camera.updater import (
     CameraConfigUpdateEnum,
     CameraConfigUpdateTopic,
 )
-from frigate.models import Recordings
+from frigate.models import ArchiveTransfer, Recordings
 from frigate.record.archive import apply_archive_retention
 
 if TYPE_CHECKING:
@@ -29,7 +29,13 @@ def archive_location_locked(
         return False
     return (
         previous.storage.enabled
-        or Recordings.select().where(Recordings.storage_tier == "archive").exists()
+        or Recordings.select()
+        .where(
+            (Recordings.storage_tier == "archive")
+            | Recordings.archive_bytes.is_null(False)
+        )
+        .exists()
+        or ArchiveTransfer.select().exists()
         or (
             storage_maintainer is not None
             and storage_maintainer.archive_config_pending()

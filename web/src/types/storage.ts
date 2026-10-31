@@ -3,6 +3,8 @@ import type { CompressionPolicy } from "./compression";
 export type RecordingStorageSettings = {
   compression?: CompressionPolicy;
   enabled: boolean;
+  mode?: "move" | "mirror";
+  local_copy_hours?: number;
   archive_path: string;
   mount_id: string;
   local_budget_gib: number;
@@ -64,7 +66,8 @@ export type ArchiveTransferFileProgress = {
 export type ArchiveTransferProgress = {
   sampled_at?: number;
   stale?: boolean;
-  trigger?: "high_water" | "local_pressure";
+  trigger?: "high_water" | "local_pressure" | "mirror";
+  mode?: "move" | "mirror";
   active: boolean;
   started_at: number | null;
   phase: "copying" | "verification" | "commit" | "waiting" | "buffering";
@@ -75,7 +78,7 @@ export type ArchiveTransferProgress = {
   verified_files: number;
   incoming_bytes: number;
   local_usage_bytes: number;
-  drain_target_bytes: number;
+  drain_target_bytes: number | null;
   remaining_bytes: number;
   rate_bytes_per_second: number | null;
   copy_rate_bytes_per_second?: number | null;

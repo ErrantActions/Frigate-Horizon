@@ -253,6 +253,10 @@ class RecordingCleanup(threading.Thread):
                         recording.id,
                         "retention",
                         CapturePadding.from_record(config.record),
+                        preserve_unverified=(
+                            self.config.storage.enabled
+                            and self.config.storage.mode == "mirror"
+                        ),
                     )
                     is None
                 ):
@@ -421,6 +425,10 @@ class RecordingCleanup(threading.Thread):
                         recording.id,
                         "retention",
                         CapturePadding.from_record(self.config.record),
+                        preserve_unverified=(
+                            self.config.storage.enabled
+                            and self.config.storage.mode == "mirror"
+                        ),
                     )
                     is None
                 ):

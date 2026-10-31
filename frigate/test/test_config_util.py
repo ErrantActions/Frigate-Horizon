@@ -128,7 +128,11 @@ class TestSwapRuntimeConfig(unittest.TestCase):
         updated.storage.archive_path = "/mnt/new-archive"
         storage = MagicMock()
         storage.archive_config_pending.return_value = True
-        with patch("frigate.api.config_util.Recordings") as recordings:
+        with (
+            patch("frigate.api.config_util.Recordings") as recordings,
+            patch("frigate.api.config_util.ArchiveTransfer") as transfers,
+        ):
+            transfers.select.return_value.exists.return_value = False
             recordings.select.return_value.where.return_value.exists.return_value = (
                 False
             )

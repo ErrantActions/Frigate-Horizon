@@ -120,6 +120,12 @@ class RecordingCompression(AudioRepair):
         """Apply fresh age, protection, lease and permanent completion exclusions."""
         if not self.policy.enabled:
             return "compression-disabled"
+        if self.archive_settings_provider is not None:
+            settings = self.archive_settings_provider()
+            if getattr(settings, "mode", "move") == "mirror":
+                return "original-quality-mirror"
+        if row.storage_tier == "local" and row.archive_bytes is not None:
+            return "verified-mirror-copy"
         reason = (
             super().skip_reason(row)
             if row.storage_tier == "local"

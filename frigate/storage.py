@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Iterable
 from multiprocessing.synchronize import Event as MpEvent
+from pathlib import Path
 from queue import Empty
 from typing import TYPE_CHECKING, Any, cast
 
@@ -23,6 +24,11 @@ from frigate.const import (
     STREAM_TYPE_SUB,
 )
 from frigate.models import Recordings
+from frigate.record.local_mirror import (
+    cleanup_local_mirrors,
+    release_local_copy,
+    validate_local_mirror_mount,
+)
 from frigate.record.policy import (
     CapturePadding,
     delete_automatic_recording,
@@ -430,10 +436,23 @@ class StorageMaintainer(threading.Thread):
 
     def check_storage_needs_cleanup(self) -> bool:
         """Return if storage needs cleanup."""
+        if self.config.storage.mode == "mirror":
+            validate_local_mirror_mount()
         # currently runs cleanup if less than 1 hour of space is left
         # disk_usage should not spin up disks
         hourly_bandwidth = self.expected_hourly_bandwidth()
         remaining_storage = round(shutil.disk_usage(RECORD_DIR).free / pow(2, 20), 1)
+        if self.config.storage.enabled and self.config.storage.mode == "mirror":
+            local_usage = (
+                Recordings.select(fn.SUM(Recordings.segment_size))
+                .where(Recordings.storage_tier == "local")
+                .scalar()
+                or 0
+            )
+            remaining_storage = min(
+                remaining_storage,
+                self.config.storage.local_budget_gib * 1024 - local_usage,
+            )
         logger.debug(
             f"Storage cleanup check: {hourly_bandwidth} hourly with remaining storage: {remaining_storage}."
         )
@@ -441,6 +460,8 @@ class StorageMaintainer(threading.Thread):
 
     def reduce_storage_consumption(self) -> None:
         """Reclaim ordinary footage first, then unsaved events, never saved evidence."""
+        if self.config.storage.mode == "mirror":
+            validate_local_mirror_mount()
         logger.debug("Starting storage cleanup")
         self.retention_unmet = True
         deleted_segments_size = 0.0
@@ -458,6 +479,27 @@ class StorageMaintainer(threading.Thread):
             )
             return
 
+        # Redundant verified copies take precedence over any loss of originals,
+        # even when the redundant copy contains an unsaved event.
+        for row in (
+            Recordings.select(Recordings.id, Recordings.camera)
+            .where(
+                Recordings.storage_tier == "local",
+                Recordings.archive_bytes.is_null(False),
+            )
+            .order_by(Recordings.start_time, Recordings.id)
+            .iterator()
+        ):
+            if deleted_segments_size >= hourly_bandwidth:
+                break
+            reclaimed = release_local_copy(
+                row.id,
+                Path(self.config.storage.archive_path),
+                padding.get(row.camera, default),
+            )
+            if reclaimed is not None:
+                deleted_segments_size += reclaimed
+
         for event_footage in (False, True):
             if deleted_segments_size >= hourly_bandwidth:
                 break
@@ -468,7 +510,11 @@ class StorageMaintainer(threading.Thread):
                     Recordings.start_time,
                     Recordings.end_time,
                 )
-                .where(Recordings.storage_tier == "local")
+                .where(
+                    Recordings.storage_tier == "local",
+                    Recordings.archive_bytes.is_null(),
+                    Recordings.end_time < time.time() - 60,
+                )
                 .order_by(Recordings.start_time.asc(), Recordings.id.asc())
                 .namedtuples()
                 .iterator()
@@ -519,6 +565,14 @@ class StorageMaintainer(threading.Thread):
         last_usage_attempt = time.monotonic()
         last_maintenance = time.monotonic()
         while not self.stop_event.wait(5):
+            try:
+                if self.config.storage.enabled and self.config.storage.mode == "mirror":
+                    validate_local_mirror_mount()
+                cleanup_local_mirrors(self.config)
+            except (OSError, DatabaseError):
+                logger.exception(
+                    "Local mirror cleanup failed; preserving pending progress"
+                )
             if time.monotonic() - last_usage_attempt >= 60:
                 self.refresh_storage_usage()
                 last_usage_attempt = time.monotonic()
@@ -553,7 +607,13 @@ class StorageMaintainer(threading.Thread):
             self.calculate_camera_bandwidth()
             logger.debug(f"Default camera bandwidths: {self.camera_storage_stats}.")
 
-        if self.check_storage_needs_cleanup():
+        try:
+            needs_cleanup = self.check_storage_needs_cleanup()
+        except OSError:
+            logger.exception("Local storage cleanup is blocked by unavailable storage")
+            self.retention_unmet = True
+            return
+        if needs_cleanup:
             if not self.config.storage.emergency_delete:
                 logger.error(
                     "Local storage critically low; emergency deletion is disabled"

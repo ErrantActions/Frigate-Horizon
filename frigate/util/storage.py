@@ -166,4 +166,27 @@ def recording_storage_usage() -> tuple[
         total["usage_mib"] += usage["usage_mib"]
         total["recordings"] += usage["recordings"]
         total["unknown_size_recordings"] += usage["unknown_size_recordings"]
+    # A local row with an exact archive length owns two physical copies.
+    # Keep both charges visible without probing a potentially unavailable NAS.
+    for row in (
+        Recordings.select(
+            Recordings.camera,
+            fn.SUM(Recordings.archive_bytes).alias("bytes"),
+            fn.COUNT(Recordings.id).alias("recordings"),
+        )
+        .where(
+            Recordings.storage_tier == "local",
+            Recordings.archive_bytes.is_null(False),
+            Recordings.archive_bytes >= 0,
+        )
+        .group_by(Recordings.camera)
+        .dicts()
+    ):
+        camera_usage = cameras.setdefault(row["camera"], {}).setdefault(
+            "archive", empty_recording_usage()
+        )
+        total = totals.setdefault("archive", empty_recording_usage())
+        for usage in (camera_usage, total):
+            usage["usage_mib"] += row["bytes"] / 2**20
+            usage["recordings"] += row["recordings"]
     return totals, cameras

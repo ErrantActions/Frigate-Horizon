@@ -31,7 +31,7 @@ def plan_archive_batch(backlog_bytes: int) -> tuple[int, int]:
     # Match transport ordering. Equal start times have equal archive priority.
     cursor = Recordings._meta.database.execute_sql(
         "SELECT segment_size FROM recordings "
-        "WHERE storage_tier = ? AND NOT delete_requested AND end_time < ? "
+        "WHERE storage_tier = ? AND archive_bytes IS NULL AND NOT delete_requested AND end_time < ? "
         "ORDER BY start_time",
         ("local", time.time() - 60),
     )
@@ -129,7 +129,8 @@ class ArchiveCapacity:
         }
         windows = recording_event_windows(padding, default)
         candidates = Recordings.select().where(
-            Recordings.storage_tier == "archive",
+            (Recordings.storage_tier == "archive")
+            | Recordings.archive_bytes.is_null(False),
             Recordings.delete_requested == False,
         )
         if self.cursor is not None:
@@ -186,7 +187,8 @@ def archive_owned_bytes() -> int:
     if (
         Recordings.select()
         .where(
-            Recordings.storage_tier == "archive",
+            (Recordings.storage_tier == "archive")
+            | Recordings.archive_bytes.is_null(False),
             Recordings.archive_bytes.is_null() | (Recordings.archive_bytes < 0),
         )
         .exists()
@@ -194,7 +196,10 @@ def archive_owned_bytes() -> int:
         raise ArchiveBlocked("archive_accounting_pending")
     archived = (
         Recordings.select(fn.SUM(Recordings.archive_bytes))
-        .where(Recordings.storage_tier == "archive")
+        .where(
+            (Recordings.storage_tier == "archive")
+            | Recordings.archive_bytes.is_null(False)
+        )
         .scalar()
         or 0
     )
@@ -257,18 +262,47 @@ def recover_archive_transfers(root: Path, pinned: Path) -> bool:
         destination = archive_destination(source, pinned)
         if row is not None and (
             row.storage_tier == "archive"
+            or row.archive_bytes is not None
             or (
                 source.is_symlink()
                 and source.readlink() == archive_destination(source, root)
             )
         ):
+            try:
+                measured = destination.stat().st_size
+            except FileNotFoundError:
+                if row.storage_tier != "local" or source.is_symlink():
+                    raise
+                with Recordings._meta.database.atomic():
+                    Recordings.update(archive_bytes=None).where(
+                        Recordings.id == row.id
+                    ).execute()
+                    ArchiveTransfer.delete_by_id(transfer.id)
+                continue
+            if (
+                row.storage_tier == "local"
+                and row.archive_bytes is not None
+                and measured != row.archive_bytes
+                and not source.is_symlink()
+            ):
+                destination.unlink()
+                fsync_directory(destination.parent)
+                with Recordings._meta.database.atomic():
+                    Recordings.update(archive_bytes=None).where(
+                        Recordings.id == row.id
+                    ).execute()
+                    ArchiveTransfer.delete_by_id(transfer.id)
+                continue
             destination.with_suffix(destination.suffix + ".partial").unlink(
                 missing_ok=True
             )
             fsync_directory(destination.parent)
             with Recordings._meta.database.atomic():
                 Recordings.update(
-                    storage_tier="archive", archive_bytes=destination.stat().st_size
+                    storage_tier=(
+                        "archive" if source.is_symlink() else row.storage_tier
+                    ),
+                    archive_bytes=measured,
                 ).where(Recordings.id == row.id).execute()
                 ArchiveTransfer.delete_by_id(transfer.id)
             continue

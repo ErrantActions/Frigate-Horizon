@@ -24,7 +24,8 @@ docker run --rm --network none --read-only --cap-drop ALL \
     --mount "type=bind,src=$root,dst=/source,readonly" \
     --entrypoint bash "$image_id" -c '
       set -euo pipefail
-      cd /tmp
+      cd /media/frigate
+      export TMPDIR="$PWD" TMP="$PWD" TEMP="$PWD"
       ln -s /opt/frigate/migrations migrations
       python3 -u -m unittest \
         frigate.test.test_native_preferences \
@@ -55,6 +56,18 @@ docker run --rm --network none --read-only --cap-drop ALL \
         frigate.test.test_apns
       python3 -u -m unittest \
         frigate.test.test_apns_pipeline \
+        frigate.test.test_recording_mirror \
+        frigate.test.test_recording_mirror_linux \
+        frigate.test.test_archive_store \
+        frigate.test.test_archive_limits \
+        frigate.test.test_archive_manager \
+        frigate.test.test_archive_parallel \
+        frigate.test.test_archive_selection \
+        frigate.test.test_recording_policy \
+        frigate.test.test_recording_protection \
+        frigate.test.test_storage_usage \
+        frigate.test.test_storage_snapshot \
+        frigate.test.test_config_util \
         frigate.test.test_native_push_images
       python3 /source/tools/test_native_owned_media.py \
         --binary /usr/local/go2rtc/bin/go2rtc \

@@ -101,6 +101,13 @@ All paths below are relative to the configured Frigate API base:
 - `GET /{camera_name}/live/hls/{height}p/{resource}`: authorized playlists, init
   fragments, segments, and low-latency parts.
 
+The status response's `renditions[].bitrate` is the configured video target in
+kilobits per second. Master-playlist `BANDWIDTH` and `AVERAGE-BANDWIDTH` are in
+bits per second. `BANDWIDTH` includes conservative video burst and audio
+headroom; these advertised values are not measurements of recent recording
+usage. Read actual `RESOLUTION` and `CODECS` from the master rather than
+constructing them from the requested height.
+
 The master accepts `audio=false` to omit the audio group and audio codecs,
 `height` to pin an advertised rung, and `max_height` to cap advertised heights.
 It omits optional `FRAME-RATE` metadata: independent muxers' startup FPS samples

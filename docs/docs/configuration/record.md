@@ -342,6 +342,114 @@ no audio track.
 
 ### Tiered storage: local recordings and an NFS archive
 
+#### Original-quality rolling local mirror
+
+Set `storage.mode: mirror` explicitly to use one local recorder with an
+asynchronous verified remote copy, rather than pressure-triggered movement.
+The default remains `move`, including for existing installations. Mirror never
+changes camera encoding, resolution, frame rate, bitrate, or recording quality.
+Older-footage compression is incompatible with mirror mode. Verified mirrored
+originals are also excluded from audio repair and compression maintenance.
+
+```yaml
+storage:
+  enabled: true
+  mode: mirror
+  archive_path: /media/frigate/archive
+  mount_id: frigate-archive
+  local_budget_gib: 2793.96772384644 # 3,000,000,000,000 bytes, not 3 TiB.
+  local_copy_hours: 12
+  retain_days: 90
+  max_archive_gib: null
+  archive_full_behavior: pause
+  transfer_mib_per_second: 0
+  parallel_transfers: 2
+  emergency_delete: true
+  compression:
+    enabled: false
+```
+
+Before enabling mirror, mount `/media/frigate/recordings` on its own persistent
+local filesystem (ZFS, ext4, XFS, or Btrfs). NFS/CIFS, container overlay, and
+memory-backed recording mounts are rejected using local mount metadata, without
+probing the remote filesystem. The content budget does not provision a dataset
+or enforce a filesystem quota. Provision the desired local quota/reservation
+separately, disable filesystem compression if original physical storage is
+required, and give the recording process permission to create files and symlinks.
+Keep the database, cache, clips, and exports off NFS. The archive still requires
+its separately mounted NFS share and pre-provisioned `.frigate-archive` marker.
+
+Every completed eligible segment is copied with the existing bounded transfer
+workers, fsynced, and read back with SHA-256 verification before its exact remote
+length is committed. Transfers run continuously, independent of start/drain
+watermarks. Committed mirrors are deduplicated on restart; interrupted transfers
+retain their original and durable reservation until isolated-worker recovery.
+Missing or wrong-length remote mirrors are checked in bounded maintenance passes
+and requeued while their local originals remain reserved. External modification
+of the archive is unsupported; a length check is not a new hash certification.
+An NFS outage or blocked syscall cannot make capture, storage statistics, APIs,
+or local emergency reclamation wait on an NFS operation or an NFS-held path lock.
+The backlog resumes when the archive becomes available.
+
+`local_copy_hours` defaults to 12 and cannot be less than 12. A restart-safe daily
+cleanup pass removes only verified redundant local copies older than this age,
+replacing them with stable archive symlinks. The first pass starts 24 hours after
+mirror maintenance is initialized; later passes start at least 24 hours after
+the previous completed pass. Work is bounded and resumes after interruption.
+Normal occupancy is approximately 12 to 36 hours plus bounded cleanup latency,
+not a hard upper lifetime. Saved evidence and active recording leases preserve
+both copies and can increase local occupancy. Unverified originals are never
+deleted by normal camera retention or scheduled mirror cleanup. Archive retention
+and an optional maximum archive age must honor the local minimum; expiration and
+explicit user deletion of a mirrored recording are handled by the archive worker,
+which deletes both copies and the catalog entry without orphaning remote files.
+Archive capacity eviction remains a separate explicit destructive policy.
+
+With `emergency_delete: true`, less than one estimated hour of physical or
+content-budget headroom triggers last-resort local reclamation. Verified redundant
+copies are released first, even if younger than the local minimum. If that is
+insufficient, oldest unverified ordinary footage is overwritten/deleted, with
+unsaved event footage last. Saved evidence, active leases, and incoming transfer
+reservations are never sacrificed. Normal cleanup never uses this destructive
+fallback. Disable emergency deletion to pause reclamation and risk capture stopping
+when no space remains. The 12-hour guarantee is intentionally overridden only by
+this emergency policy or an explicit destructive archive/user policy.
+
+The catalog uses the existing two tiers: a `local` row with non-null
+`archive_bytes` owns an exact verified remote copy as well as its local original.
+Both physical copies count toward their respective storage totals. After local
+reclamation, the same row becomes `archive`; its recording path is a local symlink,
+and its remote byte charge remains. Migration 047 adds only the
+`recordingmirrorstate` daily-cleanup checkpoint and selection indexes. It does not
+reclassify files, move history, populate nullable lengths, or enable mirror.
+
+For an installation whose historical `local` rows already point to NFS bytes,
+perform a guarded offline cutover before enabling mirror:
+
+1. Stop recording, archive, cleanup, and other writers; preserve the current
+   catalog and all existing remote files. Do not restore an older database.
+2. Bind that existing remote tree at the configured archive path with the required
+   NFS marker. Bind the empty persistent local dataset at the recordings path.
+   The archive's relative `date/hour/camera/segment.mp4` paths must remain identical
+   to each historical row's relative recordings path.
+3. For every historical row, create an absolute local symlink at its **exact
+   existing recording path** targeting the corresponding archive path. Never copy
+   or unlink the historical remote originals, and never apply local emergency
+   deletion to these NFS-backed rows.
+4. Reclassify only the identified historical rows as `storage_tier=archive`,
+   preserving IDs, paths, capture times, protection, and playback metadata.
+   Populate `archive_bytes` from exact remote file lengths in an isolated,
+   controlled migration process, or leave them null for the existing asynchronous
+   worker backfill. Keep `max_archive_gib: null` until backfill completes; a finite
+   archive budget fails closed while historical lengths are unknown.
+5. Verify row/link counts, representative playback, permissions for the actual
+   UID/GID, and both mount identities before starting capture with mirror enabled.
+   New captures must be regular local files, not historical symlink targets.
+
+Regenerate only these model-derived English configuration translations with
+`python3 generate_config_translations.py --storage-only` when Linux detector
+dependencies are unavailable. The full existing generator remains supported.
+
 This fork supports an optional recording archive. New recordings land in
 `/media/frigate/recordings`. When Frigate's local recording usage reaches its
 configured start percentage of the budget, a background worker copies completed segments to NFS, oldest

@@ -64,6 +64,7 @@ class TestParallelArchive(unittest.TestCase):
         self.worker.config = SimpleNamespace(
             storage=SimpleNamespace(
                 mount_id="test",
+                mode="move",
                 transfer_mib_per_second=0,
                 max_archive_gib=None,
                 archive_reserve_gib=0,

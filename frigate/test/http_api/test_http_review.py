@@ -4,14 +4,30 @@ from fastapi import Request
 from peewee import DoesNotExist
 
 from frigate.api.auth import get_allowed_cameras_for_filter, get_current_user
-from frigate.models import Event, Recordings, ReviewSegment, UserReviewStatus
+from frigate.models import (
+    ArchiveTransfer,
+    Event,
+    RecordingLease,
+    Recordings,
+    ReviewSegment,
+    UserReviewStatus,
+)
 from frigate.review.types import SeverityEnum
 from frigate.test.http_api.base_http_test import AuthTestClient, BaseTestHttp
 
 
 class TestHttpReview(BaseTestHttp):
     def setUp(self):
-        super().setUp([Event, Recordings, ReviewSegment, UserReviewStatus])
+        super().setUp(
+            [
+                ArchiveTransfer,
+                Event,
+                RecordingLease,
+                Recordings,
+                ReviewSegment,
+                UserReviewStatus,
+            ]
+        )
         self.app = super().create_app()
         self.user_id = "admin"
 
@@ -836,6 +852,7 @@ class TestHttpReview(BaseTestHttp):
                     "severity": "alert",
                     "thumb_path": "False",
                     "data": {"detections": {"event_id": event_id}},
+                    "recording_storage": None,
                 },
                 response_json,
             )

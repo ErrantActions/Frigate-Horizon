@@ -60,7 +60,15 @@
     },
     "enabled": {
       "label": "Enable recording archive",
-      "description": "Move older retained recordings to an NFS archive without changing their playback URLs."
+      "description": "Archive retained recordings to NFS without changing playback URLs. Move transports under local pressure; mirror continuously verifies original-quality copies while keeping a rolling local safety buffer."
+    },
+    "mode": {
+      "label": "Archive transport mode",
+      "description": "Move preserves the existing pressure-triggered archive behavior. Mirror continuously copies completed original-quality local recordings, verifies remote durability, and retains local copies for daily cleanup. Mount recordings on persistent local storage before explicitly enabling mirror."
+    },
+    "local_copy_hours": {
+      "label": "Minimum local mirror lifetime (hours)",
+      "description": "Mirror keeps verified local copies for at least this capture age, then removes redundant copies in a daily pass. Unverified originals are never removed by normal retention. Emergency deletion can override this lifetime but never saved evidence or active leases."
     },
     "archive_path": {
       "label": "Archive directory",

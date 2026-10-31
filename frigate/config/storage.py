@@ -17,7 +17,19 @@ class StorageConfig(FrigateBaseModel):
     enabled: bool = Field(
         default=False,
         title="Enable recording archive",
-        description="Move older retained recordings to an NFS archive without changing their playback URLs.",
+        description="Archive retained recordings to NFS without changing playback URLs. Move transports under local pressure; mirror continuously verifies original-quality copies while keeping a rolling local safety buffer.",
+    )
+    mode: Literal["move", "mirror"] = Field(
+        default="move",
+        title="Archive transport mode",
+        description="Move preserves the existing pressure-triggered archive behavior. Mirror continuously copies completed original-quality local recordings, verifies remote durability, and retains local copies for daily cleanup. Mount recordings on persistent local storage before explicitly enabling mirror.",
+    )
+    local_copy_hours: float = Field(
+        default=12,
+        ge=12,
+        allow_inf_nan=False,
+        title="Minimum local mirror lifetime (hours)",
+        description="Mirror keeps verified local copies for at least this capture age, then removes redundant copies in a daily pass. Unverified originals are never removed by normal retention. Emergency deletion can override this lifetime but never saved evidence or active leases.",
     )
     archive_path: str = Field(
         default="/media/frigate/archive",
@@ -114,6 +126,18 @@ class StorageConfig(FrigateBaseModel):
     @model_validator(mode="after")
     def validate_archive(self) -> Self:
         """Keep the archive identity and directory separate from local managed data."""
+        if self.mode == "mirror" and self.compression.enabled:
+            raise ValueError("Original-quality mirror cannot enable compression")
+        if self.mode == "mirror" and (
+            self.retain_days * 24 < self.local_copy_hours
+            or (
+                self.max_age_days is not None
+                and self.max_age_days * 24 < self.local_copy_hours
+            )
+        ):
+            raise ValueError(
+                "Mirror archive retention must honor the minimum local lifetime"
+            )
         if self.drain_percent >= self.start_percent:
             raise ValueError(
                 "Local archive drain target must be below the start threshold"

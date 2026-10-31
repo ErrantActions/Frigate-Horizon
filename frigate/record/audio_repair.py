@@ -385,6 +385,8 @@ class AudioRepair:
         path = Path(row.path)
         if row.storage_tier != "local":
             return "archived"
+        if row.archive_bytes is not None:
+            return "verified-mirror-copy"
         if row.delete_requested:
             return "deletion-pending"
         if row.end_time is None or row.end_time >= time.time() - 60:

@@ -146,7 +146,12 @@ def apply_archive_retention(config: "FrigateConfig") -> None:
 
     active = (
         config.storage.enabled
-        or Recordings.select().where(Recordings.storage_tier == "archive").exists()
+        or Recordings.select()
+        .where(
+            (Recordings.storage_tier == "archive")
+            | Recordings.archive_bytes.is_null(False)
+        )
+        .exists()
     )
     days = config.storage.retain_days if active else 0
     config.record.archive_retention_days = days
@@ -218,6 +223,8 @@ def delete_local_recording(
             .exists()
         ):
             return False
+        if recording is not None and recording.archive_bytes is not None:
+            return False
         if can_delete is not None and not can_delete():
             return False
         if clear:
@@ -267,13 +274,15 @@ def request_recording_deletion(
         return True
     with storage_lock():
         check_protection()
-        if storage_tier != "archive" and not path.is_symlink():
+        current = Recordings.get_or_none(Recordings.path == str(path))
+        mirrored = current is not None and current.archive_bytes is not None
+        if storage_tier != "archive" and not path.is_symlink() and not mirrored:
             raise BlockingIOError(
                 "Recording is leased or reserved for archive transfer"
             )
-        Recordings.update(
-            storage_tier="archive", delete_requested=True, delete_reason="user"
-        ).where(Recordings.path == str(path)).execute()
+        Recordings.update(delete_requested=True, delete_reason="user").where(
+            Recordings.path == str(path)
+        ).execute()
     return False
 
 

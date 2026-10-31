@@ -361,10 +361,16 @@ export default function RecordingStorageDashboard({
                 />
               </div>
               <p className="text-xs text-muted-foreground">
-                {t("thresholds.summary", {
-                  start: data.settings.start_percent ?? 100,
-                  stop: data.settings.drain_percent,
-                })}
+                {t(
+                  data.settings.mode === "mirror"
+                    ? "progress.mirrorPolicy"
+                    : "thresholds.summary",
+                  {
+                    start: data.settings.start_percent ?? 100,
+                    stop: data.settings.drain_percent,
+                    hours: data.settings.local_copy_hours ?? 12,
+                  },
+                )}
               </p>
               {renderCapacity(capacities?.local)}
             </section>
@@ -458,7 +464,9 @@ export default function RecordingStorageDashboard({
             >
               <h3 className="font-medium">{t("progress.title")}</h3>
               <p className="mt-2 text-sm" role="status">
-                {t(`progress.phases.${transfer.phase}`)}
+                {transfer.mode === "mirror" && transfer.phase === "buffering"
+                  ? t("progress.mirrorIdle")
+                  : t(`progress.phases.${transfer.phase}`)}
               </p>
               {transfer.active && transfer.trigger && (
                 <p className="mt-2 text-xs text-muted-foreground">
@@ -562,12 +570,18 @@ export default function RecordingStorageDashboard({
                 {t("progress.initialPlanHint")}
               </p>
               <p className="mt-2 text-sm">
-                {t("progress.live", {
-                  incoming: formatBytes(transfer.incoming_bytes),
-                  usage: formatBytes(transfer.local_usage_bytes),
-                  target: formatBytes(transfer.drain_target_bytes),
-                  remaining: formatBytes(transfer.remaining_bytes),
-                })}
+                {t(
+                  transfer.mode === "mirror"
+                    ? "progress.mirrorLive"
+                    : "progress.live",
+                  {
+                    incoming: formatBytes(transfer.incoming_bytes),
+                    usage: formatBytes(transfer.local_usage_bytes),
+                    target: formatBytes(transfer.drain_target_bytes ?? 0),
+                    remaining: formatBytes(transfer.remaining_bytes),
+                    hours: data.settings.local_copy_hours ?? 12,
+                  },
+                )}
               </p>
               {transfer.copy_rate_bytes_per_second != null && (
                 <p className="mt-2 text-sm">

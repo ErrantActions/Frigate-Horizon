@@ -112,6 +112,13 @@ def _storage_usage(recordings: ModelSelect) -> dict[str, ProtectedStorageUsage]:
             tier.unknown_size_recordings += 1
         else:
             tier.known_bytes += size
+        if recording.storage_tier == "local" and recording.archive_bytes is not None:
+            archived = usage["archive"]
+            archived.recordings += 1
+            if recording.archive_bytes < 0:
+                archived.unknown_size_recordings += 1
+            else:
+                archived.known_bytes += recording.archive_bytes
     for tier in usage.values():
         tier.total_bytes = None if tier.unknown_size_recordings else tier.known_bytes
     return usage
@@ -181,20 +188,24 @@ def protected_media(
         recording_count = 0
         tier_names: set[str] = set()
         deleting = False
+        archive_required = False
         for recording in _recordings_for_events(
             (Event.id == event.id) & (Event.retain_indefinitely == True), pre, post
         ).iterator():
             recording_count += 1
             tier_names.add(recording.storage_tier)
+            if recording.archive_bytes is not None:
+                tier_names.add("archive")
             deleting |= recording.delete_requested
+            archive_required |= recording.storage_tier == "archive"
         tiers = sorted(tier_names)
         if recording_count == 0:
             availability = "missing"
         elif deleting:
             availability = "deleting"
-        elif "archive" in tiers and not archive_online:
+        elif archive_required and not archive_online:
             availability = "archive_unavailable"
-        elif "archive" in tiers:
+        elif archive_required:
             availability = "archive_online"
         else:
             availability = "indexed_local"

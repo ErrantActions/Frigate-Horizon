@@ -56,6 +56,7 @@
     "title": "Buffered archive transfer",
     "buffering": "Buffering locally until the start threshold",
     "triggers": {
+      "mirror": "Continuously mirroring completed original-quality recordings.",
       "high_water": "Triggered by the configured local archive start threshold.",
       "local_pressure": "Triggered early by the estimated two-hour local free-space reserve."
     },
@@ -73,6 +74,9 @@
     "initialPlan": "Initial batch plan",
     "initialPlanHint": "The initial plan is fixed and uses indexed size estimates. Completing it does not finish the drain if new footage keeps arriving.",
     "live": "Additional net incoming: {{incoming}}. Local usage {{usage}}, stop target {{target}}, remaining drain {{remaining}}.",
+    "mirrorLive": "Original-quality mirror: local usage {{usage}}, unverified backlog {{remaining}}. Verified local copies are kept at least {{hours}} hours, then cleaned daily. Emergency reclamation can override that lifetime.",
+    "mirrorPolicy": "Continuous original-quality mirror. Verified local copies are kept at least {{hours}} hours and cleaned daily; move-mode watermarks do not control transfers.",
+    "mirrorIdle": "Mirror caught up: waiting for completed local recordings.",
     "rate": "Verified archival throughput: {{rate}}.",
     "copyRate": "Copy speed: {{rate}} (active-copy batch average).",
     "aggregateCopyRate": "Aggregate copy throughput: {{rate}} (current parallel batch average).",

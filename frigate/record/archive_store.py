@@ -137,6 +137,7 @@ def archive_candidates(limit: int) -> ModelSelect:
         Recordings.select()
         .where(
             Recordings.storage_tier == "local",
+            Recordings.archive_bytes.is_null(),
             ~Recordings.delete_requested,
             Recordings.end_time < time.time() - 60,
         )
@@ -154,6 +155,8 @@ def move_recording(
     reserved_bytes: int | None = None,
     progress: Callable[[str, int, int], None] | None = None,
     limiter: ArchiveRateLimiter | None = None,
+    *,
+    preserve_local: bool = False,
 ) -> bool:
     """Lease the source until verified publication or failure has completed."""
     from frigate.models import RecordingLease
@@ -194,6 +197,7 @@ def move_recording(
             reserved_bytes,
             progress,
             limiter,
+            preserve_local,
         )
     finally:
         release_recordings(token)
@@ -208,13 +212,16 @@ def _move_recording(
     reserved_bytes: int | None,
     progress: Callable[[str, int, int], None] | None,
     limiter: ArchiveRateLimiter | None = None,
+    preserve_local: bool = False,
 ) -> bool:
     """Preserve the serial path using the same verified-copy publication protocol."""
     prepared = prepare_recording_copy(
         recording, root, pinned, rate_mib, cancelled, reserved_bytes, progress, limiter
     )
     return prepared is not None and bool(
-        publish_recording_copies([prepared], cancelled, track_bytes=True)
+        publish_recording_copies(
+            [prepared], cancelled, track_bytes=True, preserve_local=preserve_local
+        )
     )
 
 
@@ -277,6 +284,7 @@ def publish_recording_copies(
     cancelled: Callable[[], bool],
     *,
     track_bytes: bool = False,
+    preserve_local: bool = False,
     on_commit: Callable[[Recordings], None] | None = None,
     on_progress: Callable[[], None] | None = None,
 ) -> list[Recordings]:
@@ -342,14 +350,21 @@ def publish_recording_copies(
                     item.original.st_mtime_ns,
                 ):
                     raise OSError("Recording changed during archive transfer")
-                publish_archive_link(item.source, item.destination)
+                if not preserve_local:
+                    publish_archive_link(item.source, item.destination)
             published.append(item)
             progress()
         for offset in range(0, len(published), 25):
             with database.atomic("IMMEDIATE"):
                 for item in published[offset : offset + 25]:
-                    values: dict[str, str | int] = {"storage_tier": "archive"}
-                    if track_bytes:
+                    values: dict[str, str | int] = {
+                        "storage_tier": (
+                            "local"
+                            if preserve_local and not item.recovering
+                            else "archive"
+                        )
+                    }
+                    if track_bytes or preserve_local:
                         values["archive_bytes"] = item.original.st_size
                     updated = (
                         Recordings.update(**values)
@@ -393,6 +408,37 @@ def recover_archive_links(
         Recordings.update(storage_tier="archive").where(
             Recordings.id == recording.id
         ).execute()
+
+
+def audit_mirror_copy(recording: Recordings, pinned: Path) -> None:
+    """Requeue missing or wrong-length mirrors, reserving originals during NFS I/O."""
+    with storage_lock():
+        current = Recordings.get_or_none(Recordings.id == recording.id)
+        if (
+            current is None
+            or current.storage_tier != "local"
+            or current.archive_bytes is None
+            or current.delete_requested
+            or ArchiveTransfer.select().where(ArchiveTransfer.id == current.id).exists()
+        ):
+            return
+        ArchiveTransfer.create(id=current.id, path=current.path, size=0)
+    destination = archive_destination(Path(current.path), pinned)
+    try:
+        size = destination.stat().st_size
+    except FileNotFoundError:
+        size = None
+    if size != current.archive_bytes:
+        destination.unlink(missing_ok=True)
+        if destination.parent.exists():
+            fsync_directory(destination.parent)
+        with storage_lock(), Recordings._meta.database.atomic("IMMEDIATE"):
+            Recordings.update(archive_bytes=None).where(
+                Recordings.id == current.id, Recordings.storage_tier == "local"
+            ).execute()
+            ArchiveTransfer.delete_by_id(current.id)
+    else:
+        ArchiveTransfer.delete_by_id(current.id)
 
 
 def archive_retention_days(
@@ -482,7 +528,7 @@ def expire_recording(
         if source.is_symlink():
             if source.readlink() != destination:
                 raise OSError("Refusing to delete an unexpected archive target")
-        elif source.exists():
+        elif source.exists() and current.archive_bytes is None:
             raise OSError(
                 "Refusing to delete a recording with a non-archive local file"
             )

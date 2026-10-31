@@ -57,6 +57,7 @@ from frigate.record.archive_store import (
     PreparedArchiveMove,
     archive_candidates,
     archive_retention_days,
+    audit_mirror_copy,
     copy_recording_unverified,
     expire_recording,
     move_recording,
@@ -64,6 +65,7 @@ from frigate.record.archive_store import (
     recover_archive_links,
     verify_recording_copy,
 )
+from frigate.record.local_mirror import validate_local_mirror_mount
 from frigate.record.policy import CapturePadding, RecordingDeletionInProgress
 from frigate.util.process import FrigateProcess
 from frigate.util.storage import invalidate_storage_capacity, storage_capacity
@@ -98,6 +100,8 @@ class ArchiveProcess(FrigateProcess):
         self.hourly_usage_mib = 0.0
         self.local_sampled_at = 0.0
         self.adaptive = ArchiveConcurrency()
+        self.mirror_backlog_bytes = 0
+        self.mirror_audit_cursor: tuple[float, str] | None = None
 
     def report(self, **values) -> None:
         """Publish a bounded health snapshot without blocking on the API."""
@@ -138,6 +142,7 @@ class ArchiveProcess(FrigateProcess):
             except Empty:
                 if changed:
                     self.expiry_cursor = None
+                    self.mirror_audit_cursor = None
                     self.capacity.reset()
                     self.adaptive = ArchiveConcurrency()
                 return changed
@@ -179,6 +184,8 @@ class ArchiveProcess(FrigateProcess):
                 continue
             settings = self.config.storage
             try:
+                if settings.mode == "mirror":
+                    validate_local_mirror_mount()
                 local_mib, hourly_mib = self.sample_local(force=False)
             except (OSError, DatabaseError):
                 capacities = self.snapshot.get("capacity", {})
@@ -196,7 +203,10 @@ class ArchiveProcess(FrigateProcess):
             if (
                 not settings.enabled
                 and not Recordings.select()
-                .where(Recordings.storage_tier == "archive")
+                .where(
+                    (Recordings.storage_tier == "archive")
+                    | Recordings.archive_bytes.is_null(False)
+                )
                 .exists()
                 and not ArchiveTransfer.select().exists()
             ):
@@ -216,6 +226,7 @@ class ArchiveProcess(FrigateProcess):
                     if not recover_archive_transfers(root, pinned):
                         raise ArchiveBlocked("archive_recovery_pending")
                     if time.monotonic() - last_expire >= 60:
+                        self.audit_mirrors(pinned)
                         self._expire_archive(root, pinned)
                         last_expire = time.monotonic()
                         if self.config.storage != settings:
@@ -254,7 +265,9 @@ class ArchiveProcess(FrigateProcess):
                     hourly_mib,
                     start_percent=settings.start_percent,
                 )
-                if admitted and not draining:
+                if settings.mode == "mirror":
+                    draining = bool(self.mirror_backlog_bytes)
+                if admitted and not draining and settings.mode != "mirror":
                     local_mib, hourly_mib = self.sample_local()
                     draining = needs_transport(
                         local_mib,
@@ -265,12 +278,17 @@ class ArchiveProcess(FrigateProcess):
                         hourly_mib,
                         start_percent=settings.start_percent,
                     )
-                drain_state.save(settings.model_dump(), draining)
+                drain_state.save(
+                    settings.model_dump(),
+                    draining if settings.mode == "move" else False,
+                )
                 if settings.enabled and draining and not self.batch.active:
                     planned, files = plan_archive_batch(
                         backlog_bytes=max(
                             0,
-                            int(
+                            self.mirror_backlog_bytes
+                            if settings.mode == "mirror"
+                            else int(
                                 (local_mib - budget_mib * settings.drain_percent / 100)
                                 * 2**20
                             ),
@@ -280,13 +298,17 @@ class ArchiveProcess(FrigateProcess):
                         int(local_mib * 2**20),
                         planned,
                         files,
-                        "local_pressure"
+                        "mirror"
+                        if settings.mode == "mirror"
+                        else "local_pressure"
                         if local_disk.free < hourly_mib * 2 * 2**20
                         else "high_water",
                     )
                 self.batch.active = draining and settings.enabled
                 backlog = (
-                    max(0, local_mib - budget_mib * settings.drain_percent / 100)
+                    self.mirror_backlog_bytes / 2**20
+                    if settings.mode == "mirror"
+                    else max(0, local_mib - budget_mib * settings.drain_percent / 100)
                     if draining
                     else 0
                 )
@@ -314,9 +336,10 @@ class ArchiveProcess(FrigateProcess):
                     )
                     if recordings:
                         moved = self.move_batch(recordings, root)
-                        local_mib = max(
-                            0, local_mib - sum(row.segment_size for row in moved)
-                        )
+                        if settings.mode != "mirror":
+                            local_mib = max(
+                                0, local_mib - sum(row.segment_size for row in moved)
+                            )
                         if not moved:
                             self.stop_event.wait(1)
                         continue
@@ -370,6 +393,20 @@ class ArchiveProcess(FrigateProcess):
             .scalar()
             or 0
         )
+        self.mirror_backlog_bytes = 0
+        if self.config.storage.mode == "mirror":
+            pending_mib = (
+                Recordings.select(fn.SUM(Recordings.segment_size))
+                .where(
+                    Recordings.storage_tier == "local",
+                    Recordings.archive_bytes.is_null(),
+                    ~Recordings.delete_requested,
+                    Recordings.end_time < time.time() - 60,
+                )
+                .scalar()
+                or 0
+            )
+            self.mirror_backlog_bytes = int(pending_mib * 2**20)
         hourly = (
             Recordings.select(
                 fn.SUM(Recordings.segment_size),
@@ -472,9 +509,17 @@ class ArchiveProcess(FrigateProcess):
             ),
             self.ingest_rate,
         )
+        if self.config.storage.mode == "mirror":
+            status.update(
+                remaining_bytes=self.mirror_backlog_bytes,
+                drain_target_bytes=None,
+                eta_seconds=None,
+                local_reclaimed_bytes=0,
+            )
         return {
             **status,
             "sampled_at": time.time(),
+            "mode": self.config.storage.mode,
             "phase": phase or ("waiting" if self.batch.active else "buffering"),
             "current_file": self.current_transfer,
             "adaptive_transfers": {
@@ -529,6 +574,14 @@ class ArchiveProcess(FrigateProcess):
         self, recording: Recordings, root: Path, pinned: Path
     ) -> int | None:
         """Check immutable source and destination paths outside SQLite writer locks."""
+        current = Recordings.get_or_none(Recordings.id == recording.id)
+        if (
+            current is None
+            or current.storage_tier != "local"
+            or current.archive_bytes is not None
+            or current.delete_requested
+        ):
+            return None
         size = Path(recording.path).stat().st_size
         destination = archive_destination(Path(recording.path), pinned)
         partial = destination.with_suffix(destination.suffix + ".partial")
@@ -551,12 +604,14 @@ class ArchiveProcess(FrigateProcess):
         size = self._prepare_reservation(recording, root, pinned)
         if size is None:
             return None
+        free = shutil.disk_usage(pinned).free
         with storage_lock():
             current = Recordings.get_or_none(Recordings.id == recording.id)
             if (
                 current is None
                 or current.delete_requested
                 or current.storage_tier != "local"
+                or current.archive_bytes is not None
             ):
                 return None
             if archive_maintenance_active():
@@ -566,7 +621,7 @@ class ArchiveProcess(FrigateProcess):
                 raise ArchiveBlocked("archive_capacity_changed")
             pending = ArchiveTransfer.select(fn.SUM(ArchiveTransfer.size)).scalar() or 0
             reserve = int(self.config.storage.archive_reserve_gib * 2**30)
-            if shutil.disk_usage(pinned).free < pending + size + reserve:
+            if free < pending + size + reserve:
                 raise ArchiveBlocked("archive_physical_capacity_changed")
             ArchiveTransfer.create(id=recording.id, path=recording.path, size=size)
         return size
@@ -593,6 +648,7 @@ class ArchiveProcess(FrigateProcess):
                     prepared.append((recording, size))
             if not prepared:
                 break
+            free = shutil.disk_usage(pinned).free
             with storage_lock():
                 if self.transfer_cancelled():
                     break
@@ -606,6 +662,7 @@ class ArchiveProcess(FrigateProcess):
                     for row in Recordings.select(Recordings.id).where(
                         Recordings.id.in_(identifiers),
                         Recordings.storage_tier == "local",
+                        Recordings.archive_bytes.is_null(),
                         Recordings.delete_requested == False,
                     )
                 }
@@ -615,7 +672,6 @@ class ArchiveProcess(FrigateProcess):
                     ArchiveTransfer.select(fn.SUM(ArchiveTransfer.size)).scalar() or 0
                 )
                 reserve = int(self.config.storage.archive_reserve_gib * 2**30)
-                free = shutil.disk_usage(pinned).free
                 admitted: list[tuple[Recordings, int]] = []
                 incoming = 0
                 blocked = None
@@ -705,6 +761,7 @@ class ArchiveProcess(FrigateProcess):
                     self.transfer_cancelled,
                     size,
                     progress,
+                    preserve_local=self.config.storage.mode == "mirror",
                 )
             except RecordingDeletionInProgress as error:
                 raise ArchiveBlocked("archive_source_deletion_pending") from error
@@ -712,10 +769,18 @@ class ArchiveProcess(FrigateProcess):
                 self.batch.progress("waiting", 0)
             if moved:
                 ArchiveTransfer.delete_by_id(recording.id)
-                self.batch.committed(size, int(recording.segment_size * 2**20))
-                self.local_usage_mib = max(
-                    0, self.local_usage_mib - recording.segment_size
+                self.batch.committed(
+                    size,
+                    0
+                    if self.config.storage.mode == "mirror"
+                    else int(recording.segment_size * 2**20),
                 )
+                if self.config.storage.mode != "mirror":
+                    self.local_usage_mib = max(
+                        0, self.local_usage_mib - recording.segment_size
+                    )
+                else:
+                    self.mirror_backlog_bytes = max(0, self.mirror_backlog_bytes - size)
             self.current_transfer = None
             self.report(transfer=self.batch_status(self.local_usage_mib))
             return moved
@@ -941,6 +1006,7 @@ class ArchiveProcess(FrigateProcess):
                         or not self.batch.active
                     ),
                     track_bytes=True,
+                    preserve_local=settings.mode == "mirror",
                     on_commit=release_reservation,
                     on_progress=publication_progress,
                 )
@@ -949,11 +1015,19 @@ class ArchiveProcess(FrigateProcess):
                     item = by_id[recording.id]
                     if not item.recovering:
                         self.batch.committed(
-                            item.original.st_size, int(recording.segment_size * 2**20)
+                            item.original.st_size,
+                            0
+                            if settings.mode == "mirror"
+                            else int(recording.segment_size * 2**20),
                         )
-                    self.local_usage_mib = max(
-                        0, self.local_usage_mib - recording.segment_size
-                    )
+                    if settings.mode != "mirror":
+                        self.local_usage_mib = max(
+                            0, self.local_usage_mib - recording.segment_size
+                        )
+                    else:
+                        self.mirror_backlog_bytes = max(
+                            0, self.mirror_backlog_bytes - item.original.st_size
+                        )
             finished.update(states)
             publish()
             if settings.adaptive_transfers and not stopped:
@@ -1021,7 +1095,8 @@ class ArchiveProcess(FrigateProcess):
         candidates = (
             Recordings.select()
             .where(
-                Recordings.storage_tier == "archive",
+                (Recordings.storage_tier == "archive")
+                | Recordings.archive_bytes.is_null(False),
                 Recordings.end_time < now - cutoff_days * 86400,
                 Recordings.delete_requested == False,
             )
@@ -1038,7 +1113,8 @@ class ArchiveProcess(FrigateProcess):
         queued = (
             Recordings.select()
             .where(
-                Recordings.storage_tier == "archive",
+                (Recordings.storage_tier == "archive")
+                | Recordings.archive_bytes.is_null(False),
                 Recordings.delete_requested == True,
             )
             .limit(1000)
@@ -1068,3 +1144,25 @@ class ArchiveProcess(FrigateProcess):
             if expired:
                 # Let live metadata writers acquire SQLite between durable deletions.
                 self.stop_event.wait(0.05)
+
+    def audit_mirrors(self, pinned: Path) -> None:
+        """Check a bounded oldest-first mirror pass only in the isolated worker."""
+        rows = Recordings.select().where(
+            Recordings.storage_tier == "local",
+            Recordings.archive_bytes.is_null(False),
+            ~Recordings.delete_requested,
+        )
+        if self.mirror_audit_cursor is not None:
+            end, identifier = self.mirror_audit_cursor
+            rows = rows.where(
+                (Recordings.end_time > end)
+                | ((Recordings.end_time == end) & (Recordings.id > identifier))
+            )
+        batch = list(rows.order_by(Recordings.end_time, Recordings.id).limit(256))
+        for row in batch:
+            if self.transfer_cancelled("checking"):
+                return
+            audit_mirror_copy(row, pinned)
+            self.mirror_audit_cursor = (row.end_time, row.id)
+        if len(batch) < 256:
+            self.mirror_audit_cursor = None
