@@ -232,6 +232,7 @@ class TestPluginRuntime(unittest.IsolatedAsyncioTestCase):
             patch.object(inference, "LEASE_PATH", self.root / "leases.json"),
             patch.object(self.manager, "_register", AsyncMock()),
         ):
+            self.manager.inference.lease_path = inference.LEASE_PATH
             self.manager.inference.initialize()
             self.manager.inference.configure(
                 "front", EventInferenceConfig(enabled=True)

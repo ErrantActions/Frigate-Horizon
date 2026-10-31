@@ -28,6 +28,10 @@ docker run --rm --network none --read-only --cap-drop ALL \
       ln -s /opt/frigate/migrations migrations
       python3 -u -m unittest \
         frigate.test.test_native_preferences \
+        frigate.test.test_plugin_legacy_settings \
+        frigate.test.test_plugins \
+        frigate.test.test_plugin_api_loop \
+        frigate.test.http_api.test_http_plugins \
         frigate.test.test_native_device_preferences_api \
         frigate.test.test_native_resolver \
         frigate.test.test_native_push_api \

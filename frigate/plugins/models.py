@@ -1,8 +1,11 @@
 """Versioned, validated plugin manifests and worker messages."""
 
+import logging
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 
 class PluginManifest(BaseModel):
@@ -17,6 +20,24 @@ class PluginManifest(BaseModel):
     entrypoint: Literal["plugin.py"] = "plugin.py"
     capabilities: list[Literal["camera", "motion", "doorbell", "two_way_audio"]]
     actions: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_inactive_host_metadata(cls, value: Any) -> Any:
+        """Normalize newer hosts' default metadata for unchanged version-1 workers."""
+        if not isinstance(value, dict) or value.get("api_version") != 1:
+            return value
+        defaults = {
+            "runtime": "python",
+            "platform": None,
+            "architecture": None,
+            "configuration": [],
+        }
+        present = defaults.keys() & value.keys()
+        if not present or any(value[key] != defaults[key] for key in present):
+            return value
+        logger.warning("Normalized inactive version-1 plugin manifest host metadata")
+        return {key: item for key, item in value.items() if key not in present}
 
 
 class PluginDevice(BaseModel):
@@ -57,6 +78,22 @@ class PluginEntry(BaseModel):
     developer: bool = False
     digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     bindings: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_inactive_host_metadata(cls, value: Any) -> Any:
+        """Normalize only unused notification metadata without losing subscriptions."""
+        if not isinstance(value, dict):
+            return value
+        manifest = value.get("manifest")
+        if not isinstance(manifest, dict) or manifest.get("api_version") != 1:
+            return value
+        defaults = {"notification_cameras": [], "notification_config_id": None}
+        present = defaults.keys() & value.keys()
+        if not present or any(value[key] != defaults[key] for key in present):
+            return value
+        logger.warning("Normalized inactive version-1 plugin notification metadata")
+        return {key: item for key, item in value.items() if key not in present}
 
 
 class PluginSettings(BaseModel):

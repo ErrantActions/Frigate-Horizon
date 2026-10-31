@@ -127,6 +127,12 @@ with their existing DELETE operation when leaving playback.
 
 ## Qualification
 
+Before updating an existing installation, validate a private copy of its
+configuration, database, and saved plugin settings against the candidate image.
+Version-1 Python plugins can load inactive default host metadata without changing
+bindings or enabling subscriptions. Active newer plugin features must be
+qualified separately, not silently discarded during an HLS upgrade.
+
 Validate first decoded-frame time, variant synchronization, low/high bandwidth
 transitions, buffer behavior, audio continuity, and idle producer shutdown.
 Measure on the intended device and network. A working signaling request, a
