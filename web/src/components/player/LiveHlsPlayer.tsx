@@ -60,6 +60,8 @@ export default function LiveHlsPlayer({
   const audioSupported =
     !Hls.isSupported() ||
     isMseMimeTypeSupported('audio/mp4; codecs="mp4a.40.2"');
+  const requestAudio =
+    audioSupported && (audioEnabled || preferredHeight === undefined);
 
   useEffect(() => {
     if (audioEnabled && !audioSupported) {
@@ -78,11 +80,13 @@ export default function LiveHlsPlayer({
     if (!video || !playbackEnabled) return;
     failed.current = false;
     let alive = true;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let networkRetries = 0;
     const url = new URL(
       `api/${encodeURIComponent(camera)}/live/hls/master.m3u8`,
       baseUrl,
     );
-    url.searchParams.set("audio", String(audioSupported));
+    url.searchParams.set("audio", String(requestAudio));
     if (selectedHeight !== undefined) {
       url.searchParams.set("height", String(selectedHeight));
     } else if (heightLimit !== undefined) {
@@ -142,7 +146,22 @@ export default function LiveHlsPlayer({
         if (height !== undefined) callbacks.current.onLevelChange?.(height);
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) fail();
+        if (!data.fatal) return;
+        if (
+          data.type === Hls.ErrorTypes.NETWORK_ERROR &&
+          data.response?.code !== 401 &&
+          data.response?.code !== 403 &&
+          networkRetries < 2
+        ) {
+          hls.stopLoad();
+          networkRetries += 1;
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => {
+            if (alive) hls.loadSource(url.href);
+          }, networkRetries * 1000);
+          return;
+        }
+        fail();
       });
       hls.attachMedia(video);
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
@@ -153,6 +172,7 @@ export default function LiveHlsPlayer({
     }
     return () => {
       alive = false;
+      clearTimeout(retryTimer);
       video.removeEventListener("loadeddata", ready);
       video.removeEventListener("resize", updateResolution);
       video.removeEventListener("error", fail);
@@ -163,14 +183,7 @@ export default function LiveHlsPlayer({
       video.removeAttribute("src");
       video.load();
     };
-  }, [
-    camera,
-    playbackEnabled,
-    renditions,
-    selectedHeight,
-    heightLimit,
-    audioSupported,
-  ]);
+  }, [camera, playbackEnabled, selectedHeight, heightLimit, requestAudio]);
 
   useEffect(() => {
     const video = videoRef.current;

@@ -169,6 +169,42 @@ async function routeLive(
 test.describe("HLS-only HTTPS live playback @mobile", () => {
   test.beforeEach(async ({ frigateApp }) => installLiveConfig(frigateApp));
 
+  test("grid tiles pin one low video-only rung instead of decoding every camera at full quality", async ({
+    frigateApp,
+  }) => {
+    const requests = await routeLive(frigateApp);
+    await frigateApp.goto("/");
+    const video = frigateApp.page
+      .locator('[data-camera="front_door"] [data-live-transport="hls"]')
+      .first();
+    await expect
+      .poll(
+        () =>
+          video.evaluate((element: HTMLVideoElement) => ({
+            width: element.videoWidth,
+            frames: element.getVideoPlaybackQuality().totalVideoFrames,
+          })),
+        { timeout: 20000 },
+      )
+      .toMatchObject({ width: 1280, frames: expect.any(Number) });
+    await expect
+      .poll(() =>
+        video.evaluate(
+          (element: HTMLVideoElement) =>
+            element.getVideoPlaybackQuality().totalVideoFrames,
+        ),
+      )
+      .toBeGreaterThan(2);
+    const master = requests.find((url) =>
+      url.pathname.endsWith("/master.m3u8"),
+    );
+    expect(master?.searchParams.get("height")).toBe("720");
+    expect(master?.searchParams.get("audio")).toBe("false");
+    expect(requests.some((url) => url.pathname.includes("/1080p/"))).toBe(
+      false,
+    );
+  });
+
   test("starts low, upgrades on real throughput and downgrades when bandwidth falls", async ({
     frigateApp,
   }) => {
@@ -249,6 +285,37 @@ test.describe("HLS-only HTTPS live playback @mobile", () => {
       .toBeGreaterThan(0);
     await expect(card.getByRole("alert")).toHaveCount(0);
     expect(legacy).toEqual([]);
+  });
+
+  test("recovers a transient missing master without leaving the grid tile failed", async ({
+    frigateApp,
+  }) => {
+    let remainingFailures = 1;
+    await routeLive(frigateApp);
+    await frigateApp.page.route(
+      "**/api/front_door/live/hls/master.m3u8*",
+      async (route) => {
+        if (remainingFailures > 0) {
+          remainingFailures -= 1;
+          await route.fulfill({ status: 404, body: "Temporary cold muxer" });
+        } else {
+          await route.fallback();
+        }
+      },
+    );
+    await frigateApp.goto("/");
+    const card = frigateApp.page.locator('[data-camera="front_door"]').first();
+    await expect
+      .poll(
+        () =>
+          card
+            .locator('[data-live-transport="hls"]')
+            .evaluate((video: HTMLVideoElement) => video.videoWidth),
+        { timeout: 20000 },
+      )
+      .toBe(1280);
+    await expect(card.getByRole("alert")).toHaveCount(0);
+    expect(remainingFailures).toBe(0);
   });
 
   test("Data Saver pins the lowest HLS rung", async ({ frigateApp }) => {

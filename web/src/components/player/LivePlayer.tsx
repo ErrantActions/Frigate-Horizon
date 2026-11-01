@@ -89,6 +89,7 @@ export default function LivePlayer({
   const { t } = useTranslation(["components/player"]);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const [overlayDimensions] = useResizeObserver(overlayRef);
+  const inDashboard = containerRef === undefined;
   const adaptiveSelected = adaptive || streamAuto;
   const [hlsFailed, setHlsFailed] = useState(false);
   const [hlsStreamName, setHlsStreamName] = useState<string>();
@@ -116,12 +117,13 @@ export default function LivePlayer({
   const hlsPending = !hlsFailed && hlsStatusLoading;
   const hlsUnavailable =
     hlsFailed || (!hlsStatusLoading && hlsStatus?.available === false);
-  const preferredHeight = dataSaver
-    ? hlsStatus?.renditions[0]?.height
-    : adaptiveSelected
-      ? undefined
-      : Number(/_transcode_(\d+)p$/.exec(requestedStreamName)?.[1]) ||
-        hlsStatus?.renditions.at(-1)?.height;
+  const preferredHeight =
+    dataSaver || (inDashboard && pip !== true)
+      ? hlsStatus?.renditions?.[0]?.height
+      : adaptiveSelected
+        ? undefined
+        : Number(/_transcode_(\d+)p$/.exec(requestedStreamName)?.[1]) ||
+          hlsStatus?.renditions.at(-1)?.height;
   const playingStreamName =
     hlsActive && hlsStatus
       ? (hlsStreamName ??
@@ -131,10 +133,6 @@ export default function LivePlayer({
   const internalContainerRef = useRef<HTMLDivElement | null>(null);
 
   const cameraName = useCameraFriendlyName(cameraConfig);
-
-  // player is showing on a dashboard if containerRef is not provided
-
-  const inDashboard = containerRef?.current == null;
 
   const isCompact =
     overlayDimensions.width > 0 && overlayDimensions.width < 280;

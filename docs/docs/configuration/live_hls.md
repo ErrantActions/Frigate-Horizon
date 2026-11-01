@@ -93,10 +93,18 @@ seamless switching; this can use more encoder capacity than a pinned rung.
 If HLS fails, the web player reports the error and offers an HLS retry, without
 opening another transport. Offline messages, playback errors, resolution
 badges, and statistics remain available; there is no separate Not live badge.
+Before reporting a terminal network failure, the web player retries its public
+master twice with bounded backoff. Authentication and camera-access denials are
+not retried. Leaving the tile cancels pending recovery.
 
 The player stops requests when its tile is inactive, allowing the shared muxer
 and producer to become idle. Background and Picture in Picture ownership must
 be preserved by clients.
+Dashboard tiles pin the lowest advertised HLS rendition (normally 720p), even
+when a saved camera stream preference selects a higher resolution. Muted pinned
+tiles omit the audio group. Open an individual camera or Picture in Picture to
+use its higher-quality selection. This bounds concurrent grid decoding and
+avoids starting multiple rendition producers for each small tile.
 
 ## Authenticated client contract
 
