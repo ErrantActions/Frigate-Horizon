@@ -91,8 +91,9 @@ Auto can keep multiple renditions active for the viewed camera to preserve
 seamless switching; this can use more encoder capacity than a pinned rung.
 
 If HLS fails, the web player reports the error and offers an HLS retry, without
-opening another transport. Offline messages, playback errors, resolution
-badges, and statistics remain available; there is no separate Not live badge.
+opening another transport. Offline messages, playback errors, and statistics
+remain available. Live video has no resolution overlay or separate Not live badge;
+quality selection and decoded-resolution tracking remain functional.
 Before reporting a terminal network failure, the web player retries its public
 master twice with bounded backoff. Authentication and camera-access denials are
 not retried. Leaving the tile cancels pending recovery.

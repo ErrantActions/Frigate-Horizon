@@ -226,10 +226,6 @@ export default function LiveDashboardView({
 
   const [globalAutoLive] = useUserPersistence("autoLiveView", true);
   const [displayCameraNames] = useUserPersistence("displayCameraNames", false);
-  const [showResolution, setShowResolution] = useUserPersistence(
-    "displayLiveResolution",
-    true,
-  );
 
   const { allGroupsStreamingSettings, setAllGroupsStreamingSettings } =
     useStreamingSettings();
@@ -587,8 +583,6 @@ export default function LiveDashboardView({
                       toggleAudio={() => toggleAudio(camera.name)}
                       statsState={statsStates[camera.name]}
                       toggleStats={() => toggleStats(camera.name)}
-                      showResolution={showResolution ?? true}
-                      onResolutionChange={setShowResolution}
                       volumeState={volumeStates[camera.name] ?? 1}
                       setVolumeState={(value) =>
                         setVolumeStates((prev) => ({
@@ -614,7 +608,6 @@ export default function LiveDashboardView({
                           showStillWithoutActivity ?? true
                         }
                         alwaysShowCameraName={displayCameraNames}
-                        showResolution={showResolution}
                         playInBackground={false}
                         showStats={statsStates[camera.name]}
                         streamName={requestedStreams[camera.name]}
@@ -684,8 +677,6 @@ export default function LiveDashboardView({
               activeStreams={activeStreams}
               requestedStreams={requestedStreams}
               onStreamChange={handleStreamChange}
-              showResolution={showResolution ?? true}
-              onResolutionChange={setShowResolution}
             />
           )}
         </>

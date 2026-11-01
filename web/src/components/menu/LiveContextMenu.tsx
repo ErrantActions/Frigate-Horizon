@@ -9,7 +9,6 @@ import {
 import {
   ContextMenu,
   ContextMenuContent,
-  ContextMenuCheckboxItem,
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuSub,
@@ -63,8 +62,6 @@ type LiveContextMenuProps = {
   unmuteAll: () => void;
   statsState: boolean;
   toggleStats: () => void;
-  showResolution: boolean;
-  onResolutionChange: (value: boolean) => void;
   config?: FrigateConfig;
   children?: ReactNode;
   streamMetadata?: { [key: string]: LiveStreamMetadata };
@@ -84,8 +81,6 @@ export default function LiveContextMenu({
   unmuteAll,
   statsState,
   toggleStats,
-  showResolution,
-  onResolutionChange,
   config,
   children,
   streamMetadata,
@@ -326,13 +321,6 @@ export default function LiveContextMenu({
             </div>
           </ContextMenuItem>
           <ContextMenuSeparator />
-          <ContextMenuCheckboxItem
-            checked={showResolution}
-            onCheckedChange={onResolutionChange}
-            className="min-h-11"
-          >
-            {t("streamStats.showResolution")}
-          </ContextMenuCheckboxItem>
           <ContextMenuItem disabled={!isEnabled}>
             <div
               className="flex w-full cursor-pointer items-center justify-start gap-2"

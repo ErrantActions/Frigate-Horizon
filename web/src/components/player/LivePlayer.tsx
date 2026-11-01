@@ -22,7 +22,7 @@ import { TbExclamationCircle } from "react-icons/tb";
 import { TooltipPortal } from "@radix-ui/react-tooltip";
 import { baseUrl } from "@/api/baseUrl";
 import { PlayerStats } from "./PlayerStats";
-import { LuVideoOff, LuX } from "react-icons/lu";
+import { LuVideoOff } from "react-icons/lu";
 import { Trans, useTranslation } from "react-i18next";
 import { useCameraFriendlyName } from "@/hooks/use-camera-friendly-name";
 import { ImageShadowOverlay } from "../overlay/ImageShadowOverlay";
@@ -56,8 +56,6 @@ type LivePlayerProps = {
   onLiveAspectChange?: (aspectRatio: number | undefined) => void;
   adaptive?: boolean;
   onStreamChange?: (camera: string, stream: string) => void;
-  showResolution?: boolean;
-  onHideResolution?: () => void;
   dataSaver?: boolean;
 };
 
@@ -82,8 +80,6 @@ export default function LivePlayer({
   onLiveAspectChange,
   adaptive = false,
   onStreamChange,
-  showResolution = true,
-  onHideResolution,
   dataSaver = false,
 }: LivePlayerProps) {
   const { t } = useTranslation(["components/player"]);
@@ -182,7 +178,6 @@ export default function LivePlayer({
   const [key, setKey] = useState(0);
   const [liveReady, setLiveReady] = useState(false);
   const [liveAspect, setLiveAspect] = useState<number | undefined>();
-  const [liveResolution, setLiveResolution] = useState<VideoResolutionType>();
 
   const handleFullResolution = useCallback(
     (value: React.SetStateAction<VideoResolutionType>) => {
@@ -192,9 +187,6 @@ export default function LivePlayer({
         return;
       }
 
-      setLiveResolution(
-        value.width > 0 && value.height > 0 ? value : undefined,
-      );
       setLiveAspect(
         value.width && value.height ? value.width / value.height : undefined,
       );
@@ -425,7 +417,6 @@ export default function LivePlayer({
               event.stopPropagation();
               setHlsFailed(false);
               setLiveReady(false);
-              setLiveResolution(undefined);
               void reloadHlsStatus();
               setKey((value) => value + 1);
             }}
@@ -576,32 +567,6 @@ export default function LivePlayer({
       )}
 
       <div className="absolute right-2 top-2 flex items-center gap-3">
-        {showResolution &&
-          liveReady &&
-          cameraEnabled &&
-          !offline &&
-          liveResolution && (
-            <span
-              data-testid="live-resolution-badge"
-              aria-label={t("resolutionBadge.label", liveResolution)}
-              className="z-20 inline-flex items-center gap-1 rounded bg-black/65 px-2 py-1 text-xs tabular-nums text-white"
-            >
-              {t("resolutionBadge.value", liveResolution)}
-              {onHideResolution && (
-                <button
-                  type="button"
-                  aria-label={t("resolutionBadge.hide")}
-                  className="rounded p-0.5 hover:bg-white/20 focus-visible:outline focus-visible:outline-2"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onHideResolution();
-                  }}
-                >
-                  <LuX className="size-3" />
-                </button>
-              )}
-            </span>
-          )}
         {(alwaysShowCameraName ||
           (offline && showStillWithoutActivity) ||
           !cameraEnabled) && (

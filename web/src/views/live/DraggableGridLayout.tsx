@@ -110,8 +110,6 @@ type DraggableGridLayoutProps = {
   activeStreams: Record<string, string>;
   requestedStreams: Record<string, string>;
   onStreamChange: (camera: string, stream: string) => void;
-  showResolution: boolean;
-  onResolutionChange: (value: boolean) => void;
 };
 export default function DraggableGridLayout({
   cameras,
@@ -132,8 +130,6 @@ export default function DraggableGridLayout({
   activeStreams,
   requestedStreams,
   onStreamChange,
-  showResolution,
-  onResolutionChange,
 }: DraggableGridLayoutProps) {
   const { t } = useTranslation(["views/live"]);
   const { data: config } = useSWR<FrigateConfig>("config");
@@ -796,8 +792,6 @@ export default function DraggableGridLayout({
                   toggleAudio={() => toggleAudio(camera.name)}
                   statsState={statsStates[camera.name]}
                   toggleStats={() => toggleStats(camera.name)}
-                  showResolution={showResolution}
-                  onResolutionChange={onResolutionChange}
                   volumeState={volumeStates[camera.name]}
                   setVolumeState={(value) =>
                     setVolumeStates((prev) => ({
@@ -821,7 +815,6 @@ export default function DraggableGridLayout({
                     autoLive={autoLive ?? globalAutoLive}
                     showStillWithoutActivity={showStillWithoutActivity ?? true}
                     alwaysShowCameraName={displayCameraNames}
-                    showResolution={showResolution}
                     cameraRef={cameraRef}
                     className={cn(
                       "size-full",
@@ -1001,8 +994,6 @@ type GridLiveContextMenuProps = {
   toggleAudio: () => void;
   statsState: boolean;
   toggleStats: () => void;
-  showResolution: boolean;
-  onResolutionChange: (value: boolean) => void;
   volumeState?: number;
   setVolumeState: (volumeState: number) => void;
   muteAll: () => void;
@@ -1033,8 +1024,6 @@ const GridLiveContextMenu = React.forwardRef<
       toggleAudio,
       statsState,
       toggleStats,
-      showResolution,
-      onResolutionChange,
       volumeState,
       setVolumeState,
       muteAll,
@@ -1066,8 +1055,6 @@ const GridLiveContextMenu = React.forwardRef<
           toggleAudio={toggleAudio}
           statsState={statsState}
           toggleStats={toggleStats}
-          showResolution={showResolution}
-          onResolutionChange={onResolutionChange}
           volumeState={volumeState}
           setVolumeState={setVolumeState}
           muteAll={muteAll}

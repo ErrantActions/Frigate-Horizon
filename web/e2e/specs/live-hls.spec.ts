@@ -200,6 +200,9 @@ test.describe("HLS-only HTTPS live playback @mobile", () => {
     );
     expect(master?.searchParams.get("height")).toBe("720");
     expect(master?.searchParams.get("audio")).toBe("false");
+    await expect(
+      frigateApp.page.getByTestId("live-resolution-badge"),
+    ).toHaveCount(0);
     expect(requests.some((url) => url.pathname.includes("/1080p/"))).toBe(
       false,
     );
@@ -234,6 +237,7 @@ test.describe("HLS-only HTTPS live playback @mobile", () => {
       const width = () =>
         video.evaluate((element: HTMLVideoElement) => element.videoWidth);
       await expect.poll(width, { timeout: 30000 }).toBe(1280);
+      await expect(page.getByTestId("live-resolution-badge")).toHaveCount(0);
       expect(
         requests.find((url) => /\/(?:720|1080)p\//.test(url.pathname))
           ?.pathname,

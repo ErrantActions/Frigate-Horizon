@@ -144,10 +144,6 @@ export default function LiveCameraView({
 
   const [forceLowBandwidth, setForceLowBandwidth, forceLowBandwidthLoaded] =
     useUserPersistence<boolean>(`${camera.name}-force-low-bandwidth`, false);
-  const [showResolution, setShowResolution] = useUserPersistence(
-    "displayLiveResolution",
-    true,
-  );
 
   // useUserPersistence seeds state with the defaults and loads asynchronously,
   // so until this is true the values above are not the user's choices.
@@ -714,8 +710,6 @@ export default function LiveCameraView({
                   </div>
                 )}
                 <LivePlayer
-                  showResolution={showResolution}
-                  onHideResolution={() => setShowResolution(false)}
                   key={camera.name}
                   className={fullscreen ? "rounded-none" : ""}
                   windowVisible
