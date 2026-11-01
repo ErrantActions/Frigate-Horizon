@@ -1,0 +1,39 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+set -o errexit -o nounset -o pipefail
+umask 077
+
+readonly state=/dev/shm/ovenmediaengine
+if [[ -L "$state" ]]; then
+    echo "[ERROR] Refusing a symlink for the private live-media state directory"
+    exit 0
+fi
+
+if [[ "$(id -u)" -eq 0 ]]; then
+    install -d -m 700 -o 1000 -g 1000 "$state"
+elif [[ "$(id -u)" -eq 1000 && "$(id -g)" -eq 1000 ]]; then
+    mkdir -p "$state"
+    chmod 700 "$state"
+else
+    echo "[ERROR] Live media requires UID/GID 1000; leaving it disabled"
+    exit 0
+fi
+
+# Stale success markers must never enable a failed or disabled bootstrap.
+rm -f "$state/enabled" "$state/turn-enabled"
+cd /opt/frigate
+if [[ "$(id -u)" -eq 0 ]]; then
+    if s6-applyuidgid -u 1000 -g 1000 -G 1000 \
+        python3 -m frigate.util.ovenmediaengine_bootstrap; then
+        exit 0
+    fi
+else
+    if python3 -m frigate.util.ovenmediaengine_bootstrap; then
+        exit 0
+    fi
+fi
+
+rm -f "$state/enabled" "$state/turn-enabled"
+echo "[ERROR] Live-media bootstrap failed; OME and TURN remain stopped"
+# Optional live media must not prevent the recorder's independent services.
+exit 0

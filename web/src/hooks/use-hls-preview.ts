@@ -6,6 +6,8 @@ import {
 } from "@/utils/videoUtil";
 import Hls from "hls.js";
 import { MutableRefObject, useEffect, useState } from "react";
+import useSWR from "swr";
+import type { FrigateConfig } from "@/types/frigateConfig";
 
 export function previewHlsUrl(preview: Preview): string {
   return new URL(
@@ -19,18 +21,27 @@ export function useHlsPreview(
   playlist: string | undefined,
   enabled: boolean,
   startPosition?: number,
+  previewFile?: string,
 ) {
+  const { data: config } = useSWR<FrigateConfig>("config");
+  const direct = config?.live_webrtc?.enabled === true;
+  const configLoaded = config !== undefined;
+  const source = direct
+    ? previewFile
+      ? new URL(previewFile.replace(/^\/+/, ""), baseUrl).href
+      : undefined
+    : playlist;
   const [failedPlaylist, setFailedPlaylist] = useState<string>();
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !playlist || !enabled) return;
+    if (!configLoaded || !video || !source || !enabled) return;
     let active = true;
     let hls: Hls | undefined;
     const fail = () => {
       if (active) {
         hls?.stopLoad();
         video.pause();
-        setFailedPlaylist(playlist);
+        setFailedPlaylist(source);
       }
     };
     const play = () => {
@@ -42,13 +53,16 @@ export function useHlsPreview(
       }
     };
     setFailedPlaylist(undefined);
-    if (!isHlsPlaylistUrl(playlist)) {
+    if (!direct && !isHlsPlaylistUrl(source)) {
       fail();
       return;
     }
     video.addEventListener("error", fail);
     video.addEventListener("loadedmetadata", play);
-    if (Hls.isSupported()) {
+    if (direct) {
+      video.src = source;
+      video.load();
+    } else if (Hls.isSupported()) {
       hls = new Hls({
         startPosition,
         maxBufferLength: 6,
@@ -58,14 +72,14 @@ export function useHlsPreview(
           xhr.withCredentials = true;
         },
       });
-      hls.on(Hls.Events.MEDIA_ATTACHED, () => hls?.loadSource(playlist));
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => hls?.loadSource(source));
       hls.on(Hls.Events.MANIFEST_PARSED, play);
       hls.on(Hls.Events.ERROR, (_event, error) => {
         if (error.fatal) fail();
       });
       hls.attachMedia(video);
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = playlist;
+      video.src = source;
       video.load();
     } else {
       fail();
@@ -79,7 +93,7 @@ export function useHlsPreview(
       video.removeAttribute("src");
       video.load();
     };
-  }, [enabled, playlist, startPosition, videoRef]);
+  }, [enabled, source, startPosition, videoRef, direct, configLoaded]);
 
-  return playlist !== undefined && failedPlaylist === playlist;
+  return source !== undefined && failedPlaylist === source;
 }

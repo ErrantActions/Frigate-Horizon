@@ -4666,7 +4666,14 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema: {}
+              schema:
+                additionalProperties:
+                  anyOf:
+                    - type: boolean
+                    - $ref: '#/components/schemas/LiveWebRTCDiscovery'
+                    - $ref: '#/components/schemas/RecordedWebRTCDiscovery'
+                type: object
+                title: Response Native Features Native Features Get
       x-required-role: any
       security:
         - frigateUserAuth: []
@@ -8825,6 +8832,666 @@ paths:
       security:
         - frigateUserAuth: []
       x-required-role: camera
+  /{camera_name}/live/webrtc/status:
+    get:
+      tags:
+        - Media
+      summary: Live Webrtc Status
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Advertise configured on-demand viewing without starting any camera pull.
+      operationId: live_webrtc_status__camera_name__live_webrtc_status_get
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveWebRTCStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/live/webrtc/sessions:
+    post:
+      tags:
+        - Media
+      summary: Create Live Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Create one owned viewer lease and a shared source pull if needed.
+      operationId: 
+        create_live_webrtc_session__camera_name__live_webrtc_sessions_post
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ViewerBody'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveWebRTCSession'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/live/webrtc/sessions/{session_id}/answer:
+    post:
+      tags:
+        - Media
+      summary: Answer Live Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Answer only the peer offered to this account and camera.
+      operationId: 
+        answer_live_webrtc_session__camera_name__live_webrtc_sessions__session_id__answer_post
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnswerBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/live/webrtc/sessions/{session_id}/candidates:
+    post:
+      tags:
+        - Media
+      summary: Candidate Live Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Forward bounded client ICE candidates through the existing authenticated API.
+      operationId: 
+        candidate_live_webrtc_session__camera_name__live_webrtc_sessions__session_id__candidates_post
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CandidateBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/live/webrtc/sessions/{session_id}:
+    patch:
+      tags:
+        - Media
+      summary: Renew Live Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Renew the viewer lease only while its current account still has camera access.
+      operationId: 
+        renew_live_webrtc_session__camera_name__live_webrtc_sessions__session_id__patch
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveWebRTCLease'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+    delete:
+      tags:
+        - Media
+      summary: Close Live Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Stop the owned viewer and release source encoding after the last viewer leaves.
+      operationId: 
+        close_live_webrtc_session__camera_name__live_webrtc_sessions__session_id__delete
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/live/webrtc/sessions/{session_id}/quality:
+    patch:
+      tags:
+        - Media
+      summary: Quality Live Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Change an advertised rendition on the existing peer rather than reconnecting.
+      operationId: 
+        quality_live_webrtc_session__camera_name__live_webrtc_sessions__session_id__quality_patch
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QualityBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/recordings/webrtc/status:
+    get:
+      tags:
+        - Media
+      summary: Recorded Webrtc Status
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Discover finite, on-demand recording windows without opening originals.
+      operationId: 
+        recorded_webrtc_status__camera_name__recordings_webrtc_status_get
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordedWebRTCStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/recordings/webrtc/sessions:
+    post:
+      tags:
+        - Media
+      summary: Create Recorded Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Create one owned viewer; token expiry is a nonrenewable hard deadline.
+      operationId: 
+        create_recorded_webrtc_session__camera_name__recordings_webrtc_sessions_post
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordedCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordedWebRTCSession'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/recordings/webrtc/sessions/{session_id}/answer:
+    post:
+      tags:
+        - Media
+      summary: Answer Recorded Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Answer only the current generation, never a peer replaced by a seek.
+      operationId: 
+        answer_recorded_webrtc_session__camera_name__recordings_webrtc_sessions__session_id__answer_post
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordedAnswer'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/recordings/webrtc/sessions/{session_id}/candidates:
+    post:
+      tags:
+        - Media
+      summary: Candidates Recorded Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Forward bounded ICE on this account's current generation only.
+      operationId: 
+        candidates_recorded_webrtc_session__camera_name__recordings_webrtc_sessions__session_id__candidates_post
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordedCandidates'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/recordings/webrtc/sessions/{session_id}/quality:
+    patch:
+      tags:
+        - Media
+      summary: Quality Recorded Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Select automatic or bounded manual quality without replacing the peer.
+      operationId: 
+        quality_recorded_webrtc_session__camera_name__recordings_webrtc_sessions__session_id__quality_patch
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordedQuality'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/recordings/webrtc/sessions/{session_id}/control:
+    post:
+      tags:
+        - Media
+      summary: Control Recorded Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Activate decoded warmup on its peer; resume/seek return a new warming peer.
+      operationId: 
+        control_recorded_webrtc_session__camera_name__recordings_webrtc_sessions__session_id__control_post
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordedControl'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordedWebRTCSession'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/recordings/webrtc/sessions/{session_id}:
+    patch:
+      tags:
+        - Media
+      summary: Renew Recorded Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Renew the lease, returning a source-read cursor or explicit unknown position.
+      operationId: 
+        renew_recorded_webrtc_session__camera_name__recordings_webrtc_sessions__session_id__patch
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordedWebRTCSession'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+    delete:
+      tags:
+        - Media
+      summary: Close Recorded Webrtc Session
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Close the account-owned viewer, retaining uncertain native cleanup reservations.
+      operationId: 
+        close_recorded_webrtc_session__camera_name__recordings_webrtc_sessions__session_id__delete
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
   /recordings/audio-repair/jobs:
     post:
       tags:
@@ -11835,6 +12502,23 @@ components:
       required:
         - catalog_revision
       title: AdministrationOperation
+    AnswerBody:
+      properties:
+        type:
+          type: string
+          const: answer
+          title: Type
+          default: answer
+        sdp:
+          type: string
+          maxLength: 128000
+          minLength: 10
+          title: Sdp
+      additionalProperties: false
+      type: object
+      required:
+        - sdp
+      title: AnswerBody
     AppConfigSetBody:
       properties:
         requires_restart:
@@ -12727,6 +13411,19 @@ components:
       required:
         - value
       title: CameraSetBody
+    CandidateBody:
+      properties:
+        candidates:
+          items:
+            $ref: '#/components/schemas/IceCandidate'
+          type: array
+          maxItems: 32
+          title: Candidates
+      additionalProperties: false
+      type: object
+      required:
+        - candidates
+      title: CandidateBody
     ChaptersEnum:
       type: string
       enum:
@@ -14488,6 +15185,36 @@ components:
         - recommended
       title: HwaccelRecommendation
       description: The hardware decoding this system can do.
+    IceCandidate:
+      properties:
+        candidate:
+          type: string
+          maxLength: 4096
+          pattern: ^[^\r\n\x00]*$
+          title: Candidate
+        sdpMLineIndex:
+          type: integer
+          maximum: 64.0
+          minimum: 0.0
+          title: Sdpmlineindex
+        sdpMid:
+          anyOf:
+            - type: string
+              maxLength: 128
+            - type: 'null'
+          title: Sdpmid
+        usernameFragment:
+          anyOf:
+            - type: string
+              maxLength: 256
+            - type: 'null'
+          title: Usernamefragment
+      additionalProperties: false
+      type: object
+      required:
+        - candidate
+        - sdpMLineIndex
+      title: IceCandidate
     ImageUpdate:
       properties:
         confirm_device_change:
@@ -14628,6 +15355,275 @@ components:
         - playlist
         - renditions
       title: LiveHlsStatus
+    LiveICEServer:
+      properties:
+        urls:
+          items:
+            type: string
+          type: array
+          title: Urls
+        username:
+          type: string
+          title: Username
+        credential:
+          type: string
+          title: Credential
+      type: object
+      required:
+        - urls
+        - username
+        - credential
+      title: LiveICEServer
+    LiveSDPOffer:
+      properties:
+        type:
+          type: string
+          const: offer
+          title: Type
+        sdp:
+          type: string
+          title: Sdp
+      type: object
+      required:
+        - type
+        - sdp
+      title: LiveSDPOffer
+    LiveWebRTCDiscovery:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        enabled:
+          type: boolean
+          title: Enabled
+        available:
+          type: boolean
+          title: Available
+        status_url_template:
+          type: string
+          title: Status Url Template
+          default: '{camera_name}/live/webrtc/status'
+        signaling:
+          type: string
+          const: frigate-rest-offer-answer-v1
+          title: Signaling
+          default: frigate-rest-offer-answer-v1
+        on_demand:
+          type: boolean
+          const: true
+          title: On Demand
+          default: true
+        recordings:
+          type: string
+          const: original_source
+          title: Recordings
+          default: original_source
+      type: object
+      required:
+        - enabled
+        - available
+      title: LiveWebRTCDiscovery
+    LiveWebRTCLease:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        protocol:
+          type: string
+          const: webrtc
+          title: Protocol
+          default: webrtc
+        session_id:
+          type: string
+          format: uuid
+          title: Session Id
+        expires_at:
+          type: number
+          title: Expires At
+        heartbeat_seconds:
+          type: integer
+          title: Heartbeat Seconds
+        answer_url:
+          type: string
+          title: Answer Url
+        candidates_url:
+          type: string
+          title: Candidates Url
+        heartbeat_url:
+          type: string
+          title: Heartbeat Url
+        close_url:
+          type: string
+          title: Close Url
+        quality_url:
+          type: string
+          title: Quality Url
+        ice_servers:
+          items:
+            $ref: '#/components/schemas/LiveICEServer'
+          type: array
+          title: Ice Servers
+      type: object
+      required:
+        - session_id
+        - expires_at
+        - heartbeat_seconds
+        - answer_url
+        - candidates_url
+        - heartbeat_url
+        - close_url
+        - quality_url
+        - ice_servers
+      title: LiveWebRTCLease
+    LiveWebRTCQuality:
+      properties:
+        height:
+          type: integer
+          title: Height
+        bitrate:
+          type: integer
+          title: Bitrate
+      type: object
+      required:
+        - height
+        - bitrate
+      title: LiveWebRTCQuality
+    LiveWebRTCSession:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        protocol:
+          type: string
+          const: webrtc
+          title: Protocol
+          default: webrtc
+        session_id:
+          type: string
+          format: uuid
+          title: Session Id
+        expires_at:
+          type: number
+          title: Expires At
+        heartbeat_seconds:
+          type: integer
+          title: Heartbeat Seconds
+        answer_url:
+          type: string
+          title: Answer Url
+        candidates_url:
+          type: string
+          title: Candidates Url
+        heartbeat_url:
+          type: string
+          title: Heartbeat Url
+        close_url:
+          type: string
+          title: Close Url
+        quality_url:
+          type: string
+          title: Quality Url
+        ice_servers:
+          items:
+            $ref: '#/components/schemas/LiveICEServer'
+          type: array
+          title: Ice Servers
+        offer:
+          $ref: '#/components/schemas/LiveSDPOffer'
+        ice_candidates:
+          items:
+            $ref: '#/components/schemas/IceCandidate'
+          type: array
+          title: Ice Candidates
+        ice_transport_policy:
+          type: string
+          enum:
+            - all
+            - relay
+          title: Ice Transport Policy
+        renditions:
+          items:
+            $ref: '#/components/schemas/LiveWebRTCQuality'
+          type: array
+          title: Renditions
+        initial_height:
+          anyOf:
+            - type: integer
+            - type: 'null'
+          title: Initial Height
+      type: object
+      required:
+        - session_id
+        - expires_at
+        - heartbeat_seconds
+        - answer_url
+        - candidates_url
+        - heartbeat_url
+        - close_url
+        - quality_url
+        - ice_servers
+        - offer
+        - ice_candidates
+        - ice_transport_policy
+        - renditions
+        - initial_height
+      title: LiveWebRTCSession
+    LiveWebRTCStatus:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        protocol:
+          type: string
+          const: webrtc
+          title: Protocol
+          default: webrtc
+        enabled:
+          type: boolean
+          title: Enabled
+        available:
+          type: boolean
+          title: Available
+        session_url:
+          type: string
+          title: Session Url
+        grid_height:
+          type: integer
+          title: Grid Height
+        grid_rendition:
+          $ref: '#/components/schemas/LiveWebRTCQuality'
+        relay_available:
+          type: boolean
+          title: Relay Available
+        renditions:
+          items:
+            $ref: '#/components/schemas/LiveWebRTCQuality'
+          type: array
+          title: Renditions
+        reason:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Reason
+      type: object
+      required:
+        - enabled
+        - available
+        - session_url
+        - grid_height
+        - grid_rendition
+        - relay_available
+        - renditions
+        - reason
+      title: LiveWebRTCStatus
     MediaSyncBody:
       properties:
         dry_run:
@@ -15756,6 +16752,21 @@ components:
           title: Total Bytes
       type: object
       title: ProtectedStorageUsage
+    QualityBody:
+      properties:
+        height:
+          anyOf:
+            - type: integer
+              enum:
+                - 360
+                - 720
+                - 1080
+                - 2160
+            - type: 'null'
+          title: Height
+      additionalProperties: false
+      type: object
+      title: QualityBody
     QuietHours:
       properties:
         enabled:
@@ -15796,6 +16807,558 @@ components:
       title: QuietHours
       description: Cross-midnight intervals belong to the day on which they 
         start.
+    RecordedAnswer:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        generation:
+          type: integer
+          maximum: 9007199254740991.0
+          minimum: 1.0
+          title: Generation
+        type:
+          type: string
+          const: answer
+          title: Type
+          default: answer
+        sdp:
+          type: string
+          maxLength: 128000
+          minLength: 10
+          title: Sdp
+      additionalProperties: false
+      type: object
+      required:
+        - generation
+        - sdp
+      title: RecordedAnswer
+    RecordedCandidates:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        generation:
+          type: integer
+          maximum: 9007199254740991.0
+          minimum: 1.0
+          title: Generation
+        candidates:
+          items:
+            $ref: '#/components/schemas/IceCandidate'
+          type: array
+          maxItems: 32
+          title: Candidates
+      additionalProperties: false
+      type: object
+      required:
+        - generation
+        - candidates
+      title: RecordedCandidates
+    RecordedControl:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        generation:
+          type: integer
+          maximum: 9007199254740991.0
+          minimum: 1.0
+          title: Generation
+        action:
+          type: string
+          enum:
+            - pause
+            - resume
+            - seek
+            - activate
+          title: Action
+        window:
+          anyOf:
+            - $ref: '#/components/schemas/RecordedWindow'
+            - type: 'null'
+        decoded_ready:
+          anyOf:
+            - type: boolean
+            - type: 'null'
+          title: Decoded Ready
+      additionalProperties: false
+      type: object
+      required:
+        - generation
+        - action
+      title: RecordedControl
+      description: Activate asserts decoded warmup readiness; seek creates a new
+        warming peer.
+    RecordedCreate:
+      properties:
+        after:
+          type: number
+          minimum: 0.0
+          title: After
+        before:
+          type: number
+          minimum: 0.0
+          title: Before
+        start_timestamp:
+          type: number
+          minimum: 0.0
+          title: Start Timestamp
+        stream:
+          type: string
+          enum:
+            - auto
+            - main
+            - sub
+          title: Stream
+          default: auto
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        max_height:
+          type: integer
+          enum:
+            - 720
+            - 1080
+            - 2160
+          title: Max Height
+          default: 1080
+        height:
+          anyOf:
+            - type: integer
+              enum:
+                - 720
+                - 1080
+                - 2160
+            - type: 'null'
+          title: Height
+        audio:
+          type: boolean
+          title: Audio
+          default: true
+        force_relay:
+          type: boolean
+          title: Force Relay
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+        - after
+        - before
+        - start_timestamp
+      title: RecordedCreate
+    RecordedQuality:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        generation:
+          type: integer
+          maximum: 9007199254740991.0
+          minimum: 1.0
+          title: Generation
+        height:
+          anyOf:
+            - type: integer
+              enum:
+                - 720
+                - 1080
+                - 2160
+            - type: 'null'
+          title: Height
+      additionalProperties: false
+      type: object
+      required:
+        - generation
+      title: RecordedQuality
+    RecordedTimelineSpan:
+      properties:
+        source_start:
+          type: number
+          title: Source Start
+        source_end:
+          type: number
+          title: Source End
+        media_start:
+          type: number
+          title: Media Start
+        media_end:
+          type: number
+          title: Media End
+      type: object
+      required:
+        - source_start
+        - source_end
+        - media_start
+        - media_end
+      title: RecordedTimelineSpan
+    RecordedWebRTCDiscovery:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        enabled:
+          type: boolean
+          title: Enabled
+        available:
+          type: boolean
+          title: Available
+        status_url_template:
+          type: string
+          title: Status Url Template
+          default: '{camera_name}/recordings/webrtc/status'
+        signaling:
+          type: string
+          const: frigate-recorded-offer-answer-v1
+          title: Signaling
+          default: frigate-recorded-offer-answer-v1
+        on_demand:
+          type: boolean
+          const: true
+          title: On Demand
+          default: true
+        originals:
+          type: string
+          const: unchanged
+          title: Originals
+          default: unchanged
+        max_window_seconds:
+          type: integer
+          const: 30
+          title: Max Window Seconds
+          default: 30
+        pause:
+          type: string
+          const: release_encoder
+          title: Pause
+          default: release_encoder
+        seek:
+          type: string
+          const: new_peer_generation
+          title: Seek
+          default: new_peer_generation
+        resume:
+          type: string
+          const: new_peer_generation
+          title: Resume
+          default: new_peer_generation
+        position_kind:
+          type: string
+          const: input_read_cursor
+          title: Position Kind
+          default: input_read_cursor
+        gap_policy:
+          type: string
+          const: skip
+          title: Gap Policy
+          default: skip
+        activation:
+          type: string
+          const: decoded_ready_control
+          title: Activation
+          default: decoded_ready_control
+        warmup_max_seconds:
+          type: integer
+          const: 20
+          title: Warmup Max Seconds
+          default: 20
+      type: object
+      required:
+        - enabled
+        - available
+      title: RecordedWebRTCDiscovery
+    RecordedWebRTCSession:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        protocol:
+          type: string
+          const: webrtc
+          title: Protocol
+          default: webrtc
+        session_id:
+          type: string
+          format: uuid
+          title: Session Id
+        generation:
+          type: integer
+          title: Generation
+        state:
+          type: string
+          enum:
+            - warming
+            - playing
+            - paused
+            - ended
+            - cleanup_pending
+          title: State
+        warmup_expires_at:
+          anyOf:
+            - type: number
+            - type: 'null'
+          title: Warmup Expires At
+        expires_at:
+          type: number
+          title: Expires At
+        heartbeat_seconds:
+          type: integer
+          title: Heartbeat Seconds
+        answer_url:
+          type: string
+          title: Answer Url
+        candidates_url:
+          type: string
+          title: Candidates Url
+        quality_url:
+          type: string
+          title: Quality Url
+        control_url:
+          type: string
+          title: Control Url
+        heartbeat_url:
+          type: string
+          title: Heartbeat Url
+        close_url:
+          type: string
+          title: Close Url
+        ice_servers:
+          items:
+            $ref: '#/components/schemas/LiveICEServer'
+          type: array
+          title: Ice Servers
+        ice_transport_policy:
+          type: string
+          enum:
+            - all
+            - relay
+          title: Ice Transport Policy
+        renditions:
+          items:
+            $ref: '#/components/schemas/LiveWebRTCQuality'
+          type: array
+          title: Renditions
+        initial_height:
+          anyOf:
+            - type: integer
+            - type: 'null'
+          title: Initial Height
+        window:
+          $ref: '#/components/schemas/RecordedWindow'
+        timeline:
+          items:
+            $ref: '#/components/schemas/RecordedTimelineSpan'
+          type: array
+          title: Timeline
+        position_timestamp:
+          anyOf:
+            - type: number
+            - type: 'null'
+          title: Position Timestamp
+        position_kind:
+          type: string
+          const: input_read_cursor
+          title: Position Kind
+        gap_policy:
+          type: string
+          const: skip
+          title: Gap Policy
+        audio:
+          type: boolean
+          title: Audio
+        audio_reason:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Audio Reason
+        renegotiate:
+          type: boolean
+          title: Renegotiate
+        offer:
+          anyOf:
+            - $ref: '#/components/schemas/LiveSDPOffer'
+            - type: 'null'
+        ice_candidates:
+          items:
+            $ref: '#/components/schemas/IceCandidate'
+          type: array
+          title: Ice Candidates
+      type: object
+      required:
+        - session_id
+        - generation
+        - state
+        - warmup_expires_at
+        - expires_at
+        - heartbeat_seconds
+        - answer_url
+        - candidates_url
+        - quality_url
+        - control_url
+        - heartbeat_url
+        - close_url
+        - ice_servers
+        - ice_transport_policy
+        - renditions
+        - initial_height
+        - window
+        - timeline
+        - position_timestamp
+        - position_kind
+        - gap_policy
+        - audio
+        - audio_reason
+        - renegotiate
+        - offer
+        - ice_candidates
+      title: RecordedWebRTCSession
+    RecordedWebRTCStatus:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        enabled:
+          type: boolean
+          title: Enabled
+        available:
+          type: boolean
+          title: Available
+        status_url_template:
+          type: string
+          title: Status Url Template
+          default: '{camera_name}/recordings/webrtc/status'
+        signaling:
+          type: string
+          const: frigate-recorded-offer-answer-v1
+          title: Signaling
+          default: frigate-recorded-offer-answer-v1
+        on_demand:
+          type: boolean
+          const: true
+          title: On Demand
+          default: true
+        originals:
+          type: string
+          const: unchanged
+          title: Originals
+          default: unchanged
+        max_window_seconds:
+          type: integer
+          const: 30
+          title: Max Window Seconds
+          default: 30
+        pause:
+          type: string
+          const: release_encoder
+          title: Pause
+          default: release_encoder
+        seek:
+          type: string
+          const: new_peer_generation
+          title: Seek
+          default: new_peer_generation
+        resume:
+          type: string
+          const: new_peer_generation
+          title: Resume
+          default: new_peer_generation
+        position_kind:
+          type: string
+          const: input_read_cursor
+          title: Position Kind
+          default: input_read_cursor
+        gap_policy:
+          type: string
+          const: skip
+          title: Gap Policy
+          default: skip
+        activation:
+          type: string
+          const: decoded_ready_control
+          title: Activation
+          default: decoded_ready_control
+        warmup_max_seconds:
+          type: integer
+          const: 20
+          title: Warmup Max Seconds
+          default: 20
+        protocol:
+          type: string
+          const: webrtc
+          title: Protocol
+          default: webrtc
+        session_url:
+          type: string
+          title: Session Url
+        relay_available:
+          type: boolean
+          title: Relay Available
+        renditions:
+          items:
+            $ref: '#/components/schemas/LiveWebRTCQuality'
+          type: array
+          title: Renditions
+        reason:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Reason
+      type: object
+      required:
+        - enabled
+        - available
+        - session_url
+        - relay_available
+        - renditions
+        - reason
+      title: RecordedWebRTCStatus
+    RecordedWindow:
+      properties:
+        after:
+          type: number
+          minimum: 0.0
+          title: After
+        before:
+          type: number
+          minimum: 0.0
+          title: Before
+        start_timestamp:
+          type: number
+          minimum: 0.0
+          title: Start Timestamp
+        stream:
+          type: string
+          enum:
+            - auto
+            - main
+            - sub
+          title: Stream
+          default: auto
+      additionalProperties: false
+      type: object
+      required:
+        - after
+        - before
+        - start_timestamp
+      title: RecordedWindow
+      description: A bounded catalog window; gaps are skipped, never replaced 
+        with fake video.
     RegenerateDescriptionEnum:
       type: string
       enum:
@@ -16284,6 +17847,46 @@ components:
         - width
         - height
       title: VideoResolution
+    ViewerBody:
+      properties:
+        view:
+          type: string
+          enum:
+            - grid
+            - detail
+          title: View
+          default: detail
+        height:
+          anyOf:
+            - type: integer
+              enum:
+                - 360
+                - 720
+                - 1080
+                - 2160
+            - type: 'null'
+          title: Height
+        max_height:
+          type: integer
+          enum:
+            - 720
+            - 1080
+            - 2160
+          title: Max Height
+          default: 1080
+        audio:
+          type: boolean
+          title: Audio
+          default: true
+        force_relay:
+          type: boolean
+          title: Force Relay
+          default: false
+      additionalProperties: false
+      type: object
+      title: ViewerBody
+      description: Viewers select a bounded quality, never camera URLs or media 
+        destinations.
     VodStreamPreference:
       type: string
       enum:

@@ -561,10 +561,10 @@ export function RecordingView({
   // shown on the Original pin so a doomed selection is labeled
   const mainCodecUnsupported = useMemo(
     () =>
-      coverage?.streams?.main
+      !config?.live_webrtc?.enabled && coverage?.streams?.main
         ? !isCodecFamilySupported(coverage.streams.main.video_codec)
         : false,
-    [coverage],
+    [coverage, config?.live_webrtc?.enabled],
   );
 
   // the pin is persisted globally, but the selector is hidden on cameras
@@ -1069,6 +1069,7 @@ export function RecordingView({
               />
             )}
             {!isMobileOnly &&
+              !config?.live_webrtc?.enabled &&
               config?.cameras[mainCamera]?.record.enabled &&
               config?.cameras[mainCamera]?.record.sub.enabled && (
                 <QualitySelector
@@ -1123,6 +1124,7 @@ export function RecordingView({
               // quality in the drawer
               features={
                 isMobileOnly &&
+                !config?.live_webrtc?.enabled &&
                 config?.cameras[mainCamera]?.record.enabled &&
                 config?.cameras[mainCamera]?.record.sub.enabled
                   ? [...DEFAULT_DRAWER_FEATURES, "quality"]

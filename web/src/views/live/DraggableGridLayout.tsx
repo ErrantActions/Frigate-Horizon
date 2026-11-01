@@ -748,7 +748,7 @@ export default function DraggableGridLayout({
               ></BirdseyeLivePlayerGridItem>
             )}
             {cameras.map((camera) => {
-              const availableStreams = dashboardLiveStreams(camera);
+              const availableStreams = dashboardLiveStreams(camera, config);
               const firstStreamEntry = Object.values(availableStreams)[0] || "";
 
               const streamNameFromSettings =

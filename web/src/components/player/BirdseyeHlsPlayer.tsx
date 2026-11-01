@@ -1,4 +1,4 @@
-import { BirdseyeConfig } from "@/types/frigateConfig";
+import { BirdseyeConfig, FrigateConfig } from "@/types/frigateConfig";
 import type { LiveHlsStatus } from "@/types/liveHls";
 import ActivityIndicator from "../indicators/activity-indicator";
 import { cn } from "@/lib/utils";
@@ -27,13 +27,19 @@ export default function BirdseyeHlsPlayer({
   onClick,
 }: Props) {
   const { t } = useTranslation("components/player");
+  const { data: config } = useSWR<FrigateConfig>("config");
+  const webRtcOnly = config?.live_webrtc?.enabled === true;
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(false);
   const [generation, setGeneration] = useState(0);
   const [visible, setVisible] = useState(
     document.visibilityState === "visible",
   );
-  const enabled = birdseyeConfig.enabled && birdseyeConfig.restream;
+  const enabled =
+    config !== undefined &&
+    !webRtcOnly &&
+    birdseyeConfig.enabled &&
+    birdseyeConfig.restream;
   const {
     data: status,
     isLoading,
@@ -93,7 +99,13 @@ export default function BirdseyeHlsPlayer({
             role="alert"
             className="flex size-full flex-col items-center justify-center gap-3 p-4 text-center"
           >
-            <p>{t("adaptive.birdseyeUnavailable")}</p>
+            <p>
+              {t(
+                webRtcOnly
+                  ? "adaptive.birdseyeWebrtcUnavailable"
+                  : "adaptive.birdseyeUnavailable",
+              )}
+            </p>
             {enabled && (
               <Button
                 onClick={(event) => {

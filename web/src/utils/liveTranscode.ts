@@ -20,6 +20,15 @@ export function transcodeStreamName(camera: string, height: number): string {
   return `${camera}_transcode_${height}p`;
 }
 
+export function webRtcDetailHeights(
+  config: FrigateConfig | undefined,
+): number[] {
+  const settings = config?.live_webrtc;
+  return settings?.enabled
+    ? [2160, 1080, 720].filter((height) => height <= settings.max_height)
+    : [];
+}
+
 export function isTranscodeStreamName(camera: string, name: string): boolean {
   const prefix = `${camera}_transcode_`;
   return name.startsWith(prefix) && /^\d+p$/.test(name.slice(prefix.length));
@@ -99,6 +108,19 @@ export function isRestreamedStream(
     )
   ) {
     return true;
+  }
+
+  if (config.live_webrtc?.enabled) {
+    return Object.values(config.cameras).some(
+      (camera) =>
+        webRtcDetailHeights(config).some(
+          (height) => name === transcodeStreamName(camera.name, height),
+        ) &&
+        Object.hasOwn(
+          config.go2rtc.streams ?? {},
+          camera.live.transcode?.source || camera.name,
+        ),
+    );
   }
 
   return Object.values(config.cameras).some(

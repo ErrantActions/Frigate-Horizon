@@ -266,7 +266,7 @@ export default function LiveDashboardView({
   const requestedStreams = useMemo(() => {
     const streams: { [cameraName: string]: string } = {};
     cameras.forEach((camera) => {
-      const availableStreams = dashboardLiveStreams(camera);
+      const availableStreams = dashboardLiveStreams(camera, config);
       const streamNameFromSettings =
         currentGroupStreamingSettings?.[camera.name]?.streamName || "";
       const streamExists =
@@ -280,12 +280,14 @@ export default function LiveDashboardView({
       streams[camera.name] = streamName;
     });
     return streams;
-  }, [cameras, currentGroupStreamingSettings]);
+  }, [cameras, currentGroupStreamingSettings, config]);
   const activeStreams = useMemo(
     () =>
       Object.fromEntries(
         cameras.map((camera) => {
-          const configured = Object.values(dashboardLiveStreams(camera));
+          const configured = Object.values(
+            dashboardLiveStreams(camera, config),
+          );
           const pinned =
             currentGroupStreamingSettings?.[camera.name]?.streamName;
           const adaptive = adaptiveStreams[camera.name];
@@ -293,7 +295,7 @@ export default function LiveDashboardView({
             camera.name,
             pinned && configured.includes(pinned)
               ? pinned
-              : adaptiveLiveStreams(camera).length > 1 &&
+              : adaptiveLiveStreams(camera, config).length > 1 &&
                   adaptive &&
                   configured.includes(adaptive)
                 ? adaptive
@@ -301,7 +303,13 @@ export default function LiveDashboardView({
           ];
         }),
       ),
-    [cameras, currentGroupStreamingSettings, adaptiveStreams, requestedStreams],
+    [
+      cameras,
+      currentGroupStreamingSettings,
+      adaptiveStreams,
+      requestedStreams,
+      config,
+    ],
   );
 
   const { isRestreamedStates, supportsAudioOutputStates, streamMetadata } =
@@ -543,7 +551,7 @@ export default function LiveDashboardView({
                   } else {
                     grow = "aspect-video";
                   }
-                  const availableStreams = dashboardLiveStreams(camera);
+                  const availableStreams = dashboardLiveStreams(camera, config);
                   const firstStreamEntry =
                     Object.values(availableStreams)[0] || "";
 

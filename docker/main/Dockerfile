@@ -217,12 +217,70 @@ RUN pip3 wheel --wheel-dir=/wheels -r /requirements-wheels.txt && \
         pip3 wheel --wheel-dir=/wheels -r /requirements-dev.txt; \
     fi
 
+# Build the live-only CPU media runtime against the same Debian 12 ABI.
+FROM base AS ovenmediaengine-build
+ARG DEBIAN_FRONTEND
+ARG OME_BUILD_JOBS=2
+ENV OME_BUILD_JOBS=${OME_BUILD_JOBS}
+RUN apt-get update -qq && apt-get -o Dpkg::Options::=--force-unsafe-io install -y --no-install-recommends \
+    build-essential cmake ninja-build python3 ca-certificates curl git sudo \
+    autoconf automake libtool pkg-config zlib1g-dev uuid-dev libgomp1 \
+    tcl bzip2 xz-utils bc patch && rm -rf /var/lib/apt/lists/*
+COPY docker/main/ovenmediaengine/ /build/packaging/
+WORKDIR /build
+RUN --mount=type=cache,id=ome-source-archives,target=/build/downloads \
+    python3 /build/packaging/build.py build
+
+# A small, independently buildable ABI/binary check, also used by qualification.
+FROM slim-base AS ovenmediaengine-runtime
+COPY docker/main/ovenmediaengine/install-runtime.sh /build/install-runtime.sh
+RUN sed -i 's/\r$//' /build/install-runtime.sh \
+    && sh /build/install-runtime.sh && rm -rf /build
+COPY --from=ovenmediaengine-build /rootfs/ /
+COPY tools/check_ovenmediaengine_cli.sh /opt/ovenmediaengine/check-cli.sh
+RUN sed -i 's/\r$//' /opt/ovenmediaengine/check-cli.sh
+USER 1000:1000
+RUN cd /opt/ovenmediaengine && sha256sum -c share/manifest.sha256 >/dev/null \
+    && ! ldd bin/OvenMediaEngine | grep 'not found' \
+    && sh check-cli.sh \
+    && /usr/bin/turnserver --version
+
+FROM ovenmediaengine-runtime AS ovenmediaengine-qualification
+USER root
+RUN apt-get update -qq && apt-get -o Dpkg::Options::=--force-unsafe-io install -y --no-install-recommends \
+    python3 ffmpeg && rm -rf /var/lib/apt/lists/*
+COPY tools/test_ovenmediaengine_runtime.py /opt/ovenmediaengine/qualification.py
+USER 1000:1000
+WORKDIR /dev/shm
+ENTRYPOINT ["python3", "/opt/ovenmediaengine/qualification.py"]
+
+# Keep the already-qualified private HLS implementation during opt-in migration.
+FROM --platform=linux/amd64 ghcr.io/errantactions/frigate-horizon-live-hls@sha256:e2ea553de2de7e4d4f56df53d9e2a41c7f17048044dac9e1ba403586d06e36fd AS live-hls-qualified
+
+FROM slim-base AS live-hls-runtime
+ARG TARGETARCH
+RUN test "${TARGETARCH}" = amd64 \
+    || { echo "The qualified private HLS artifact supports linux/amd64 only" >&2; exit 1; }
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+    python3 && rm -rf /var/lib/apt/lists/*
+COPY --from=live-hls-qualified /mediamtx /opt/live-hls/bin/mediamtx
+COPY --from=live-hls-qualified /usr/local/share/live-hls/shared-clock.json /opt/live-hls/share/shared-clock.json
+COPY --from=live-hls-qualified /usr/local/share/licenses/mediamtx/ /opt/live-hls/share/licenses/
+COPY docker/main/live-hls/verify.py /opt/live-hls/verify.py
+RUN printf '%s\n' 'ghcr.io/errantactions/frigate-horizon-live-hls@sha256:e2ea553de2de7e4d4f56df53d9e2a41c7f17048044dac9e1ba403586d06e36fd' \
+    > /opt/live-hls/share/qualified-image.txt
+USER 1000:1000
+RUN python3 /opt/live-hls/verify.py --payload \
+    && /opt/live-hls/bin/mediamtx --version
+
 # Collect deps in a single layer
 FROM scratch AS deps-rootfs
 COPY --from=nginx /usr/local/nginx/ /usr/local/nginx/
 COPY --from=sqlite-vec /usr/local/lib/ /usr/local/lib/
 COPY --from=intel-media-driver /rootfs/ /
 COPY --from=go2rtc /rootfs/ /
+COPY --from=ovenmediaengine-runtime /opt/ovenmediaengine/ /opt/ovenmediaengine/
+COPY --from=live-hls-runtime /opt/live-hls/ /opt/live-hls/
 COPY --from=libusb-build /usr/local/lib /usr/local/lib
 COPY --from=tempio /rootfs/ /
 COPY --from=s6-overlay /rootfs/ /
@@ -279,6 +337,11 @@ ENV PATH="/usr/local/go2rtc/bin:/usr/local/tempio/bin:/usr/local/nginx/sbin:${PA
 RUN --mount=type=bind,source=docker/main/install_deps.sh,target=/deps/install_deps.sh \
     /deps/install_deps.sh
 
+RUN --mount=type=bind,source=docker/main/ovenmediaengine/install-runtime.sh,target=/build/install-runtime.sh \
+    sed 's/\r$//' /build/install-runtime.sh > /tmp/ome-runtime-install.sh \
+    && sh /tmp/ome-runtime-install.sh \
+    && rm -f /tmp/ome-runtime-install.sh
+
 # Runtime users. frigate may be remapped at start via PUID/PGID (init-usermod)
 # or replaced entirely with docker's --user. go2rtc is intentionally separate
 # and more restricted. frigate-data is the shared group for /config access.
@@ -314,7 +377,12 @@ ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/usr/lib/axcl"
 
 COPY --from=deps-rootfs / /
 
-RUN ldconfig
+RUN chmod 755 \
+    /etc/s6-overlay/s6-rc.d/ovenmediaengine-config/run \
+    /etc/s6-overlay/s6-rc.d/ovenmediaengine/run \
+    /etc/s6-overlay/s6-rc.d/coturn/run \
+    /etc/s6-overlay/s6-rc.d/live-hls/run \
+    && ldconfig
 
 EXPOSE 5000
 EXPOSE 8554

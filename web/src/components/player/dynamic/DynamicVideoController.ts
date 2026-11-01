@@ -11,6 +11,15 @@ import { playWithTemporaryMuteFallback } from "@/utils/videoUtil.ts";
 
 type PlayerMode = "playback" | "scrubbing";
 
+export type RemoteRecordingPlayback = {
+  play: () => void;
+  pause: () => void;
+  seek: (timestamp: number, play: boolean) => void;
+  timestamp: () => number;
+  isPlaying: () => boolean;
+  hasRecording: (timestamp: number) => boolean;
+};
+
 // how long a seek may wait for its `seeked` event before playback starts
 // anyway; long enough that a normally completing seek always wins
 const SEEK_PLAY_FALLBACK_MS = 1000;
@@ -53,6 +62,7 @@ export class DynamicVideoController {
   private playIntent = true;
   private cancelPendingSeek: (() => void) | undefined;
   private onPlaybackError: (error: unknown) => void;
+  private remotePlayback?: RemoteRecordingPlayback;
 
   constructor(
     camera: string,
@@ -66,6 +76,7 @@ export class DynamicVideoController {
     setNoRecording: (noRecs: boolean) => void,
     setFocusedItem: (timeline: TrackingDetailsSequence) => void,
     onPlaybackError: (error: unknown) => void,
+    remotePlayback?: RemoteRecordingPlayback,
   ) {
     this.camera = camera;
     this.playerController = playerController;
@@ -75,6 +86,7 @@ export class DynamicVideoController {
     this.setNoRecording = setNoRecording;
     this.setFocusedItem = setFocusedItem;
     this.onPlaybackError = onPlaybackError;
+    this.remotePlayback = remotePlayback;
   }
 
   private cancelPlayIntent() {
@@ -88,6 +100,10 @@ export class DynamicVideoController {
   }
 
   private startPlayback() {
+    if (this.remotePlayback) {
+      this.remotePlayback.play();
+      return;
+    }
     const generation = this.playGeneration;
     const source = this.playerController.src;
     const cancelled = () =>
@@ -126,6 +142,7 @@ export class DynamicVideoController {
   }
 
   play() {
+    if (this.remotePlayback) this.playerMode = "playback";
     this.playIntent = true;
     this.cancelPlayIntent();
     this.startPlayback();
@@ -139,6 +156,7 @@ export class DynamicVideoController {
   suspend() {
     this.cancelPlayIntent();
     this.playerController.pause();
+    this.remotePlayback?.pause();
   }
 
   wantsPlayback(): boolean {
@@ -146,6 +164,7 @@ export class DynamicVideoController {
   }
 
   isPlaying(): boolean {
+    if (this.remotePlayback) return this.remotePlayback.isPlaying();
     return !this.playerController.paused && !this.playerController.ended;
   }
 
@@ -156,6 +175,11 @@ export class DynamicVideoController {
   ) {
     if (!preservePlayIntent) this.playIntent = play;
     this.cancelPlayIntent();
+    if (this.remotePlayback) {
+      this.playerMode = "playback";
+      this.remotePlayback.seek(time, this.playIntent);
+      return;
+    }
     // a seek outside the current playback window is a no-op: the view
     // moves its anchor and chunk on such seeks, and the rebuilt source
     // resumes at the anchor (startPosition plus the post-load seek).
@@ -239,6 +263,7 @@ export class DynamicVideoController {
   }
 
   canSeekBuffered(timestamp: number): boolean {
+    if (this.remotePlayback) return false;
     if (
       !this.playerController.isConnected ||
       this.playerController.readyState < 2 ||
@@ -275,10 +300,12 @@ export class DynamicVideoController {
   }
 
   getProgress(playerTime: number): number {
+    if (this.remotePlayback) return this.remotePlayback.timestamp();
     return calculateRecordingTimestamp(playerTime, this.recordings);
   }
 
   relativeSeekTimestamp(diff: number): number | undefined {
+    if (this.remotePlayback) return this.remotePlayback.timestamp() + diff;
     const first = this.recordings[0];
     if (!first) {
       this.setNoRecording(true);
@@ -313,10 +340,12 @@ export class DynamicVideoController {
     if (this.playerMode != "scrubbing") {
       this.playerMode = "scrubbing";
       this.playerController.pause();
+      this.remotePlayback?.pause();
     }
   }
 
   hasRecordingAtTime(time: number): boolean {
+    if (this.remotePlayback) return this.remotePlayback.hasRecording(time);
     if (!this.recordings || this.recordings.length == 0) {
       return false;
     }

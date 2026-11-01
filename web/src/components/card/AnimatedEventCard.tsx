@@ -156,6 +156,7 @@ export function AnimatedEventCard({
     fallbackVideo,
     fallbackPlaylist,
     !!alertVideos &&
+      !config?.live_webrtc?.enabled &&
       windowVisible &&
       previews !== undefined &&
       previews.length === 0,
@@ -212,7 +213,8 @@ export function AnimatedEventCard({
                 }
               }}
             >
-              {!alertVideos ? (
+              {!alertVideos ||
+              (config?.live_webrtc?.enabled && previews.length === 0) ? (
                 <img
                   className={cn(
                     "h-full w-auto min-w-10 select-none object-contain",

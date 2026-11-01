@@ -1,4 +1,101 @@
 {
+  "live_webrtc": {
+    "label": "On-demand WebRTC live viewing",
+    "description": "Viewer-only CPU media processing and authenticated TURN inside Frigate. Never changes source recording quality.",
+    "enabled": {
+      "label": "Enable on-demand WebRTC viewing",
+      "description": "Use supervised OvenMediaEngine for live and recorded viewing. Stored recordings retain their original source media. Requires restart after changes."
+    },
+    "advertised_hosts": {
+      "label": "WebRTC media addresses",
+      "description": "Explicit LAN and public IPv4 addresses reachable by viewers. Never use wildcard or container bridge addresses."
+    },
+    "udp_port": {
+      "label": "WebRTC UDP media port"
+    },
+    "max_viewers": {
+      "label": "Maximum viewing sessions"
+    },
+    "max_grid_cameras": {
+      "label": "Maximum active grid camera pipelines"
+    },
+    "max_detail_cameras": {
+      "label": "Maximum active detailed viewing pipelines"
+    },
+    "grid_height": {
+      "label": "Grid video height"
+    },
+    "grid_fps": {
+      "label": "Grid video frames per second"
+    },
+    "detail_fps": {
+      "label": "Detailed video frames per second"
+    },
+    "max_height": {
+      "label": "Maximum detailed video height",
+      "description": "720, 1080, or 2160. The current open-source media engine uses CPU encoding; enable 2160 only after measuring load."
+    },
+    "encoder_threads": {
+      "label": "Threads per viewing video encoder"
+    },
+    "lease_seconds": {
+      "label": "Viewer heartbeat timeout"
+    },
+    "max_session_seconds": {
+      "label": "Maximum viewer session lifetime"
+    },
+    "turn": {
+      "label": "Local TURN relay",
+      "enabled": {
+        "label": "Enable authenticated TURN",
+        "description": "Run Coturn inside Frigate for authorized WebRTC viewers. Requires explicit firewall and address configuration."
+      },
+      "hostname": {
+        "label": "TURN hostname",
+        "description": "DNS-only hostname or IP reachable by remote viewers. Do not include a scheme or port."
+      },
+      "listen_ip": {
+        "label": "TURN listening IP",
+        "description": "Local IPv4 interface for the relay listeners."
+      },
+      "relay_ip": {
+        "label": "TURN local relay IPv4",
+        "description": "Local container/LAN IPv4 that owns the relay UDP sockets. Required when TURN is enabled."
+      },
+      "external_ip": {
+        "label": "TURN public IPv4",
+        "description": "Public IPv4 advertised by a relay behind NAT. Forward the configured relay UDP range unchanged."
+      },
+      "port": {
+        "label": "TURN UDP/TCP port"
+      },
+      "tls_port": {
+        "label": "TURN TLS port"
+      },
+      "tls": {
+        "label": "Enable TURN TLS",
+        "description": "Use a valid certificate for the TURN hostname. Plain TURN is suitable only when explicitly selected; its media remains protected by WebRTC SRTP."
+      },
+      "certificate": {
+        "label": "TURN certificate file"
+      },
+      "private_key": {
+        "label": "TURN private key file"
+      },
+      "min_port": {
+        "label": "First relay UDP port"
+      },
+      "max_port": {
+        "label": "Last relay UDP port"
+      },
+      "credential_seconds": {
+        "label": "Temporary TURN credential lifetime"
+      },
+      "max_allocations": {
+        "label": "Maximum TURN allocations"
+      }
+    }
+  },
   "storage": {
     "label": "Recording storage",
     "description": "Live controls for local recording usage and a long-term NFS archive.",

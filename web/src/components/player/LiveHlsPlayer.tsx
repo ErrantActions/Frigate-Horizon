@@ -8,7 +8,7 @@ import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
-type Props = {
+export type LiveHlsPlayerProps = {
   camera: string;
   renditions: LiveHlsRendition[];
   maximumHeight: number;
@@ -24,6 +24,7 @@ type Props = {
   onError: () => void;
   onResolution: (resolution: VideoResolutionType) => void;
   onLevelChange?: (height: number) => void;
+  dashboard?: boolean;
 };
 
 export default function LiveHlsPlayer({
@@ -42,7 +43,7 @@ export default function LiveHlsPlayer({
   onError,
   onResolution,
   onLevelChange,
-}: Props) {
+}: LiveHlsPlayerProps) {
   const { t } = useTranslation("components/player");
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | undefined>(undefined);

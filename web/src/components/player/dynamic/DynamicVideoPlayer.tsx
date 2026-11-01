@@ -40,6 +40,7 @@ import { useRecordingCompatibility } from "@/hooks/use-recording-compatibility";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useRecordingCoverage } from "@/hooks/use-recording-coverage";
+import RecordedWebRTCPlayer from "./RecordedWebRTCPlayer";
 
 // forward buffer while playing the low quality stream; low bitrate makes
 // a longer buffer cheap and it rides out connection variance better
@@ -59,7 +60,7 @@ const REPOSITION_PREVIEW_THRESHOLD_S = 2;
 /**
  * Dynamically switches between video playback and scrubbing preview player.
  */
-type DynamicVideoPlayerProps = {
+export type DynamicVideoPlayerProps = {
   className?: string;
   camera: string;
   timeRange: TimeRange;
@@ -84,7 +85,17 @@ type DynamicVideoPlayerProps = {
     reason: AutoQualityReason | undefined,
   ) => void;
 };
-export default function DynamicVideoPlayer({
+export default function DynamicVideoPlayer(props: DynamicVideoPlayerProps) {
+  const { data: config } = useSWR<FrigateConfig>("config");
+  if (!config) return <ActivityIndicator />;
+  return config.live_webrtc?.enabled ? (
+    <RecordedWebRTCPlayer key={props.camera} {...props} />
+  ) : (
+    <LegacyDynamicVideoPlayer {...props} />
+  );
+}
+
+function LegacyDynamicVideoPlayer({
   className,
   camera,
   timeRange,

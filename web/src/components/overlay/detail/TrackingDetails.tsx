@@ -25,6 +25,8 @@ import {
 } from "react-icons/lu";
 import { cn } from "@/lib/utils";
 import HlsVideoPlayer from "@/components/player/HlsVideoPlayer";
+import DynamicVideoPlayer from "@/components/player/dynamic/DynamicVideoPlayer";
+import type { DynamicVideoController } from "@/components/player/dynamic/DynamicVideoController";
 import { baseUrl } from "@/api/baseUrl";
 import { REVIEW_PADDING } from "@/types/review";
 import {
@@ -77,9 +79,9 @@ export function TrackingDetails({
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgLoaded, setImgLoaded] = useState(false);
   const [isVideoLoading, setIsVideoLoading] = useState(true);
-  const [displaySource, _setDisplaySource] = useState<"video" | "image">(
-    "video",
-  );
+  const [selectedDisplaySource, _setDisplaySource] = useState<
+    "video" | "image"
+  >("video");
   const { setSelectedObjectIds, annotationOffset } = useDetailStream();
 
   // manualOverride holds a record-stream timestamp explicitly chosen by the
@@ -98,10 +100,17 @@ export function TrackingDetails({
   const [currentTime, setCurrentTime] = useState(
     (event.start_time ?? 0) + annotationOffset / 1000 - REVIEW_PADDING,
   );
+  const [videoAnchor, setVideoAnchor] = useState(currentTime);
 
   useEffect(() => {
     setIsVideoLoading(true);
-  }, [event.id]);
+    const start = Math.max(
+      0,
+      (event.start_time ?? 0) + sourceOffsetRef.current / 1000 - REVIEW_PADDING,
+    );
+    setVideoAnchor(start);
+    setCurrentTime(start);
+  }, [event.id, event.start_time]);
 
   const { data: eventSequence } = useSWR<TrackingDetailsSequence[]>(
     ["timeline", { source_id: event.id }],
@@ -114,6 +123,16 @@ export function TrackingDetails({
   );
 
   const { data: config } = useSWR<FrigateConfig>("config");
+  const displaySource =
+    config?.live_webrtc?.enabled && isAnnotationSettingsOpen
+      ? "image"
+      : selectedDisplaySource;
+  const [recordedController, setRecordedController] =
+    useState<DynamicVideoController | null>(null);
+  useEffect(() => {
+    if (config?.live_webrtc?.enabled && displaySource === "video")
+      setManualOverride(null);
+  }, [config?.live_webrtc?.enabled, displaySource]);
 
   // Fetch recording segments for the event's time range to handle motion-only gaps.
   // Use the source offset (stable per event) so recordings don't refetch on every
@@ -131,7 +150,7 @@ export function TrackingDetails({
   );
 
   const { data: recordings } = useSWR<Recording[]>(
-    event.camera
+    config && !config.live_webrtc?.enabled && event.camera
       ? [
           `${event.camera}/recordings`,
           {
@@ -152,7 +171,7 @@ export function TrackingDetails({
   // snapping. The backend may snap clipFrom backwards to a keyframe, making
   // the video start earlier than the requested time.
   const vodManifestUrl = useMemo(() => {
-    if (!event.camera) return null;
+    if (!event.camera || config?.live_webrtc?.enabled) return null;
     const startTime =
       event.start_time + annotationOffset / 1000 - REVIEW_PADDING;
     const endTime =
@@ -160,7 +179,7 @@ export function TrackingDetails({
       annotationOffset / 1000 +
       REVIEW_PADDING;
     return `vod/clip/${event.camera}/start/${startTime}/end/${endTime}`;
-  }, [event, annotationOffset]);
+  }, [event, annotationOffset, config?.live_webrtc?.enabled]);
 
   const { data: vodManifest } = useSWR<VodManifest>(vodManifestUrl, null, {
     revalidateOnFocus: false,
@@ -413,9 +432,15 @@ export function TrackingDetails({
   useLayoutEffect(() => {
     const pinned = pinnedDetectTimestampRef.current;
     if (!isAnnotationSettingsOpen || pinned == null) return;
+    const targetTimeRecord = pinned + annotationOffset / 1000;
+    if (config?.live_webrtc?.enabled && displaySource === "image") {
+      setManualOverride(targetTimeRecord);
+      setVideoAnchor(targetTimeRecord);
+      setCurrentTime(targetTimeRecord);
+      return;
+    }
     if (!videoRef.current || displaySource !== "video") return;
 
-    const targetTimeRecord = pinned + annotationOffset / 1000;
     const relativeTime = timestampToVideoTime(targetTimeRecord);
     videoRef.current.currentTime = relativeTime;
 
@@ -427,11 +452,12 @@ export function TrackingDetails({
     annotationOffset,
     displaySource,
     timestampToVideoTime,
+    config?.live_webrtc?.enabled,
   ]);
 
   const handleLifecycleClick = useCallback(
     (item: TrackingDetailsSequence) => {
-      if (!videoRef.current && !imgRef.current) return;
+      if (!videoRef.current && !imgRef.current && !recordedController) return;
 
       // Convert lifecycle timestamp (detect stream) to record stream time
       const targetTimeRecord = item.timestamp + annotationOffset / 1000;
@@ -440,7 +466,15 @@ export function TrackingDetails({
         // For image mode: set a manual override timestamp and update
         // currentTime so overlays render correctly.
         setManualOverride(targetTimeRecord);
+        setVideoAnchor(targetTimeRecord);
         setCurrentTime(targetTimeRecord);
+        return;
+      }
+      if (config?.live_webrtc?.enabled && recordedController) {
+        recordedController.seekToTimestamp(
+          targetTimeRecord,
+          recordedController.wantsPlayback(),
+        );
         return;
       }
 
@@ -451,7 +485,13 @@ export function TrackingDetails({
         videoRef.current.currentTime = relativeTime;
       }
     },
-    [annotationOffset, displaySource, timestampToVideoTime],
+    [
+      annotationOffset,
+      displaySource,
+      timestampToVideoTime,
+      config?.live_webrtc?.enabled,
+      recordedController,
+    ],
   );
 
   const is24Hour = use24HourTime(config);
@@ -499,6 +539,16 @@ export function TrackingDetails({
       // For image mode, set the manual override so the snapshot updates to
       // the exact record timestamp.
       setManualOverride(seekToTimestamp);
+      setVideoAnchor(seekToTimestamp);
+      setSeekToTimestamp(null);
+      return;
+    }
+    if (config?.live_webrtc?.enabled) {
+      if (!recordedController) return;
+      recordedController.seekToTimestamp(
+        seekToTimestamp,
+        recordedController.wantsPlayback(),
+      );
       setSeekToTimestamp(null);
       return;
     }
@@ -511,7 +561,13 @@ export function TrackingDetails({
       videoRef.current.currentTime = relativeTime;
     }
     setSeekToTimestamp(null);
-  }, [seekToTimestamp, displaySource, timestampToVideoTime]);
+  }, [
+    seekToTimestamp,
+    displaySource,
+    timestampToVideoTime,
+    config?.live_webrtc?.enabled,
+    recordedController,
+  ]);
 
   const isWithinEventRange = useMemo(() => {
     if (effectiveTime === undefined || event.start_time === undefined) {
@@ -697,27 +753,50 @@ export function TrackingDetails({
         >
           {displaySource == "video" && (
             <>
-              <HlsVideoPlayer
-                videoRef={videoRef}
-                containerRef={containerRef}
-                visible={true}
-                currentSource={videoSource}
-                hotKeys={false}
-                supportsFullscreen={supportsFullScreen}
-                fullscreen={fullscreen}
-                frigateControls={true}
-                onTimeUpdate={handleTimeUpdate}
-                onSeekToTime={handleSeekToTime}
-                onUploadFrame={onUploadFrameToPlus}
-                getSnapshotUrl={getSnapshotUrlForPlus}
-                onPlaying={() => setIsVideoLoading(false)}
-                setFullResolution={setFullResolution}
-                toggleFullscreen={toggleFullscreen}
-                isDetailMode={true}
-                camera={event.camera}
-                currentTimeOverride={currentTime}
-              />
-              {isVideoLoading && (
+              {config.live_webrtc?.enabled ? (
+                <DynamicVideoPlayer
+                  key={event.id}
+                  camera={event.camera}
+                  timeRange={{
+                    after: Math.max(0, eventStartRecord - REVIEW_PADDING),
+                    before: eventEndRecord + REVIEW_PADDING,
+                  }}
+                  startTimestamp={videoAnchor}
+                  cameraPreviews={[]}
+                  isScrubbing={false}
+                  hotKeys={false}
+                  supportsFullscreen={supportsFullScreen}
+                  fullscreen={fullscreen}
+                  onControllerReady={setRecordedController}
+                  onTimestampUpdate={setCurrentTime}
+                  onSeekToTime={handleSeekToTime}
+                  setFullResolution={setFullResolution}
+                  toggleFullscreen={toggleFullscreen}
+                  containerRef={containerRef}
+                />
+              ) : (
+                <HlsVideoPlayer
+                  videoRef={videoRef}
+                  containerRef={containerRef}
+                  visible={true}
+                  currentSource={videoSource}
+                  hotKeys={false}
+                  supportsFullscreen={supportsFullScreen}
+                  fullscreen={fullscreen}
+                  frigateControls={true}
+                  onTimeUpdate={handleTimeUpdate}
+                  onSeekToTime={handleSeekToTime}
+                  onUploadFrame={onUploadFrameToPlus}
+                  getSnapshotUrl={getSnapshotUrlForPlus}
+                  onPlaying={() => setIsVideoLoading(false)}
+                  setFullResolution={setFullResolution}
+                  toggleFullscreen={toggleFullscreen}
+                  isDetailMode={true}
+                  camera={event.camera}
+                  currentTimeOverride={currentTime}
+                />
+              )}
+              {isVideoLoading && !config.live_webrtc?.enabled && (
                 <ActivityIndicator className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2" />
               )}
             </>

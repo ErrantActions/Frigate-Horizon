@@ -40,7 +40,37 @@ class TestNativeFeaturesAPI(unittest.TestCase):
         response = self.client.get("/native/features", headers=self.headers)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(
-            response.json(), {"controls": True, "export_protection": False}
+            response.json(),
+            {
+                "controls": True,
+                "export_protection": False,
+                "live_webrtc": {
+                    "version": 1,
+                    "enabled": False,
+                    "available": False,
+                    "status_url_template": "{camera_name}/live/webrtc/status",
+                    "signaling": "frigate-rest-offer-answer-v1",
+                    "on_demand": True,
+                    "recordings": "original_source",
+                },
+                "recorded_webrtc": {
+                    "version": 1,
+                    "enabled": False,
+                    "available": False,
+                    "status_url_template": "{camera_name}/recordings/webrtc/status",
+                    "signaling": "frigate-recorded-offer-answer-v1",
+                    "on_demand": True,
+                    "originals": "unchanged",
+                    "max_window_seconds": 30,
+                    "pause": "release_encoder",
+                    "seek": "new_peer_generation",
+                    "resume": "new_peer_generation",
+                    "position_kind": "input_read_cursor",
+                    "gap_policy": "skip",
+                    "activation": "decoded_ready_control",
+                    "warmup_max_seconds": 20,
+                },
+            },
         )
         response = self.client.get(
             "/native/features",

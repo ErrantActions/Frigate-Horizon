@@ -1,4 +1,4 @@
-import { CameraConfig } from "@/types/frigateConfig";
+import { CameraConfig, FrigateConfig } from "@/types/frigateConfig";
 import AutoUpdatingCameraImage from "../camera/AutoUpdatingCameraImage";
 import ActivityIndicator from "../indicators/activity-indicator";
 import {
@@ -31,9 +31,11 @@ import { formatList } from "@/utils/stringUtil";
 import useSWR from "swr";
 import { Button } from "../ui/button";
 import type { LiveHlsStatus } from "@/types/liveHls";
+import type { LiveWebRTCStatus } from "@/types/liveWebrtc";
 import { toast } from "sonner";
 
 const LiveHlsPlayer = lazy(() => import("./LiveHlsPlayer"));
+const LiveWebRTCPlayer = lazy(() => import("./LiveWebRTCPlayer"));
 
 type LivePlayerProps = {
   cameraRef?: (ref: HTMLDivElement | null) => void;
@@ -83,6 +85,8 @@ export default function LivePlayer({
   dataSaver = false,
 }: LivePlayerProps) {
   const { t } = useTranslation(["components/player"]);
+  const { data: config } = useSWR<FrigateConfig>("config");
+  const webRtcEnabled = config?.live_webrtc?.enabled === true;
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const [overlayDimensions] = useResizeObserver(overlayRef);
   const inDashboard = containerRef === undefined;
@@ -91,17 +95,22 @@ export default function LivePlayer({
   const [hlsStreamName, setHlsStreamName] = useState<string>();
   const failHls = useCallback(() => {
     setHlsFailed(true);
-    toast.error(t("adaptive.hlsUnavailable"), {
-      id: `live-hls-${cameraConfig.name}`,
-    });
-  }, [cameraConfig.name, t]);
+    toast.error(
+      webRtcEnabled
+        ? t("adaptive.webrtcUnavailable")
+        : t("adaptive.hlsUnavailable"),
+      {
+        id: `live-hls-${cameraConfig.name}`,
+      },
+    );
+  }, [cameraConfig.name, t, webRtcEnabled]);
   const {
     data: hlsStatus,
     isLoading: hlsStatusLoading,
     mutate: reloadHlsStatus,
-  } = useSWR<LiveHlsStatus>(
-    !hlsFailed
-      ? `${encodeURIComponent(cameraConfig.name)}/live/hls/status`
+  } = useSWR<LiveHlsStatus | LiveWebRTCStatus>(
+    config && !hlsFailed
+      ? `${encodeURIComponent(cameraConfig.name)}/live/${webRtcEnabled ? "webrtc" : "hls"}/status`
       : null,
     {
       revalidateOnFocus: false,
@@ -109,21 +118,29 @@ export default function LivePlayer({
       onError: failHls,
     },
   );
-  const hlsActive = !hlsFailed && hlsStatus?.available === true;
-  const hlsPending = !hlsFailed && hlsStatusLoading;
+  const webRtcDetail = webRtcEnabled && (!inDashboard || pip === true);
+  const advertisedRenditions = hlsStatus?.renditions ?? [];
+  const renditions = webRtcDetail
+    ? advertisedRenditions.filter((rendition) => rendition.height >= 720)
+    : advertisedRenditions;
+  const hlsActive =
+    !hlsFailed && hlsStatus?.available === true && renditions.length > 0;
+  const hlsPending = !hlsFailed && (!config || hlsStatusLoading);
   const hlsUnavailable =
-    hlsFailed || (!hlsStatusLoading && hlsStatus?.available === false);
+    hlsFailed ||
+    (!hlsStatusLoading && hlsStatus?.available === false) ||
+    (hlsStatus?.available === true && renditions.length === 0);
   const preferredHeight =
     dataSaver || (inDashboard && pip !== true)
-      ? hlsStatus?.renditions?.[0]?.height
+      ? renditions[0]?.height
       : adaptiveSelected
         ? undefined
         : Number(/_transcode_(\d+)p$/.exec(requestedStreamName)?.[1]) ||
-          hlsStatus?.renditions.at(-1)?.height;
+          renditions.at(-1)?.height;
   const playingStreamName =
     hlsActive && hlsStatus
       ? (hlsStreamName ??
-        `${cameraConfig.name}_transcode_${hlsStatus.renditions[0].height}p`)
+        `${cameraConfig.name}_transcode_${renditions[0].height}p`)
       : requestedStreamName;
 
   const internalContainerRef = useRef<HTMLDivElement | null>(null);
@@ -319,6 +336,7 @@ export default function LivePlayer({
   }
 
   let player;
+  const StreamingPlayer = webRtcEnabled ? LiveWebRTCPlayer : LiveHlsPlayer;
   if (!autoLive || !cameraEnabled) {
     player = null;
   } else if (hlsPending) {
@@ -326,16 +344,17 @@ export default function LivePlayer({
   } else if (hlsActive && hlsStatus) {
     player = (
       <Suspense fallback={<ActivityIndicator className="w-full" />}>
-        <LiveHlsPlayer
+        <StreamingPlayer
           key={`hls_${cameraConfig.name}_${key}`}
           camera={cameraConfig.name}
-          renditions={hlsStatus.renditions}
+          dashboard={inDashboard && pip !== true}
+          renditions={renditions}
           preferredHeight={preferredHeight}
           maximumHeight={
-            inDashboard
+            inDashboard && !webRtcDetail
               ? overlayDimensions.height *
                 Math.min(2, Math.max(1, window.devicePixelRatio))
-              : Math.max(...hlsStatus.renditions.map((value) => value.height))
+              : Math.max(...renditions.map((value) => value.height))
           }
           className={`size-full ${liveReady ? "" : "hidden"}`}
           playbackEnabled={
@@ -411,7 +430,11 @@ export default function LivePlayer({
           role="alert"
           className="absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 bg-background/90 p-4 text-center"
         >
-          <p>{t("adaptive.hlsUnavailable")}</p>
+          <p>
+            {webRtcEnabled
+              ? t("adaptive.webrtcUnavailable")
+              : t("adaptive.hlsUnavailable")}
+          </p>
           <Button
             onClick={(event) => {
               event.stopPropagation();

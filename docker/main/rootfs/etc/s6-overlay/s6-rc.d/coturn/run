@@ -1,0 +1,48 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+set -o errexit -o nounset -o pipefail
+umask 077
+exec 2>&1
+
+s6-svc -O .
+readonly state=/dev/shm/ovenmediaengine
+readonly config="$state/turnserver.conf"
+if [[ -L "$state" ]]; then
+    echo "[ERROR] Refusing a symlink for the private live-media state directory"
+    exit 1
+fi
+if [[ ! -f "$state/enabled" || ! -f "$state/turn-enabled" ]]; then
+    echo "[INFO] Authenticated TURN is disabled"
+    exit 0
+fi
+if [[ ! -s "$config" ]] \
+    || grep -Eq '^[[:space:]]*no-auth([[:space:]]|=|$)' "$config" \
+    || ! grep -Eq '^[[:space:]]*realm=[^[:space:]]+' "$config"; then
+    echo "[ERROR] TURN requires a private authenticated configuration; service stopped"
+    exit 1
+fi
+if grep -Eq '^[[:space:]]*use-auth-secret([[:space:]]|$)' "$config"; then
+    if ! grep -Eq '^[[:space:]]*static-auth-secret=[^[:space:]]+' "$config"; then
+        echo "[ERROR] TURN REST authentication secret is missing; service stopped"
+        exit 1
+    fi
+elif ! grep -Eq '^[[:space:]]*lt-cred-mech([[:space:]]|$)' "$config" \
+    || ! grep -Eq '^[[:space:]]*user=[^[:space:]]+:[^[:space:]]+' "$config"; then
+    echo "[ERROR] TURN allocation authentication is required; service stopped"
+    exit 1
+fi
+
+ulimit -c 0
+ulimit -n 4096
+cd "$state"
+echo "[INFO] Starting authenticated TURN"
+readonly args=(-c "$config" --no-cli --no-rfc5780 --no-multicast-peers \
+    --log-file=stdout --simple-log --pidfile="$state/turnserver.pid" \
+    --userdb="$state/turnserver.db")
+if [[ "$(id -u)" -eq 0 ]]; then
+    exec s6-applyuidgid -u 1000 -g 1000 -G 1000 /usr/bin/turnserver "${args[@]}"
+elif [[ "$(id -u)" -eq 1000 && "$(id -g)" -eq 1000 ]]; then
+    exec /usr/bin/turnserver "${args[@]}"
+fi
+echo "[ERROR] TURN must run as UID/GID 1000"
+exit 1

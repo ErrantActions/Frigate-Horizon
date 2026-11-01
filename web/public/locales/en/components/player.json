@@ -1,4 +1,11 @@
 {
+  "recordedWebrtc": {
+    "qualityLabel": "Adaptive recording viewing quality",
+    "previewImage": "Recorded timeline preview",
+    "height": "{{height}}p",
+    "speedUnavailable": "Playback speed control is not available for recorded WebRTC.",
+    "positionEstimate": "Source timeline estimate, not an exact displayed-frame timestamp"
+  },
   "hlsOnly": "Playback requires an HLS playlist.",
   "liveWarning": {
     "notLive": "Not live",
@@ -9,8 +16,11 @@
   "adaptive": {
     "minimumUnavailable": "Live video could not be played at the minimum allowed quality. Retry or check the connection.",
     "hlsUnavailable": "HLS live video is unavailable. Retry or check the camera's HLS configuration.",
+    "webrtcUnavailable": "WebRTC live video is unavailable. Retry or check media service and network access.",
+    "webrtcCleanupPending": "The viewing connection could not be released immediately. Its short viewer lease will expire automatically.",
     "audioUnsupported": "This browser cannot decode the live audio. Video will continue without audio.",
     "birdseyeUnavailable": "Birdseye HLS is unavailable. Enable the Birdseye restream and check the HLS companion.",
+    "birdseyeWebrtcUnavailable": "Birdseye is not supported by the WebRTC-only viewing service. Use the camera grid instead.",
     "pictureInPictureUnavailable": "Picture in Picture is unavailable for this video."
   },
   "resolutionBadge": {

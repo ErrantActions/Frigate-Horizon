@@ -69,6 +69,7 @@ export function VideoPreview({
     previewHlsUrl(relevantPreview),
     windowVisible,
     playerStartTime,
+    relevantPreview.src,
   );
 
   // initialize player correctly

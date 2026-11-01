@@ -4,6 +4,7 @@ import useSWR from "swr";
 import useDeferredStreamMetadata from "./use-deferred-stream-metadata";
 import { detectCameraAudioFeatures } from "@/utils/cameraUtil";
 import { isRestreamedStream } from "@/utils/liveTranscode";
+import { adaptiveLiveStreams } from "@/utils/adaptiveLive";
 
 export default function useCameraStreamMetadata(
   cameras: CameraConfig[],
@@ -14,9 +15,12 @@ export default function useCameraStreamMetadata(
     const names = new Set<string>();
     for (const camera of cameras) {
       const active = activeStreams?.[camera.name];
-      for (const name of active
-        ? [active]
-        : Object.values(camera.live.streams)) {
+      const selected = config?.live_webrtc?.enabled
+        ? [camera.live.transcode.source || camera.name]
+        : active
+          ? [active]
+          : Object.values(camera.live.streams);
+      for (const name of selected) {
         if (isRestreamedStream(config, name)) names.add(name);
       }
     }
@@ -35,9 +39,15 @@ export default function useCameraStreamMetadata(
         activeStreams?.[camera.name] ?? Object.values(camera.live.streams)[0];
       isRestreamedStates[camera.name] =
         isRestreamedStream(config, selected) ?? false;
-      for (const stream of Object.values(camera.live.streams)) {
+      for (const stream of new Set([
+        ...Object.values(camera.live.streams),
+        ...adaptiveLiveStreams(camera, config),
+      ])) {
+        const source = config?.live_webrtc?.enabled
+          ? camera.live.transcode.source || camera.name
+          : stream;
         supportsAudioOutputStates[stream] = {
-          supportsAudio: detectCameraAudioFeatures(streamMetadata[stream])
+          supportsAudio: detectCameraAudioFeatures(streamMetadata[source])
             .audioOutput,
           cameraName: camera.name,
         };

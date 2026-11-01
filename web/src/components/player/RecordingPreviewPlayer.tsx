@@ -11,6 +11,10 @@ import { cn } from "@/lib/utils";
 import { Skeleton } from "../ui/skeleton";
 import HlsVideoPlayer from "./HlsVideoPlayer";
 import { PreviewController } from "./PreviewController";
+import useSWR from "swr";
+import type { FrigateConfig } from "@/types/frigateConfig";
+import axios from "axios";
+import { webrtcEndpoint } from "@/utils/webrtc";
 
 type RecordingPreviewPlayerProps = {
   previewRef?: (ref: HTMLDivElement | null) => void;
@@ -23,7 +27,120 @@ type RecordingPreviewPlayerProps = {
   onClick?: () => void;
 };
 
-export default function RecordingPreviewPlayer({
+export default function RecordingPreviewPlayer(
+  props: RecordingPreviewPlayerProps,
+) {
+  const { data: config } = useSWR<FrigateConfig>("config");
+  return config?.live_webrtc?.enabled ? (
+    <RecordingSnapshotPreview {...props} />
+  ) : (
+    <LegacyRecordingPreviewPlayer {...props} />
+  );
+}
+
+function RecordingSnapshotPreview({
+  previewRef,
+  className,
+  camera,
+  timeRange,
+  startTime,
+  isVisible,
+  onControllerReady,
+  onClick,
+}: RecordingPreviewPlayerProps) {
+  const { t } = useTranslation("components/player");
+  const [timestamp, setTimestamp] = useState(startTime ?? timeRange.after);
+  const [image, setImage] = useState<string>();
+  const [failed, setFailed] = useState(false);
+  const lastRequest = useRef(0);
+  const imageURL = useRef<string | undefined>(undefined);
+  const ready = useRef(onControllerReady);
+  ready.current = onControllerReady;
+  const controller = useMemo(
+    () => new RecordingPreviewController(camera, setTimestamp),
+    [camera],
+  );
+  useEffect(() => {
+    ready.current(controller);
+  }, [controller]);
+  useEffect(
+    () => () => {
+      if (imageURL.current) URL.revokeObjectURL(imageURL.current);
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!isVisible) return;
+    let active = true;
+    const abort = new AbortController();
+    const timer = setTimeout(
+      async () => {
+        lastRequest.current = Date.now();
+        try {
+          const response = await axios.get<Blob>(
+            webrtcEndpoint(
+              `${encodeURIComponent(camera)}/recordings/${timestamp}/snapshot.jpg?height=180`,
+            ),
+            {
+              responseType: "blob",
+              withCredentials: true,
+              signal: abort.signal,
+              timeout: 10000,
+            },
+          );
+          if (!active) return;
+          const url = URL.createObjectURL(response.data);
+          if (imageURL.current) URL.revokeObjectURL(imageURL.current);
+          imageURL.current = url;
+          setImage(url);
+          setFailed(false);
+        } catch (error: unknown) {
+          if (!axios.isCancel(error) && active) {
+            setImage(undefined);
+            setFailed(true);
+          }
+        }
+      },
+      Math.max(150, 1000 - (Date.now() - lastRequest.current)),
+    );
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      abort.abort();
+    };
+  }, [camera, timestamp, isVisible]);
+  return (
+    <div
+      ref={previewRef}
+      onClick={onClick}
+      data-camera={camera}
+      data-testid="recording-preview"
+      data-timestamp={timestamp}
+      className={cn(
+        "relative flex size-full items-center justify-center overflow-hidden rounded-lg bg-black md:rounded-2xl",
+        onClick && "cursor-pointer",
+        className,
+      )}
+    >
+      {image && !failed && (
+        <img
+          src={image}
+          alt={t("recordedWebrtc.previewImage")}
+          className="size-full object-contain"
+          onError={() => setFailed(true)}
+        />
+      )}
+      {failed && (
+        <div role="alert" className="p-2 text-center text-xs">
+          {t("playbackFailed")}
+        </div>
+      )}
+      {!image && !failed && <Skeleton className="absolute inset-0" />}
+    </div>
+  );
+}
+
+function LegacyRecordingPreviewPlayer({
   previewRef,
   className,
   camera,

@@ -73,7 +73,7 @@ export function CameraStreamingDialog({
   const [streamName, setStreamName] = useState(
     Object.entries(
       config?.cameras[camera]
-        ? dashboardLiveStreams(config.cameras[camera])
+        ? dashboardLiveStreams(config.cameras[camera], config)
         : {},
     )[0]?.[1] || "",
   );
@@ -81,6 +81,9 @@ export function CameraStreamingDialog({
   const [forceLowBandwidth, setForceLowBandwidth] = useState(false);
 
   // metadata
+  const metadataSource = config?.live_webrtc?.enabled
+    ? config.cameras[camera]?.live.transcode.source || camera
+    : streamName;
 
   const isRestreamed = useMemo(
     () => isRestreamedStream(config, streamName),
@@ -90,8 +93,8 @@ export function CameraStreamingDialog({
   // Fetch the go2rtc stream metadata directly when the parent didn't provide it
   // so codec/availability detection works regardless of caller
   const { data: fetchedMetadata } = useSWR<LiveStreamMetadata>(
-    isRestreamed && streamName && !streamMetadata?.[streamName]
-      ? `go2rtc/streams/${streamName}`
+    isRestreamed && metadataSource && !streamMetadata?.[metadataSource]
+      ? `go2rtc/streams/${metadataSource}`
       : null,
     {
       revalidateOnFocus: false,
@@ -101,8 +104,8 @@ export function CameraStreamingDialog({
     },
   );
 
-  const cameraMetadata = streamName
-    ? (streamMetadata?.[streamName] ?? fetchedMetadata)
+  const cameraMetadata = metadataSource
+    ? (streamMetadata?.[metadataSource] ?? fetchedMetadata)
     : undefined;
 
   const { audioOutput: supportsAudioOutput } = useMemo(
@@ -119,7 +122,7 @@ export function CameraStreamingDialog({
 
     // Get available streams from the config and first stream entry as fallback
     const availableStreams = config?.cameras[camera]
-      ? dashboardLiveStreams(config.cameras[camera])
+      ? dashboardLiveStreams(config.cameras[camera], config)
       : {};
     const firstStreamEntry = Object.entries(availableStreams)[0]?.[1] || "";
 
@@ -180,7 +183,7 @@ export function CameraStreamingDialog({
 
     // Get available streams from the config and first stream entry as fallback
     const availableStreams = config?.cameras[camera]
-      ? dashboardLiveStreams(config.cameras[camera])
+      ? dashboardLiveStreams(config.cameras[camera], config)
       : {};
     const firstStreamEntry = Object.entries(availableStreams)[0]?.[1] || "";
 
@@ -265,7 +268,9 @@ export function CameraStreamingDialog({
           </div>
         )}
         {isRestreamed &&
-          Object.entries(config?.cameras[camera].live.streams).length > 0 && (
+          (config?.live_webrtc?.enabled ||
+            Object.entries(config?.cameras[camera].live.streams).length >
+              0) && (
             <div className="flex flex-col items-start gap-2">
               <Label htmlFor="stream" className="text-right">
                 {t("group.camera.setting.stream")}
@@ -284,7 +289,7 @@ export function CameraStreamingDialog({
                   {camera !== "birdseye" &&
                     Object.entries(
                       config?.cameras[camera]
-                        ? dashboardLiveStreams(config.cameras[camera])
+                        ? dashboardLiveStreams(config.cameras[camera], config)
                         : {},
                     ).map(([name, stream]) => (
                       <SelectItem key={stream} value={stream}>
@@ -337,7 +342,9 @@ export function CameraStreamingDialog({
             </div>
           )}
         {isRestreamed &&
-          Object.entries(config?.cameras[camera].live.streams).length > 0 && (
+          (config?.live_webrtc?.enabled ||
+            Object.entries(config?.cameras[camera].live.streams).length >
+              0) && (
             <div className="flex flex-col items-start gap-2">
               <div className="flex w-full items-center justify-between">
                 <Label htmlFor="force-low-bandwidth" className="cursor-pointer">

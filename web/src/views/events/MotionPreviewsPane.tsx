@@ -406,6 +406,7 @@ function MotionPreviewClip({
     preview ? previewHlsUrl(preview) : undefined,
     isVisible,
     clipStart,
+    preview?.src,
   );
 
   useEffect(() => {

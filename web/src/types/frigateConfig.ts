@@ -462,6 +462,11 @@ export type DetectionModelConfig = {
 };
 
 export interface FrigateConfig {
+  live_webrtc?: {
+    enabled: boolean;
+    grid_height: number;
+    max_height: number;
+  };
   weather?: WeatherSettings;
   storage: RecordingStorageSettings;
   version: string;

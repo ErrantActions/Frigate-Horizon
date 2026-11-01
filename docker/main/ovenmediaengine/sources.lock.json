@@ -1,0 +1,92 @@
+{
+  "release": "v0.21.0",
+  "commit": "a35b09d11a82035f63f1d22e3fec9bbadb8e0aec",
+  "release_url": "https://github.com/OvenMediaLabs/OvenMediaEngine/releases/tag/v0.21.0",
+  "sources": [
+    {
+      "name": "OvenMediaEngine",
+      "url": "https://codeload.github.com/OvenMediaLabs/OvenMediaEngine/tar.gz/a35b09d11a82035f63f1d22e3fec9bbadb8e0aec",
+      "sha256": "587d40056e522acb35f067bbfcda01b08e950e9cd938e3f82518860b61cd6de8"
+    },
+    {
+      "name": "openssl",
+      "url": "https://github.com/openssl/openssl/archive/openssl-3.0.22.tar.gz",
+      "sha256": "3ece7b957a36cdbbe4dde080d96efe099dc46287bdb586687f277e4f20444c52"
+    },
+    {
+      "name": "libsrtp",
+      "url": "https://github.com/cisco/libsrtp/archive/v2.4.2.tar.gz",
+      "sha256": "3b1bcb14ebda572b04b9bdf07574a449c84cb924905414e4d94e62837d22b628"
+    },
+    {
+      "name": "srt",
+      "url": "https://github.com/Haivision/srt/archive/v1.5.2.tar.gz",
+      "sha256": "463970a3f575446b3f55abb6f323d5476c963c77b3c975cd902e9c87cdd9a92c"
+    },
+    {
+      "name": "opus",
+      "url": "https://archive.mozilla.org/pub/opus/opus-1.3.1.tar.gz",
+      "sha256": "65b58e1e25b2a114157014736a3d9dfeaad8d41be1c8179866f144a2fb44ff9d"
+    },
+    {
+      "name": "libvpx",
+      "url": "https://codeload.github.com/webmproject/libvpx/tar.gz/refs/tags/v1.11.0",
+      "sha256": "965e51c91ad9851e2337aebcc0f517440c637c506f3a03948062e3d5ea129a83"
+    },
+    {
+      "name": "libaom",
+      "url": "https://gitlab.com/webmproject/libaom/-/archive/v3.12.0/libaom-v3.12.0.tar.gz",
+      "sha256": "34cf532731f674c5ed0348e9f70672d5c3926ef93b3a3ef178dff9cff35af0dc"
+    },
+    {
+      "name": "fdk-aac",
+      "url": "https://github.com/mstorsjo/fdk-aac/archive/v2.0.2.tar.gz",
+      "sha256": "7812b4f0cf66acda0d0fe4302545339517e702af7674dd04e5fe22a5ade16a90"
+    },
+    {
+      "name": "nasm",
+      "url": "https://github.com/netwide-assembler/nasm/archive/refs/tags/nasm-2.15.05.tar.gz",
+      "sha256": "f575c516b5c1c28d5d64efdc26ed52b137ad36bfbd2d855d4782f050ca964245"
+    },
+    {
+      "name": "FFmpeg",
+      "url": "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n7.1.5.tar.gz",
+      "sha256": "e3963a50831c985933e1a625ed566ec4c7adb5c012c34fa9f84438e1d61bdacc"
+    },
+    {
+      "name": "jemalloc",
+      "url": "https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2",
+      "sha256": "2db82d1e7119df3e71b7640219b6dfe84789bc0537983c3b7ac4f7189aecfeaa"
+    },
+    {
+      "name": "pcre2",
+      "url": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.39/pcre2-10.39.tar.gz",
+      "sha256": "0781bd2536ef5279b1943471fdcdbd9961a2845e1d2c9ad849b9bd98ba1a9bd4"
+    },
+    {
+      "name": "openh264",
+      "url": "https://github.com/cisco/openh264/archive/refs/tags/v2.4.0.tar.gz",
+      "sha256": "a44d1ccc348a790f9a272bba2d1c2eb9a9bbd0302e4e9b655d709e1c32f92691"
+    },
+    {
+      "name": "hiredis",
+      "url": "https://github.com/redis/hiredis/archive/refs/tags/v1.0.2.tar.gz",
+      "sha256": "e0ab696e2f07deb4252dda45b703d09854e53b9703c7d52182ce5a22616c3819"
+    },
+    {
+      "name": "libwebp",
+      "url": "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.5.0.tar.gz",
+      "sha256": "7d6fab70cf844bf6769077bd5d7a74893f8ffd4dfb42861745750c63c2a5c92c"
+    },
+    {
+      "name": "spdlog",
+      "url": "https://github.com/gabime/spdlog/archive/refs/tags/v1.15.1.tar.gz",
+      "sha256": "25c843860f039a1600f232c6eb9e01e6627f7d030a2ae5e232bdd3c9205d26cc"
+    },
+    {
+      "name": "whisper.cpp",
+      "url": "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.8.2.tar.gz",
+      "sha256": "bcee25589bb8052d9e155369f6759a05729a2022d2a8085c1aa4345108523077"
+    }
+  ]
+}

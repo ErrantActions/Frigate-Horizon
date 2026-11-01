@@ -68,6 +68,7 @@ from frigate.api import (
     export,
     hardware,
     live_hls,
+    live_webrtc,
     media,
     motion_search,
     native,
@@ -80,6 +81,7 @@ from frigate.api import (
     preview,
     protected_media,
     record,
+    recorded_webrtc,
     review,
 )
 from frigate.api import app as main_app
@@ -177,6 +179,8 @@ ROUTERS = [
     onvif.router,
     playback.router,
     live_hls.router,
+    live_webrtc.router,
+    recorded_webrtc.router,
     audio_repair.router,
     protected_media.router,
     bookmarks.router,

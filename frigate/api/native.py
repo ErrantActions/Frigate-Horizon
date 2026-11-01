@@ -14,6 +14,8 @@ from peewee import DatabaseError
 from zeep.exceptions import Fault, TransportError
 
 from frigate.api.auth import allow_any_authenticated
+from frigate.api.defs.response.live_webrtc_response import LiveWebRTCDiscovery
+from frigate.api.defs.response.recorded_webrtc_response import RecordedWebRTCDiscovery
 from frigate.api.notification import native_image_user
 from frigate.comms.native_controls import (
     NativeControlConflict,
@@ -84,12 +86,28 @@ def allowed_native_camera(
 
 
 @router.get("/features", openapi_extra={"x-required-role": "any"})
-async def native_features(request: Request, user: dict = Depends(native_image_user)):
+async def native_features(
+    request: Request, user: dict = Depends(native_image_user)
+) -> dict[str, bool | LiveWebRTCDiscovery | RecordedWebRTCDiscovery]:
     """Advertise implemented APIs, not unsupported per-camera hardware."""
     return {
         "controls": getattr(request.app.state, "native_controls", None) is not None,
         "export_protection": getattr(
             request.app.state, "native_export_protection", False
+        ),
+        "live_webrtc": LiveWebRTCDiscovery(
+            enabled=request.app.frigate_config.live_webrtc.enabled,
+            available=(
+                getattr(request.app.state, "live_webrtc_manager", None) is not None
+                and request.app.state.live_webrtc_manager.available()
+            ),
+        ),
+        "recorded_webrtc": RecordedWebRTCDiscovery(
+            enabled=request.app.frigate_config.live_webrtc.enabled,
+            available=(
+                getattr(request.app.state, "recorded_webrtc_manager", None) is not None
+                and request.app.state.recorded_webrtc_manager.available()
+            ),
         ),
     }
 

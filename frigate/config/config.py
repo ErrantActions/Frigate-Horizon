@@ -77,6 +77,7 @@ from .classification import (
 from .database import DatabaseConfig
 from .environment import WeatherConfig
 from .logger import LoggerConfig
+from .live_webrtc import LiveWebRTCConfig
 from .mqtt import MqttConfig
 from .network import NetworkingConfig
 from .profile import ProfileDefinitionConfig
@@ -547,6 +548,11 @@ def verify_lpr_and_face(
 
 
 class FrigateConfig(FrigateBaseModel):
+    live_webrtc: LiveWebRTCConfig = Field(
+        default_factory=LiveWebRTCConfig,
+        title="On-demand WebRTC live viewing",
+        description="Viewer-only CPU media processing and authenticated TURN inside Frigate. Never changes source recording quality.",
+    )
     storage: StorageConfig = Field(
         default_factory=StorageConfig,
         title="Recording storage",
@@ -1055,6 +1061,8 @@ class FrigateConfig(FrigateBaseModel):
 
     @model_validator(mode="after")
     def post_validation(self, info: ValidationInfo) -> Self:
+        if self.live_webrtc.enabled and not self.auth.enabled:
+            raise ValueError("On-demand WebRTC viewing requires native authentication")
         # Load plus api from context, if possible.
         self._plus_api = None
         if isinstance(info.context, dict):

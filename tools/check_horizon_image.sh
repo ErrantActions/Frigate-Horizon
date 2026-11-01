@@ -5,6 +5,10 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image_id="$(docker image inspect "$image" --format '{{.Id}}')"
 stage="$(mktemp -d)"
 name="horizon-ci-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+if docker container inspect "$name" >/dev/null 2>&1; then
+    echo "Refusing to replace an existing qualification container: $name" >&2
+    exit 1
+fi
 cleanup() {
     docker rm -f "$name" >/dev/null 2>&1 || true
     rm -f "$stage/config.yml" "$stage/check.py"
@@ -42,6 +46,11 @@ docker run --rm --network none --read-only --cap-drop ALL \
         frigate.test.test_live_hls \
         frigate.test.test_live_hls_manager \
         frigate.test.test_live_hls_api \
+        frigate.test.test_live_webrtc \
+        frigate.test.test_live_webrtc_api \
+        frigate.test.test_recorded_webrtc \
+        frigate.test.test_recorded_webrtc_api \
+        frigate.test.test_ovenmediaengine_bootstrap \
         frigate.test.test_live_streams \
         frigate.test.test_preview_hls \
         frigate.test.test_media_auth \
@@ -74,6 +83,18 @@ docker run --rm --network none --read-only --cap-drop ALL \
         --receipt /usr/local/share/go2rtc/horizon-owned-webrtc.json \
         --ffmpeg /usr/lib/ffmpeg/8.0/bin/ffmpeg
       test -s /usr/local/share/licenses/go2rtc/LICENSE
+      python3 -B -m unittest discover -s /source/tools -p test_ovenmediaengine_cli.py -v
+    '
+
+docker run --rm --user 1000:1000 --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --cpus=2 --memory=768m --pids-limit=128 \
+    --entrypoint /bin/sh "$image_id" -ec '
+      cd /opt/ovenmediaengine
+      sha256sum -c share/manifest.sha256 >/dev/null
+      /bin/sh check-cli.sh
+      /usr/bin/turnserver --version
+      test -s /usr/share/frigate-ovenmediaengine/runtime-packages.tsv
+      python3 /opt/live-hls/verify.py --payload
     '
 
 docker run --rm --user 1000:1000 --network none --read-only --cap-drop ALL \
@@ -93,6 +114,11 @@ mqtt:
   enabled: false
 auth:
   enabled: true
+live_webrtc:
+  enabled: true
+  advertised_hosts: ["192.0.2.1"]
+  turn:
+    enabled: false
 cameras: {}
 record:
   enabled: false
@@ -148,3 +174,58 @@ assert any(isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
  for n in ast.walk(code)), "Export-protection admission must default off"
 print("Empty authenticated startup and fail-closed export admission checks passed")
 '
+docker exec -i "$name" python3 - <<'PY'
+import base64
+import json
+import os
+import time
+import urllib.request
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+root = Path("/dev/shm/ovenmediaengine")
+assert (root / "enabled").is_file()
+assert not (root / "turn-enabled").exists()
+for path in [root, *root.rglob("*")]:
+    assert path.stat().st_uid == 1000, "Media bootstrap ownership is incorrect"
+    expected = 0o700 if path.is_dir() else 0o600
+    assert path.stat().st_mode & 0o777 == expected, "Media bootstrap mode is incorrect"
+tree = ET.parse(root / "Server.xml")
+token = tree.findtext(".//Managers/API/AccessToken")
+assert token
+headers = {"Authorization": "Basic " + base64.b64encode(token.encode()).decode()}
+applications = tree.findall(".//Applications/Application/Name")
+assert applications, "No static viewing applications were configured"
+for application in applications:
+    url = "http://127.0.0.1:8081/v1/vhosts/default/apps/" + application.text + "/streams"
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=5) as response:
+        assert json.load(response)["response"] == [], "Startup opened a media source"
+processes = []
+for path in Path("/proc").iterdir():
+    if path.name.isdigit():
+        try:
+            command = (path / "cmdline").read_bytes()
+        except FileNotFoundError:
+            continue
+        if command.startswith(b"/opt/ovenmediaengine/bin/OvenMediaEngine\x00"):
+            processes.append(path)
+assert len(processes) == 1, "The single-container media engine is not running"
+process = processes[0]
+uids = next(line for line in (process / "status").read_text().splitlines() if line.startswith("Uid:"))
+assert {int(value) for value in uids.split()[1:]} == {1000}, "OME is not unprivileged"
+def ticks():
+    fields = (process / "stat").read_text().split(") ", 1)[1].split()
+    return int(fields[11]) + int(fields[12])
+before, started = ticks(), time.monotonic()
+time.sleep(3)
+percent = 100 * (ticks() - before) / os.sysconf("SC_CLK_TCK") / (time.monotonic() - started)
+assert percent < 20, "Idle media engine kept processing"
+tcp = Path("/proc/net/tcp").read_text().splitlines()[1:]
+for port in (3333, 8081):
+    addresses = [
+        row.split()[1].split(":")[0] for row in tcp
+        if int(row.split()[1].split(":")[1], 16) == port and row.split()[3] == "0A"
+    ]
+    assert addresses == ["0100007F"], "Media control listener is not private"
+print("Single-container unprivileged media startup, zero inputs and idle checks passed")
+PY

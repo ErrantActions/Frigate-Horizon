@@ -164,14 +164,12 @@ function PreviewVideoPlayer({
 
   const previewRef = useRef<HTMLVideoElement | null>(null);
   const controller = useMemo(() => {
-    if (!config || !previewRef.current) {
+    if (!config) {
       return undefined;
     }
 
     return new PreviewVideoController(camera, previewRef);
-    // we only care when preview is ready
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [camera, config, previewRef.current]);
+  }, [camera, config]);
 
   useEffect(() => {
     if (!controller) {
@@ -208,6 +206,8 @@ function PreviewVideoPlayer({
     previewRef,
     currentPreview ? previewHlsUrl(currentPreview) : undefined,
     isVisible,
+    undefined,
+    currentPreview?.src,
   );
 
   const onPreviewSeeked = useCallback(() => {

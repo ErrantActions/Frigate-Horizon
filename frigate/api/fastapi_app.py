@@ -33,6 +33,7 @@ from frigate.api import (
     export,
     hardware,
     live_hls,
+    live_webrtc,
     media,
     motion_search,
     nfs,
@@ -42,6 +43,7 @@ from frigate.api import (
     preview,
     protected_media,
     record,
+    recorded_webrtc,
     review,
 )
 from frigate.api import app as main_app
@@ -60,6 +62,8 @@ from frigate.comms.event_metadata_updater import (
     EventMetadataPublisher,
 )
 from frigate.comms.live_hls import LiveHlsManager
+from frigate.comms.live_webrtc import LiveWebRTCManager
+from frigate.comms.recorded_webrtc import RecordedWebRTCManager
 from frigate.comms.reolink_api import ReolinkEventManager
 from frigate.config import FrigateConfig
 from frigate.config.camera.updater import CameraConfigUpdatePublisher
@@ -129,6 +133,8 @@ def create_fastapi_app(
         try:
             # Frigate initializes its database/models before entering ASGI startup.
             await app.state.live_hls_manager.start()
+            await app.state.live_webrtc_manager.start()
+            await app.state.recorded_webrtc_manager.start()
             await app.playback_manager.start()
             await app.state.audio_repair_manager.start()
             await app.state.compression_manager.start()
@@ -191,7 +197,13 @@ def create_fastapi_app(
                             try:
                                 await app.playback_manager.close()
                             finally:
-                                await app.state.live_hls_manager.close()
+                                try:
+                                    try:
+                                        await app.state.recorded_webrtc_manager.close()
+                                    finally:
+                                        await app.state.live_webrtc_manager.close()
+                                finally:
+                                    await app.state.live_hls_manager.close()
                     finally:
                         try:
                             await app.onvif_replay.shutdown()
@@ -219,6 +231,10 @@ def create_fastapi_app(
     app.state.reolink_events = ReolinkEventManager(lambda: app.frigate_config)
     app.state.live_hls_manager = LiveHlsManager(
         lambda: app.frigate_config, Path(CONFIG_DIR) / ".live-hls" / "mediamtx.yml"
+    )
+    app.state.live_webrtc_manager = LiveWebRTCManager(lambda: app.frigate_config)
+    app.state.recorded_webrtc_manager = RecordedWebRTCManager(
+        app.state.live_webrtc_manager
     )
     app.state.plugins = PluginManager(
         Path(CONFIG_DIR) / "plugins",
@@ -288,6 +304,8 @@ def create_fastapi_app(
     app.include_router(onvif_api.router)
     app.include_router(playback.router)
     app.include_router(live_hls.router)
+    app.include_router(live_webrtc.router)
+    app.include_router(recorded_webrtc.router)
     app.include_router(audio_repair.router)
     app.include_router(protected_media.router)
     app.include_router(bookmarks.router)
