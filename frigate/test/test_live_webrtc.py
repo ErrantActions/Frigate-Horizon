@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from pydantic import ValidationError
 
@@ -17,6 +18,7 @@ from frigate.comms.live_webrtc import (
     CandidateBody,
     LiveWebRTCError,
     LiveWebRTCManager,
+    MediaGroup,
     OvenTransport,
     QualityBody,
     ViewerBody,
@@ -83,6 +85,86 @@ class FakeTransport(OvenTransport):
 
     async def close(self):
         pass
+
+
+class TestOvenOfferReadiness(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.group = MediaGroup("camera", "frigate_grid_0", "owned", "grid")
+        self.offer = {
+            "command": "offer",
+            "code": 200,
+            "id": 1,
+            "peer_id": 0,
+            "sdp": {"type": "offer", "sdp": "v=0\r\nsynthetic-only\r\n"},
+            "candidates": [],
+        }
+        self.transport = OvenTransport.__new__(OvenTransport)
+
+    def socket(self, message):
+        return SimpleNamespace(
+            send_json=AsyncMock(),
+            receive_json=AsyncMock(return_value=message),
+            close=AsyncMock(),
+        )
+
+    async def test_retries_not_ready_and_retains_only_the_valid_socket(self):
+        pending = self.socket({"code": 404})
+        ready = self.socket(self.offer)
+        self.transport.http = SimpleNamespace(
+            ws_connect=AsyncMock(side_effect=[pending, ready])
+        )
+        with patch(
+            "frigate.comms.live_webrtc.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep:
+            socket, offer = await self.transport.offer(self.group)
+        self.assertIs(socket, ready)
+        self.assertEqual(offer, self.offer)
+        pending.close.assert_awaited_once()
+        ready.close.assert_not_awaited()
+        sleep.assert_awaited_once_with(0.2)
+
+    async def test_rejected_offer_closes_without_retry(self):
+        for message in ({"code": 403}, {**self.offer, "peer_id": "invalid"}, []):
+            with self.subTest(message=message):
+                socket = self.socket(message)
+                self.transport.http = SimpleNamespace(
+                    ws_connect=AsyncMock(return_value=socket)
+                )
+                with self.assertRaises(LiveWebRTCError):
+                    await self.transport.offer(self.group)
+                socket.close.assert_awaited_once()
+                self.transport.http.ws_connect.assert_awaited_once()
+
+    async def test_not_ready_retries_have_one_total_deadline(self):
+        socket = self.socket({"code": 404})
+        self.transport.http = SimpleNamespace(ws_connect=AsyncMock(return_value=socket))
+        timeout = asyncio.timeout
+        with patch(
+            "frigate.comms.live_webrtc.asyncio.timeout",
+            side_effect=lambda _: timeout(0.01),
+        ) as deadline:
+            with self.assertRaises(LiveWebRTCError) as error:
+                await self.transport.offer(self.group)
+        self.assertEqual(error.exception.code, "live_webrtc_signaling_unavailable")
+        deadline.assert_called_once_with(12)
+        socket.close.assert_awaited_once()
+
+    async def test_cancellation_closes_the_unaccepted_socket(self):
+        socket = self.socket(self.offer)
+        entered = asyncio.Event()
+
+        async def receive():
+            entered.set()
+            await asyncio.Event().wait()
+
+        socket.receive_json.side_effect = receive
+        self.transport.http = SimpleNamespace(ws_connect=AsyncMock(return_value=socket))
+        task = asyncio.create_task(self.transport.offer(self.group))
+        await entered.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        socket.close.assert_awaited_once()
 
 
 class TestLiveWebRTCConfig(unittest.TestCase):

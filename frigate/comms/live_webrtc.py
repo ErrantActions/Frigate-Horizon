@@ -190,29 +190,39 @@ class OvenTransport:
     ) -> tuple[aiohttp.ClientWebSocketResponse, dict]:
         """Use the pinned OME offer/answer protocol, never expose its control socket."""
         socket = None
+        accepted = False
         try:
-            socket = await self.http.ws_connect(
-                f"http://127.0.0.1:3333/{group.app}/{group.stream}/master?transport=udp",
-                max_msg_size=192_000,
-                heartbeat=10,
-                origin="http://127.0.0.1",
-                headers={"User-Agent": "FrigateLiveWebRTC/1"},
-            )
-            await socket.send_json({"command": "request_offer"})
-            message = await asyncio.wait_for(socket.receive_json(), timeout=12)
-            if (
-                message.get("command") != "offer"
-                or message.get("code") != 200
-                or type(message.get("id")) is not int
-                or type(message.get("peer_id")) is not int
-                or message.get("sdp", {}).get("type") != "offer"
-                or not isinstance(message.get("sdp", {}).get("sdp"), str)
-                or len(message["sdp"]["sdp"]) > 128_000
-                or not isinstance(message.get("candidates"), list)
-                or len(message["candidates"]) > 32
-            ):
-                raise LiveWebRTCError(503, "live_webrtc_invalid_offer")
-            return socket, message
+            async with asyncio.timeout(12):
+                while True:
+                    socket = await self.http.ws_connect(
+                        f"http://127.0.0.1:3333/{group.app}/{group.stream}/master?transport=udp",
+                        max_msg_size=192_000,
+                        heartbeat=10,
+                        origin="http://127.0.0.1",
+                        headers={"User-Agent": "FrigateLiveWebRTC/1"},
+                    )
+                    await socket.send_json({"command": "request_offer"})
+                    message = await socket.receive_json()
+                    if message.get("code") == 404:
+                        # A newly admitted pull can precede its first encoded frame.
+                        await socket.close()
+                        socket = None
+                        await asyncio.sleep(0.2)
+                        continue
+                    if (
+                        message.get("command") != "offer"
+                        or message.get("code") != 200
+                        or type(message.get("id")) is not int
+                        or type(message.get("peer_id")) is not int
+                        or message.get("sdp", {}).get("type") != "offer"
+                        or not isinstance(message.get("sdp", {}).get("sdp"), str)
+                        or len(message["sdp"]["sdp"]) > 128_000
+                        or not isinstance(message.get("candidates"), list)
+                        or len(message["candidates"]) > 32
+                    ):
+                        raise LiveWebRTCError(503, "live_webrtc_invalid_offer")
+                    accepted = True
+                    return socket, message
         except (
             aiohttp.ClientError,
             TimeoutError,
@@ -221,13 +231,13 @@ class OvenTransport:
             AttributeError,
         ):
             logger.warning("Live media signaling is unavailable or invalid")
-            if socket is not None:
-                await socket.close()
             raise LiveWebRTCError(503, "live_webrtc_signaling_unavailable") from None
-        except LiveWebRTCError:
-            if socket is not None:
-                await socket.close()
-            raise
+        finally:
+            if socket is not None and not accepted:
+                try:
+                    await asyncio.wait_for(socket.close(), timeout=3)
+                except (aiohttp.ClientError, TimeoutError):
+                    logger.warning("Live media signaling close timed out")
 
     async def close(self) -> None:
         """Close the engine's private HTTP pool."""

@@ -5,6 +5,9 @@ This packages official stable OvenMediaEngine v0.21.0, commit
 It does not replace the recorder, go2rtc, MediaMTX, Frigate FFmpeg, nginx,
 recording storage, or mirroring. No new ports are exposed by this Dockerfile.
 Both optional services are disabled unless bootstrap writes their success markers.
+An admitted source may need several seconds to produce its first encoded frame.
+Offer negotiation retries OME's explicit not-ready response within one 12-second
+deadline, closing rejected sockets. Other signaling errors fail explicitly.
 The existing qualified private HLS MediaMTX implementation is separately moved
 into the main image, unchanged, for old clients during migration. See
 `../live-hls/README.md` for its immutable artifact, service, and amd64 restriction.
