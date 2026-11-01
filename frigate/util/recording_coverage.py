@@ -89,7 +89,13 @@ def resolve_coverage(
     """
     main_rows = _get_rows(camera, after, before, STREAM_TYPE_MAIN)
     sub_rows = _get_rows(camera, after, before, STREAM_TYPE_SUB)
+    return coverage_from_rows(main_rows, sub_rows, after, before)
 
+
+def coverage_from_rows(
+    main_rows: list[Any], sub_rows: list[Any], after: float, before: float
+) -> list[CoverageInterval]:
+    """Merge caller-bounded rows with the same main/sub coverage semantics."""
     boundaries: set[float] = set()
     for row in main_rows + sub_rows:
         boundaries.add(max(row.start_time, after))

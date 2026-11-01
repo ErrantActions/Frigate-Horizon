@@ -11,21 +11,26 @@ import struct
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote
 from uuid import uuid4
+
+from peewee import DatabaseError
 
 from frigate.api.defs.request.recorded_http_body import RecordedHTTPCreate
 from frigate.api.defs.request.recorded_webrtc_body import RecordedWindow
 from frigate.comms.live_webrtc import DETAIL_BITRATES, LiveWebRTCError
-from frigate.comms.recorded_webrtc import finish_cleanup, load_sources
+from frigate.comms.recorded_webrtc import finish_cleanup
 from frigate.const import CACHE_DIR, MAX_SEGMENT_DURATION
 from frigate.record.access import recording_account_allows
+from frigate.record.http_targets import load_http_sources, resolve_source_target
 from frigate.record.http_timeline import (
     PacketTimelineError,
+    effective_window_start,
     measure_packet_spans,
     measure_packet_stream,
 )
-from frigate.record.lease_async import AsyncRecordingLease
+from frigate.record.lease_async import AsyncRecordingLease, AsyncRecordingLeaseLost
 
 logger = logging.getLogger(__name__)
 JOB_BYTES = 128 * 1024 * 1024
@@ -35,6 +40,8 @@ MAX_READERS = 8
 MAX_SESSION_READERS = 2
 PREPARE_SECONDS = 60
 LIFETIME_SECONDS = 180
+RESOLVE_SECONDS = 10
+MAX_RESOLVERS = 2
 HEIGHTS = (360, 720, 1080, 2160)
 
 
@@ -328,16 +335,23 @@ def build_mp4(session, clips, directory: Path, lease, ffmpeg: str, ffprobe: str)
         spans.append(
             {
                 "source_start": start,
-                "source_end": start + info["duration"],
+                "source_end": min(end, start + info["duration"]),
                 "media_start": cursor + info["start"],
                 "media_end": cursor + info["start"] + info["duration"],
             }
         )
         cursor += info["container"]
         parts.append(part)
-    if not parts or not any(
-        span["source_start"] <= session.body.start_timestamp < span["source_end"]
-        for span in spans
+    if (
+        not parts
+        or effective_window_start(
+            spans,
+            session.body.start_timestamp,
+            session.body.after,
+            session.body.before,
+            forward=session.body.start_policy == "next",
+        )
+        is None
     ):
         raise LiveWebRTCError(422, "playback_start_in_gap")
     manifest = directory / "concat.txt"
@@ -499,6 +513,7 @@ class HTTPSession:
     etag: str = ""
     size: int = 0
     modified: int = 0
+    effective_start: float | None = None
     task: asyncio.Task | None = None
     readers: set[asyncio.Task] = field(default_factory=set)
     closing: bool = False
@@ -515,15 +530,18 @@ class RecordedHTTPManager:
         ffprobe: str,
         root=None,
         *,
-        planner=load_sources,
+        planner=load_http_sources,
         builder=build_mp4,
         lease_factory=AsyncRecordingLease,
         account_check=recording_account_allows,
+        resolver=resolve_source_target,
     ):
         self.live, self.ffmpeg, self.ffprobe = live, ffmpeg, ffprobe
         self.root = Path(root or (Path(CACHE_DIR) / "recorded-http"))
         self.planner, self.builder, self.lease_factory = planner, builder, lease_factory
         self.account_check = account_check
+        self.resolver = resolver
+        self.resolve_tasks = set()
         self.sessions = {}
         self.jobs = set()
         self.closed = False
@@ -621,6 +639,12 @@ class RecordedHTTPManager:
             "error": session.error,
             "width": session.width,
             "height": session.height,
+            "after": session.body.after,
+            "before": session.body.before,
+            "start_timestamp": session.body.start_timestamp,
+            "effective_start_timestamp": session.effective_start,
+            "continuation_timestamp": session.body.before,
+            "next_timestamp": session.body.before,
         }
 
     async def create(self, camera, owner, body, auth_expires, *, auth_issued):
@@ -657,6 +681,8 @@ class RecordedHTTPManager:
         if not await self.authorized(session):
             raise LiveWebRTCError(401, "recorded_http_session_revoked")
         async with self.lock:
+            if not self.available():
+                raise LiveWebRTCError(503, "recorded_http_not_available")
             if (len(self.sessions) + 1) * JOB_BYTES > TOTAL_BYTES:
                 raise LiveWebRTCError(507, "recorded_http_byte_capacity")
             if len(self.jobs) >= MAX_JOBS:
@@ -666,6 +692,78 @@ class RecordedHTTPManager:
             self.jobs.add(identifier)
             session.task = asyncio.create_task(self._prepare(session))
         return self.metadata(session)
+
+    async def resolve(self, camera, owner, body, auth_expires, *, auth_issued):
+        """Return a bounded frame-backed target; no window or hard expiry is renewed."""
+        if not self.available():
+            raise LiveWebRTCError(503, "recorded_http_not_available")
+        if camera not in self.live.config().cameras:
+            raise LiveWebRTCError(404, "camera_not_available")
+        account = SimpleNamespace(owner=owner, camera=camera, auth_issued=auth_issued)
+        task = asyncio.current_task()
+        async with self.lock:
+            if not self.available():
+                raise LiveWebRTCError(503, "recorded_http_not_available")
+            if len(self.resolve_tasks) >= MAX_RESOLVERS:
+                raise LiveWebRTCError(429, "recorded_http_target_capacity")
+            self.resolve_tasks.add(task)
+        try:
+            if auth_expires <= self.live.clock() or not await self.authorized(account):
+                raise LiveWebRTCError(401, "recorded_http_session_revoked")
+            async with asyncio.timeout(RESOLVE_SECONDS):
+                async with self.lease_factory(
+                    camera,
+                    max(0, body.start_timestamp - MAX_SEGMENT_DURATION),
+                    body.before,
+                    owner=owner,
+                ) as lease:
+                    result = await lease.guard(
+                        lease.run_blocking(
+                            self.resolver,
+                            camera,
+                            body,
+                            lease,
+                            self.ffprobe,
+                            _probe,
+                            _media_packets,
+                        )
+                    )
+            if (
+                not self.available()
+                or auth_expires <= self.live.clock()
+                or not await self.authorized(account)
+            ):
+                raise LiveWebRTCError(401, "recorded_http_session_revoked")
+            return {
+                "version": 1,
+                "after": body.after,
+                "before": body.before,
+                "start_timestamp": body.start_timestamp,
+                **result,
+            }
+        except TimeoutError:
+            logger.warning("Recorded HTTP target resolution timed out")
+            raise LiveWebRTCError(503, "recorded_http_target_timeout") from None
+        except PacketTimelineError as error:
+            logger.warning(
+                "Recorded HTTP target packet validation failed (%s)", error.code
+            )
+            raise LiveWebRTCError(422, error.code) from None
+        except LiveWebRTCError as error:
+            logger.warning("Recorded HTTP target resolution failed (%s)", error.code)
+            raise
+        except (
+            AsyncRecordingLeaseLost,
+            DatabaseError,
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+        ):
+            logger.exception("Recorded HTTP target resolution failed")
+            raise LiveWebRTCError(503, "recorded_http_target_unavailable") from None
+        finally:
+            self.resolve_tasks.discard(task)
 
     async def _prepare(self, session):
         encoder = "http-encoder:" + session.identifier
@@ -707,6 +805,15 @@ class RecordedHTTPManager:
                 ):
                     raise LiveWebRTCError(401, "recorded_http_session_revoked")
                 session.timeline, session.audio, video, session.etag = result
+                session.effective_start = effective_window_start(
+                    session.timeline,
+                    session.body.start_timestamp,
+                    session.body.after,
+                    session.body.before,
+                    forward=session.body.start_policy == "next",
+                )
+                if session.effective_start is None:
+                    raise LiveWebRTCError(422, "playback_start_in_gap")
                 session.width, session.height = video["width"], video["height"]
                 details = await finish_cleanup(
                     asyncio.to_thread((session.directory / "media.mp4").stat)
@@ -718,6 +825,18 @@ class RecordedHTTPManager:
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            if (
+                session.body.start_policy == "next"
+                and isinstance(error, LiveWebRTCError)
+                and error.code in {"recordings_unavailable", "playback_start_in_gap"}
+            ):
+                session.state = "empty"
+                session.error = None
+                session.timeline = []
+                session.effective_start = None
+                session.audio = False
+                logger.info("Recorded HTTP window contains no usable next frame")
+                return
             session.state = "failed"
             session.error = (
                 error.code
@@ -813,7 +932,15 @@ class RecordedHTTPManager:
 
     async def close(self):
         """Stop new admission, then drain jobs and readers before live pool shutdown."""
-        self.closed = True
+        await finish_cleanup(self._close())
+
+    async def _close(self):
+        async with self.lock:
+            self.closed = True
+            resolving = tuple(self.resolve_tasks)
+        for task in resolving:
+            task.cancel()
+        await asyncio.gather(*resolving, return_exceptions=True)
         if self.worker is not None:
             self.worker.cancel()
             await asyncio.gather(self.worker, return_exceptions=True)

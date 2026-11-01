@@ -11,6 +11,32 @@ class PacketTimelineError(ValueError):
         super().__init__(code)
 
 
+def effective_window_start(spans, requested, after, before, *, forward=False):
+    """Resolve only measured coverage inside the original half-open MP4 window."""
+    for span in spans:
+        start = max(after, span["source_start"])
+        end = min(before, span["source_end"])
+        if start <= requested < end:
+            return requested
+        if forward and requested < start < end:
+            return start
+    return None
+
+
+def first_source_frame(packets, wall_start, stream_start, after, before):
+    """Return a real video frame at or after a target, never an inferred tail."""
+    candidates = []
+    for packet in packets:
+        pts = float(packet["pts_time"])
+        duration = float(packet["duration_time"])
+        if not math.isfinite(pts) or not math.isfinite(duration) or duration <= 0:
+            raise PacketTimelineError("recorded_http_invalid_packet_timing")
+        timestamp = wall_start + (pts - stream_start)
+        if after <= timestamp < before:
+            candidates.append(timestamp)
+    return min(candidates) if candidates else None
+
+
 def measure_packet_stream(source_packets, final_packets):
     """Validate complete payload identity and return this stream's own PTS extent."""
     flattened = [packet for group in source_packets for packet in group]

@@ -47,13 +47,28 @@ are explicit; current video continues to its boundary.
 The camera-authorized API is:
 
 - `GET /{camera}/recordings/http/status`: availability, qualities, and `session_url`.
+- `POST /{camera}/recordings/http/resolve`: `{version: 1, after, before,
+  start_timestamp}` searches forward within an explicit range of at most one
+  hour. Returns a source-frame-backed `effective_start_timestamp`, or null with
+  `exhausted` and `reason`. It never searches or chooses a frame past `before`.
+  A `search_limit` result is not exhaustion; `searched_before` identifies the
+  completed bounded search and the caller may explicitly search further.
 - `POST /{camera}/recordings/http/sessions`: `{version: 1, after, before,
-  start_timestamp, quality}` in catalog seconds. Returns `202` with
+  start_timestamp, quality, start_policy}` in catalog seconds. `start_policy`
+  defaults to `strict`; explicitly selecting `next` permits skipping a gap only
+  inside that requested MP4 window. Returns `202` with
   `state: preparing` and stable `status_url`, `close_url`, and `media_url`.
-- `GET /{camera}/recordings/http/sessions/{id}`: `preparing`, `ready`, or `failed`
+- `GET /{camera}/recordings/http/sessions/{id}`: `preparing`, `ready`, `empty`, or `failed`
   status, explicit error code, dimensions, audio, and measured `timeline` spans.
   Each span maps `source_start/source_end` to `media_start/media_end`, in seconds.
   Recording gaps are omitted from media time, not filled with unrelated frames.
+  Bounds `after/before` and the requested `start_timestamp` remain unchanged.
+  `effective_start_timestamp` identifies the actual usable start when ready.
+  A forward window without a usable next frame is `empty`, not fake-ready.
+  Its `next_timestamp` (also `continuation_timestamp`) is the exact requested `before`, not a rounded
+  measured tail. Resolve from that cursor, then explicitly create the next
+  bounded window. Crossing an hour or review boundary requires a new search
+  range supplied by the caller.
 - `GET` or `HEAD /{camera}/recordings/http/sessions/{id}/media.mp4`: completed
   faststart MP4 only. Returns `409` before readiness or after preparation
   failure. Single explicit, open-ended, and suffix byte ranges return `206`;
@@ -62,7 +77,8 @@ The camera-authorized API is:
 - `DELETE /{camera}/recordings/http/sessions/{id}`: `204` only after readers and
   preparation processes have stopped and output cleanup has completed.
 
-All routes require the current authorized account and session ownership.
+All routes require the current authorized account. Session routes additionally
+require session ownership.
 URLs are not bearer capabilities. Responses are private and non-cacheable.
 Polling and byte-range requests never renew the hard expiry, which is at most
 180 seconds and further limited by the authentication token and shared session
@@ -75,6 +91,8 @@ The backend admits at most two preparations, four 128 MiB cache reservations
 preparation also reserves the shared live encoder budget; all sessions reserve
 the shared viewer budget. Preparation times out after 60 seconds. Source leases
 remain protected until actual subprocesses and reader threads have joined.
+Target resolution also holds leases: at most two concurrent ten-second
+resolvers query 64 rows per stream and probe at most eight source files per request.
 Output is published only after finite completion, faststart validation, and
 per-span packet timing checks. FFmpeg frame quantization can adjust a span's
 measured duration slightly; the returned timeline is authoritative.

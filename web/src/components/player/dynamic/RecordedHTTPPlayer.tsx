@@ -14,6 +14,7 @@ import type { RecordingCoverage } from "@/types/record";
 import type {
   RecordedHTTPDiscovery,
   RecordedHTTPQuality,
+  RecordedHTTPResolution,
   RecordedHTTPSession,
 } from "@/types/recordedHttp";
 import {
@@ -57,6 +58,7 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
   const hasPreview = preview !== null;
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [empty, setEmpty] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(true);
   const [volume, setVolume] = useState(1);
@@ -73,8 +75,10 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
   const session = useRef<RecordedHTTPSession | undefined>(undefined);
   const timestamp = useRef(props.startTimestamp ?? props.timeRange.after);
   const requested = useRef(timestamp.current);
+  const anchor = useRef(timestamp.current);
   const wanted = useRef(true);
   const wasScrubbing = useRef(props.isScrubbing);
+  const priorRange = useRef(props.timeRange);
   const transport = useRef<RemoteRecordingPlayback | undefined>(undefined);
   const changeQuality = useRef<(() => void) | undefined>(undefined);
   const mutedRef = useRef(muted);
@@ -98,6 +102,7 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
     let nextSession: RecordedHTTPSession | undefined;
     let nextRevision = 0;
     let nextAttempted = false;
+    let nextExhausted = false;
     let nextPromise: Promise<RecordedHTTPSession | undefined> | undefined;
     let prepareSeconds = 6;
     let releasing = Promise.resolve(true);
@@ -146,6 +151,7 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
       nextAbort?.abort();
       nextPromise = undefined;
       nextAttempted = false;
+      nextExhausted = false;
       if (nextSession) scheduleRelease(nextSession);
       nextSession = undefined;
     };
@@ -186,16 +192,8 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
       });
     };
     const nextTarget = (current: RecordedHTTPSession) => {
-      const last = current.timeline.at(-1);
-      if (!last) return undefined;
-      const span = coverageRef.current?.spans.find(
-        (item) => item.end_time > last.source_end + 0.01,
-      );
-      const target = span
-        ? Math.max(span.start_time, last.source_end)
-        : undefined;
-      return target !== undefined && target < callbacks.current.timeRange.before
-        ? target
+      return current.next_timestamp < callbacks.current.timeRange.before
+        ? current.next_timestamp
         : undefined;
     };
     const activate = (current: RecordedHTTPSession, target: number) => {
@@ -249,6 +247,12 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
     ): Promise<RecordedHTTPSession | undefined> => {
       if (!active || broken || !visible() || callbacks.current.isScrubbing)
         return;
+      const bounds = callbacks.current.timeRange;
+      if (target < bounds.after || target >= bounds.before) {
+        video.pause();
+        setLoading(true);
+        return;
+      }
       const released = upcoming ? releasing : stop();
       const currentRevision = revision;
       const upcomingRevision = nextRevision;
@@ -257,6 +261,7 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
         preparing = true;
         setLoading(true);
         setFailed(false);
+        setEmpty(false);
       }
       const abort = new AbortController();
       if (upcoming) nextAbort = abort;
@@ -290,6 +295,7 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
             !discover.available ||
             discover.transport !== "https_mp4" ||
             discover.seek !== "http_byte_range" ||
+            typeof discover.resolve_url !== "string" ||
             !discover.qualities.includes(selected.current)
           )
             throw new Error("HTTPS recorded viewing is unavailable");
@@ -301,8 +307,60 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
               : discover.qualities,
           );
         }
-        const windowSeconds = Math.min(discover.max_window_seconds, 20);
         const range = callbacks.current.timeRange;
+        const searchAfter = Math.max(range.after, target);
+        const searchBefore = Math.min(range.before, searchAfter + 3600);
+        if (!(searchAfter <= target && target < searchBefore))
+          throw new Error("Recording target is outside the selected range");
+        let cursor = searchAfter;
+        let resolution: RecordedHTTPResolution | undefined;
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          const response = await axios.post<RecordedHTTPResolution>(
+            endpoint(discover.resolve_url),
+            {
+              version: 1,
+              after: cursor,
+              before: searchBefore,
+              start_timestamp: cursor,
+            },
+            { ...request, signal: abort.signal },
+          );
+          if (obsolete()) return;
+          resolution = response.data;
+          if (
+            resolution.effective_start_timestamp !== null ||
+            resolution.exhausted
+          )
+            break;
+          if (
+            !Number.isFinite(resolution.searched_before) ||
+            resolution.searched_before <= cursor ||
+            resolution.searched_before >= searchBefore
+          )
+            throw new Error("Recording target search made no progress");
+          cursor = resolution.searched_before;
+        }
+        if (!resolution)
+          throw new Error("Recording target resolution is unavailable");
+        if (resolution.effective_start_timestamp === null) {
+          if (!resolution.exhausted)
+            throw new Error("Recording target resolution reached its limit");
+          if (upcoming) nextExhausted = true;
+          else {
+            setEmpty(true);
+            fail();
+          }
+          return;
+        }
+        const resolvedTarget = resolution.effective_start_timestamp;
+        if (
+          !Number.isFinite(resolvedTarget) ||
+          resolvedTarget < cursor ||
+          resolvedTarget >= searchBefore
+        )
+          throw new Error("Resolved recording target is outside its search");
+        target = resolvedTarget;
+        const windowSeconds = Math.min(discover.max_window_seconds, 20);
         const after = Math.max(range.after, upcoming ? target : target - 5);
         const before = Math.min(range.before, after + windowSeconds);
         if (!(after <= target && target < before))
@@ -324,6 +382,7 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
             after,
             before,
             start_timestamp: target,
+            start_policy: "next",
             quality: requestedQuality,
           },
           request,
@@ -357,8 +416,25 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
           current = status.data;
           remember(current);
         }
+        if (current.state === "empty") {
+          if (upcoming) {
+            scheduleRelease(current);
+            nextSession = undefined;
+            nextExhausted = true;
+          } else {
+            setEmpty(true);
+            fail();
+          }
+          return;
+        }
         if (current.state !== "ready")
           throw new Error("MP4 preparation failed");
+        if (
+          current.effective_start_timestamp === null ||
+          !Number.isFinite(current.effective_start_timestamp)
+        )
+          throw new Error("Prepared recording has no effective frame target");
+        target = current.effective_start_timestamp;
         const mediaTime = recordingMediaTime(current.timeline, target);
         if (
           mediaTime === undefined ||
@@ -385,6 +461,7 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
     const seek = (target: number, shouldPlay: boolean) => {
       cancelNext();
       wanted.current = shouldPlay;
+      anchor.current = target;
       requested.current = target;
       const mediaTime =
         session.current?.state === "ready"
@@ -435,13 +512,24 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
           !visible()
         )
           return;
+        if (nextExhausted) {
+          wanted.current = false;
+          setLoading(false);
+          callbacks.current.onClipEnded?.();
+          return;
+        }
         if (prepared) {
           nextSession = undefined;
           nextPromise = undefined;
           nextAttempted = false;
           revision += 1;
           scheduleRelease(current);
-          activate(prepared, target);
+          if (prepared.effective_start_timestamp === null) {
+            scheduleRelease(prepared);
+            fail();
+            return;
+          }
+          activate(prepared, prepared.effective_start_timestamp);
         } else {
           requested.current = target;
           void load(target);
@@ -564,6 +652,13 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
   }, [controller]);
   useEffect(() => {
     if (!controller) return;
+    const rangeChanged =
+      priorRange.current.after !== props.timeRange.after ||
+      priorRange.current.before !== props.timeRange.before;
+    priorRange.current = {
+      after: props.timeRange.after,
+      before: props.timeRange.before,
+    };
     const scrubEnded = wasScrubbing.current && !props.isScrubbing;
     wasScrubbing.current = props.isScrubbing;
     if (props.isScrubbing) {
@@ -573,15 +668,22 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
       );
     } else if (
       scrubEnded ||
+      rangeChanged ||
       (props.startTimestamp !== undefined &&
-        props.startTimestamp !== requested.current)
+        props.startTimestamp !== anchor.current)
     ) {
       controller.seekToTimestamp(
         props.startTimestamp ?? requested.current,
         controller.wantsPlayback(),
       );
     }
-  }, [controller, props.isScrubbing, props.startTimestamp]);
+  }, [
+    controller,
+    props.isScrubbing,
+    props.startTimestamp,
+    props.timeRange.after,
+    props.timeRange.before,
+  ]);
 
   return (
     <div className="relative size-full" data-recorded-transport="https_mp4">
@@ -743,7 +845,7 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
           role="alert"
           className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-background/90 p-4 text-center"
         >
-          <p>{t("recordedHttp.failed")}</p>
+          <p>{t(empty ? "recordedHttp.noFootage" : "recordedHttp.failed")}</p>
           <Button onClick={() => setRetry((value) => value + 1)}>
             {t("compatibility.retry")}
           </Button>

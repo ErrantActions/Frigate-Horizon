@@ -1,5 +1,6 @@
 {
   "recordedHttp": {
+    "noFootage": "No playable recorded video remains in this selected range.",
     "continuationFailed": "The next recording window could not be prepared. Playback may pause at the window boundary.",
     "qualityLabel": "Recording viewing quality",
     "original": "Original",

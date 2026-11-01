@@ -78,6 +78,7 @@ class TestNativeFeaturesAPI(unittest.TestCase):
                     "seek": "http_byte_range",
                     "max_window_seconds": 30,
                     "session_url": None,
+                    "resolve_url": None,
                     "qualities": [],
                     "reason": None,
                     "original_recordings_unchanged": True,

@@ -5,17 +5,68 @@ from email.utils import formatdate
 
 from pydantic import ValidationError
 
-from frigate.api.defs.request.recorded_http_body import RecordedHTTPCreate
+from frigate.api.defs.request.recorded_http_body import (
+    RecordedHTTPCreate,
+    RecordedHTTPResolve,
+)
 from frigate.api.defs.response.recorded_http_response import RecordedHTTPDiscovery
 from frigate.record.http_range import UnsatisfiableRange, media_range
 from frigate.record.http_timeline import (
     PacketTimelineError,
+    effective_window_start,
+    first_source_frame,
     measure_packet_spans,
     measure_packet_stream,
 )
 
 
 class TestRecordedHTTPContract(unittest.TestCase):
+    def test_forward_start_skips_measured_gap_without_extending_window(self):
+        spans = [
+            {"source_start": 100, "source_end": 101.999},
+            {"source_start": 105.005, "source_end": 108},
+        ]
+        self.assertIsNone(effective_window_start(spans, 102.0001, 100, 110))
+        self.assertEqual(
+            effective_window_start(spans, 102.0001, 100, 110, forward=True), 105.005
+        )
+        self.assertIsNone(
+            effective_window_start(spans, 102.0001, 100, 104, forward=True)
+        )
+        self.assertIsNone(effective_window_start(spans, 108, 100, 110, forward=True))
+
+    def test_real_frame_target_does_not_infer_fractional_catalog_tail(self):
+        packets = [
+            {"pts_time": 0, "duration_time": 0.04},
+            {"pts_time": 1.96, "duration_time": 0.04},
+        ]
+        self.assertIsNone(first_source_frame(packets, 100, 0, 101.9991, 102.003))
+        self.assertEqual(first_source_frame(packets, 105.005, 0, 102.003, 108), 105.005)
+        self.assertIsNone(first_source_frame(packets, 105.005, 0, 102.003, 105.005))
+        packets = [{"pts_time": 5.92, "duration_time": 0.04}]
+        wall_start = 1793555994.103237
+        self.assertIsNone(
+            first_source_frame(packets, wall_start, 0, 1793555999.999237, 1793556000)
+        )
+        self.assertEqual(
+            first_source_frame(packets, wall_start, 0, 1793556000, 1793556006),
+            wall_start + 5.92,
+        )
+
+    def test_resolver_bounds_are_separate_from_thirty_second_creation(self):
+        body = RecordedHTTPResolve(after=100, before=3700, start_timestamp=101)
+        self.assertEqual(body.before, 3700)
+        for update in (
+            {"before": 3700.001},
+            {"start_timestamp": 3700},
+            {"after": float("nan")},
+            {"before": 100},
+        ):
+            with self.assertRaises(ValidationError):
+                RecordedHTTPResolve(**{**body.model_dump(), **update})
+        with self.assertRaises(ValidationError):
+            RecordedHTTPCreate(after=100, before=3700, start_timestamp=101)
+
     def test_audio_and_video_have_independent_measured_presentation_endpoints(self):
         video = [{"data_hash": "video", "pts_time": 0.021, "duration_time": 4.0}]
         audio = [{"data_hash": "audio", "pts_time": 0, "duration_time": 4.042}]

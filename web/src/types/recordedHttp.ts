@@ -16,6 +16,7 @@ export type RecordedHTTPDiscovery = {
   seek: "http_byte_range";
   max_window_seconds: number;
   session_url: string;
+  resolve_url: string;
   qualities: RecordedHTTPQuality[];
 };
 
@@ -23,7 +24,12 @@ export type RecordedHTTPSession = {
   version: 1;
   session_id: string;
   camera: string;
-  state: "preparing" | "ready" | "failed" | "cleanup_pending";
+  state: "preparing" | "ready" | "empty" | "failed" | "cleanup_pending";
+  after: number;
+  before: number;
+  start_timestamp: number;
+  effective_start_timestamp: number | null;
+  next_timestamp: number;
   quality: RecordedHTTPQuality;
   audio: boolean;
   status_url: string;
@@ -34,4 +40,12 @@ export type RecordedHTTPSession = {
   error: string | null;
   width: number | null;
   height: number | null;
+};
+
+export type RecordedHTTPResolution = {
+  version: 1;
+  effective_start_timestamp: number | null;
+  exhausted: boolean;
+  searched_before: number;
+  reason: string | null;
 };

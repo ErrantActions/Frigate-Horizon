@@ -10,10 +10,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from joserfc import jwt
 
 from frigate.api.auth import allow_any_authenticated, require_camera_access
-from frigate.api.defs.request.recorded_http_body import RecordedHTTPCreate
+from frigate.api.defs.request.recorded_http_body import (
+    RecordedHTTPCreate,
+    RecordedHTTPResolve,
+)
 from frigate.api.defs.response.recorded_http_response import (
     RecordedHTTPDiscovery,
     RecordedHTTPStatus,
+    RecordedHTTPTarget,
 )
 from frigate.api.live_webrtc import HEADERS, public_error
 from frigate.api.notification import native_image_user
@@ -68,9 +72,46 @@ async def discovery(
         enabled=request.app.frigate_config.ui.recorded_http,
         available=available,
         session_url=f"{quote(camera_name, safe='')}/recordings/http/sessions",
+        resolve_url=f"{quote(camera_name, safe='')}/recordings/http/resolve",
         qualities=manager.qualities() if available else [],
         reason=None if available else "recorded_http_disabled_or_restart_required",
     )
+
+
+@router.post(
+    "/resolve",
+    response_model=RecordedHTTPTarget,
+    openapi_extra={"x-required-role": "camera"},
+)
+async def resolve_target(
+    request: Request,
+    camera_name: str,
+    body: RecordedHTTPResolve,
+    response: Response,
+    user: dict = Depends(native_image_user),
+):
+    """Find a real source-frame target only within explicit caller search bounds."""
+    check_camera(request, camera_name, user)
+    config = request.app.frigate_config
+    authorization = request.headers.get("authorization", "")
+    encoded = (
+        authorization.removeprefix("Bearer ")
+        if authorization.startswith("Bearer ")
+        else request.cookies.get(config.auth.cookie_name)
+    )
+    claims = jwt.decode(encoded, request.app.jwt_token, algorithms=["HS256"]).claims
+    try:
+        result = await manager_for(request).resolve(
+            camera_name,
+            user["username"],
+            body,
+            claims["exp"],
+            auth_issued=claims["iat"],
+        )
+    except LiveWebRTCError as error:
+        raise public_error(error) from None
+    response.headers.update(HEADERS)
+    return result
 
 
 @router.post(

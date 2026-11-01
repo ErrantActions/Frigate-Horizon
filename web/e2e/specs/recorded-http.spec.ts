@@ -12,6 +12,12 @@ async function installHTTP(
   unavailable = false,
   preparePolls = 0,
   maxViewers = Infinity,
+  options: {
+    resolveTarget?: (target: number) => number | null;
+    timelineTail?: number;
+    searchLimitOnce?: boolean;
+    nearHourEnd?: boolean;
+  } = {},
 ) {
   await app.installDefaults({
     config: {
@@ -27,7 +33,8 @@ async function installHTTP(
       },
     },
   });
-  const timestamp = Math.floor(Date.now() / 3600000) * 3600 - 3480;
+  const timestamp =
+    Math.floor(Date.now() / 3600000) * 3600 - (options.nearHourEnd ? 5 : 3480);
   const calls: {
     method: string;
     path: string;
@@ -38,6 +45,7 @@ async function installHTTP(
   const sessions = new Map<string, RecordedHTTPSession>();
   const activeSessions = new Set<string>();
   const polls = new Map<string, number>();
+  let resolveCount = 0;
   let createBarrier: Promise<void> | undefined;
   let deleteBarrier: Promise<void> | undefined;
   const holdNextDelete = () => {
@@ -104,7 +112,34 @@ async function installHTTP(
             seek: "http_byte_range",
             max_window_seconds: 120,
             session_url: "front_door/recordings/http/sessions",
+            resolve_url: "front_door/recordings/http/resolve",
             qualities: ["auto", "720", "1080"],
+          },
+        });
+      }
+      if (path === "resolve" && method === "POST") {
+        const target = Number(body.start_timestamp);
+        resolveCount += 1;
+        if (options.searchLimitOnce && resolveCount === 1)
+          return route.fulfill({
+            json: {
+              version: 1,
+              effective_start_timestamp: null,
+              exhausted: false,
+              searched_before: target + 1,
+              reason: "search_limit",
+            },
+          });
+        const effective = options.resolveTarget
+          ? options.resolveTarget(target)
+          : target;
+        return route.fulfill({
+          json: {
+            version: 1,
+            effective_start_timestamp: effective,
+            exhausted: effective === null,
+            searched_before: Number(body.before),
+            reason: effective === null ? "no_frame_in_range" : "frame_found",
           },
         });
       }
@@ -123,6 +158,11 @@ async function installHTTP(
           session_id: id,
           camera: "front_door",
           state: preparePolls ? "preparing" : "ready",
+          after,
+          before,
+          start_timestamp: Number(body.start_timestamp),
+          effective_start_timestamp: Number(body.start_timestamp),
+          next_timestamp: before,
           quality: body.quality,
           audio: false,
           status_url: base,
@@ -132,7 +172,7 @@ async function installHTTP(
           timeline: [
             {
               source_start: after,
-              source_end: before,
+              source_end: before - (options.timelineTail ?? 0),
               media_start: 0,
               media_end: before - after,
             },
@@ -537,6 +577,122 @@ test.describe("Recorded HTTPS MP4 @mobile", () => {
     expect(
       await video.evaluate((element: HTMLVideoElement) => element.paused),
     ).toBe(true);
+    expect(state.forbidden).toEqual([]);
+  });
+
+  test("resolves a requested gap to an actual next frame before creating the MP4", async ({
+    frigateApp,
+  }) => {
+    const state = await installHTTP(frigateApp, false, 0, Infinity, {
+      resolveTarget: (target) => target + 2.125,
+    });
+    const video = frigateApp.page.locator(
+      "[data-recorded-transport=https_mp4] video",
+    );
+    await expect
+      .poll(() =>
+        video.evaluate((element: HTMLVideoElement) => element.videoHeight),
+      )
+      .toBe(180);
+    const resolution = state.calls.find((call) => call.path === "resolve");
+    const creation = state.calls.find((call) => call.path === "sessions");
+    expect(creation?.body.start_timestamp).toBe(
+      Number(resolution?.body.start_timestamp) + 2.125,
+    );
+    expect(creation?.body.start_policy).toBe("next");
+    expect(state.forbidden).toEqual([]);
+  });
+
+  test("fractional media tails use the canonical requested boundary for continuation", async ({
+    frigateApp,
+  }) => {
+    const state = await installHTTP(frigateApp, false, 0, Infinity, {
+      timelineTail: 0.000763,
+    });
+    const video = frigateApp.page.locator(
+      "[data-recorded-transport=https_mp4] video",
+    );
+    await expect
+      .poll(() =>
+        video.evaluate((element: HTMLVideoElement) => element.videoHeight),
+      )
+      .toBe(180);
+    await video.evaluate((element: HTMLVideoElement) => {
+      element.currentTime = 16;
+    });
+    await expect.poll(() => state.sessions.size).toBe(2);
+    const creates = state.calls.filter((call) => call.path === "sessions");
+    expect(creates[1].body.start_timestamp).toBe(creates[0].body.before);
+    expect(state.forbidden).toEqual([]);
+  });
+
+  test("exhausted resolution shows missing footage and never creates an empty viewer", async ({
+    frigateApp,
+  }) => {
+    const state = await installHTTP(frigateApp, false, 0, Infinity, {
+      resolveTarget: () => null,
+    });
+    await expect(frigateApp.page.getByRole("alert")).toContainText(
+      "No playable recorded video remains",
+    );
+    expect(state.sessions.size).toBe(0);
+    expect(state.forbidden).toEqual([]);
+  });
+
+  test("a bounded partial search resumes from searched_before rather than claiming missing footage", async ({
+    frigateApp,
+  }) => {
+    const state = await installHTTP(frigateApp, false, 0, Infinity, {
+      searchLimitOnce: true,
+    });
+    const video = frigateApp.page.locator(
+      "[data-recorded-transport=https_mp4] video",
+    );
+    await expect
+      .poll(() =>
+        video.evaluate((element: HTMLVideoElement) => element.videoHeight),
+      )
+      .toBe(180);
+    const resolutions = state.calls.filter((call) => call.path === "resolve");
+    expect(resolutions).toHaveLength(2);
+    expect(resolutions[1].body.after).toBe(
+      Number(resolutions[0].body.start_timestamp) + 1,
+    );
+    expect(state.sessions.size).toBe(1);
+    expect(state.forbidden).toEqual([]);
+  });
+
+  test("an hour cutoff advances the view before resolving the next recording window", async ({
+    frigateApp,
+  }) => {
+    const state = await installHTTP(frigateApp, false, 0, Infinity, {
+      nearHourEnd: true,
+      timelineTail: 0.000763,
+    });
+    const video = frigateApp.page.locator(
+      "[data-recorded-transport=https_mp4] video",
+    );
+    await expect
+      .poll(() =>
+        video.evaluate((element: HTMLVideoElement) => element.videoHeight),
+      )
+      .toBe(180);
+    await video.evaluate((element: HTMLVideoElement) => {
+      element.currentTime = element.duration - 0.05;
+    });
+    await expect.poll(() => state.sessions.size).toBeGreaterThanOrEqual(2);
+    const creates = state.calls.filter((call) => call.path === "sessions");
+    expect(creates[1].body.after).toBeGreaterThanOrEqual(state.timestamp + 5);
+    for (const resolution of state.calls.filter(
+      (call) => call.path === "resolve",
+    )) {
+      expect(Number(resolution.body.start_timestamp)).toBeLessThan(
+        Number(resolution.body.before),
+      );
+      expect(Number(resolution.body.start_timestamp)).toBeGreaterThanOrEqual(
+        Number(resolution.body.after),
+      );
+    }
     expect(state.forbidden).toEqual([]);
   });
 });

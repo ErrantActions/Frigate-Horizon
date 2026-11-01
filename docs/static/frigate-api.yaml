@@ -9528,6 +9528,47 @@ paths:
       x-required-role: camera
       security:
         - frigateUserAuth: []
+  /{camera_name}/recordings/http/resolve:
+    post:
+      tags:
+        - Media
+      summary: Resolve Target
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Find a real source-frame target only within explicit caller search bounds.
+      operationId: resolve_target__camera_name__recordings_http_resolve_post
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordedHTTPResolve'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordedHTTPTarget'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
   /{camera_name}/recordings/http/sessions:
     post:
       tags:
@@ -17216,6 +17257,13 @@ components:
             - '2160'
           title: Quality
           default: auto
+        start_policy:
+          type: string
+          enum:
+            - strict
+            - next
+          title: Start Policy
+          default: strict
       additionalProperties: false
       type: object
       required:
@@ -17257,6 +17305,11 @@ components:
             - type: string
             - type: 'null'
           title: Session Url
+        resolve_url:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Resolve Url
         qualities:
           items:
             type: string
@@ -17283,6 +17336,34 @@ components:
         - enabled
         - available
       title: RecordedHTTPDiscovery
+    RecordedHTTPResolve:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        after:
+          type: number
+          minimum: 0.0
+          title: After
+        before:
+          type: number
+          minimum: 0.0
+          title: Before
+        start_timestamp:
+          type: number
+          minimum: 0.0
+          title: Start Timestamp
+      additionalProperties: false
+      type: object
+      required:
+        - after
+        - before
+        - start_timestamp
+      title: RecordedHTTPResolve
+      description: Explicit, bounded catalog search, independent of the finite 
+        MP4 window.
     RecordedHTTPSpan:
       properties:
         source_start:
@@ -17322,6 +17403,7 @@ components:
           enum:
             - preparing
             - ready
+            - empty
             - failed
             - cleanup_pending
           title: State
@@ -17363,6 +17445,26 @@ components:
             - type: integer
             - type: 'null'
           title: Height
+        after:
+          type: number
+          title: After
+        before:
+          type: number
+          title: Before
+        start_timestamp:
+          type: number
+          title: Start Timestamp
+        effective_start_timestamp:
+          anyOf:
+            - type: number
+            - type: 'null'
+          title: Effective Start Timestamp
+        continuation_timestamp:
+          type: number
+          title: Continuation Timestamp
+        next_timestamp:
+          type: number
+          title: Next Timestamp
       type: object
       required:
         - session_id
@@ -17378,7 +17480,59 @@ components:
         - error
         - width
         - height
+        - after
+        - before
+        - start_timestamp
+        - effective_start_timestamp
+        - continuation_timestamp
+        - next_timestamp
       title: RecordedHTTPStatus
+    RecordedHTTPTarget:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        after:
+          type: number
+          title: After
+        before:
+          type: number
+          title: Before
+        start_timestamp:
+          type: number
+          title: Start Timestamp
+        effective_start_timestamp:
+          anyOf:
+            - type: number
+            - type: 'null'
+          title: Effective Start Timestamp
+        exhausted:
+          type: boolean
+          title: Exhausted
+        searched_before:
+          type: number
+          title: Searched Before
+        reason:
+          type: string
+          enum:
+            - frame_found
+            - no_frame_in_range
+            - search_limit
+          title: Reason
+      type: object
+      required:
+        - after
+        - before
+        - start_timestamp
+        - effective_start_timestamp
+        - exhausted
+        - searched_before
+        - reason
+      title: RecordedHTTPTarget
+      description: A source-frame-backed target within an explicit caller-owned 
+        search range.
     RecordedQuality:
       properties:
         version:

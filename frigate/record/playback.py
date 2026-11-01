@@ -101,7 +101,9 @@ class PlaybackSession:
     hwaccel_args: str | list[str] = field(default_factory=list)
 
 
-def plan_sources(camera: str, body: PlaybackCreateBody) -> list[SourceClip]:
+def plan_sources(
+    camera: str, body: PlaybackCreateBody, *, require_start: bool = True
+) -> list[SourceClip]:
     """Use the Review planner without removing audio-bearing source spans."""
     intervals = resolve_coverage(camera, body.after, body.before)
     spans = build_spans(intervals, None if body.stream == "auto" else body.stream)
@@ -130,7 +132,7 @@ def plan_sources(camera: str, body: PlaybackCreateBody) -> list[SourceClip]:
     # in the measured mapping, but cannot turn a short request into a long job.
     if sum(clip.duration for clip in clips) > 32:
         raise PlaybackError("snapped_window_too_large", 422)
-    if not any(
+    if require_start and not any(
         clip.start <= body.start_timestamp < clip.start + clip.duration
         for clip in clips
     ):

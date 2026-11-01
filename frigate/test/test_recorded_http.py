@@ -40,7 +40,9 @@ class TestRecordedHTTPManager(unittest.IsolatedAsyncioTestCase):
                 max_height=1080,
             ),
             ui=SimpleNamespace(recorded_http=True, recording_compatibility=True),
-            auth=SimpleNamespace(enabled=True, roles={"admin": []}),
+            auth=SimpleNamespace(
+                enabled=True, roles={"admin": []}, cookie_name="frigate_token"
+            ),
             cameras={"front": SimpleNamespace(enabled=True)},
         )
         runtime = self.root / "runtime"
@@ -237,6 +239,296 @@ class TestRecordedHTTPManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.state, "ready")
         self.assertFalse(self.live.external_encoders)
 
+    async def test_forward_window_reports_effective_start_and_normal_empty_state(self):
+        def gaps(session, clips, directory, lease, ffmpeg, ffprobe):
+            result = self.build(session, clips, directory, lease, ffmpeg, ffprobe)
+            return (
+                [
+                    {
+                        "source_start": 100,
+                        "source_end": 101.999,
+                        "media_start": 0,
+                        "media_end": 1.999,
+                    },
+                    {
+                        "source_start": 105.005,
+                        "source_end": 108,
+                        "media_start": 1.999,
+                        "media_end": 4.994,
+                    },
+                ],
+                *result[1:],
+            )
+
+        self.manager.builder = gaps
+        self.body = self.body.model_copy(
+            update={
+                "start_timestamp": 102.0001,
+                "start_policy": "next",
+            }
+        )
+        session = await self.create()
+        metadata = self.manager.metadata(session)
+        self.assertEqual(metadata["after"], 100)
+        self.assertEqual(metadata["before"], 120)
+        self.assertEqual(metadata["start_timestamp"], 102.0001)
+        self.assertEqual(metadata["effective_start_timestamp"], 105.005)
+        self.assertEqual(metadata["continuation_timestamp"], 120)
+        self.assertEqual(metadata["next_timestamp"], 120)
+        await self.manager.delete("front", "alice", session.identifier)
+        for policy, state in (("next", "empty"), ("strict", "failed")):
+            body = self.body.model_copy(
+                update={"start_timestamp": 110, "start_policy": policy}
+            )
+            result = await self.manager.create(
+                "front",
+                "alice",
+                body,
+                time.time() + 300,
+                auth_issued=time.time(),
+            )
+            session = self.manager.sessions[result["session_id"]]
+            await session.task
+            self.assertEqual(session.state, state)
+            self.assertFalse(session.directory.exists())
+            self.assertFalse(self.live.external_encoders)
+            await self.manager.delete("front", "alice", session.identifier)
+
+    async def test_hour_continuation_uses_requested_boundary_not_rounded_video_tail(
+        self,
+    ):
+        from frigate.api.defs.request.recorded_http_body import RecordedHTTPCreate
+
+        self.body = RecordedHTTPCreate(
+            after=1793555980,
+            before=1793556000,
+            start_timestamp=1793555990,
+        )
+
+        def rounded(session, clips, directory, lease, ffmpeg, ffprobe):
+            result = self.build(session, clips, directory, lease, ffmpeg, ffprobe)
+            return (
+                [
+                    {
+                        "source_start": 1793555980,
+                        "source_end": 1793555999.999237,
+                        "media_start": 0,
+                        "media_end": 19.999237,
+                    }
+                ],
+                *result[1:],
+            )
+
+        self.manager.builder = rounded
+        session = await self.create()
+        result = self.manager.metadata(session)
+        self.assertLess(result["timeline"][-1]["source_end"], result["before"])
+        self.assertEqual(result["before"], 1793556000)
+        self.assertEqual(result["next_timestamp"], 1793556000)
+        self.assertEqual(result["continuation_timestamp"], 1793556000)
+        await self.manager.delete("front", "alice", session.identifier)
+
+    async def test_resolve_current_authorization_bounds_and_cancellation(self):
+        from frigate.api.defs.request.recorded_http_body import RecordedHTTPResolve
+        from frigate.comms.live_webrtc import LiveWebRTCError
+
+        body = RecordedHTTPResolve(after=100, before=3700, start_timestamp=102.001)
+        calls = []
+
+        def resolve(camera, request, lease, *_):
+            lease.check()
+            calls.append((camera, request.after, request.before))
+            return {
+                "effective_start_timestamp": 105.005,
+                "exhausted": False,
+                "searched_before": request.before,
+                "reason": "frame_found",
+            }
+
+        self.manager.resolver = resolve
+        result = await self.manager.resolve(
+            "front",
+            "alice",
+            body,
+            time.time() + 300,
+            auth_issued=time.time(),
+        )
+        self.assertEqual(result["effective_start_timestamp"], 105.005)
+        self.assertEqual(calls, [("front", 100, 3700)])
+        self.assertFalse(self.manager.resolve_tasks)
+        self.assertFalse(self.live.external_viewers)
+        self.revoked = True
+        with self.assertRaises(LiveWebRTCError) as raised:
+            await self.manager.resolve(
+                "front",
+                "alice",
+                body,
+                time.time() + 300,
+                auth_issued=time.time(),
+            )
+        self.assertEqual(raised.exception.status, 401)
+        self.revoked = False
+        entered, release = threading.Event(), threading.Event()
+
+        def blocked(*_):
+            entered.set()
+            release.wait(5)
+            return {
+                "effective_start_timestamp": None,
+                "exhausted": True,
+                "searched_before": body.before,
+                "reason": "no_frame_in_range",
+            }
+
+        self.manager.resolver = blocked
+        task = asyncio.create_task(
+            self.manager.resolve(
+                "front",
+                "alice",
+                body,
+                time.time() + 300,
+                auth_issued=time.time(),
+            )
+        )
+        self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+        task.cancel()
+        await asyncio.sleep(0.01)
+        self.assertFalse(task.done())
+        release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertFalse(self.manager.resolve_tasks)
+
+    async def test_shared_catalog_resolver_skips_fractional_tail_and_real_file_gap(
+        self,
+    ):
+        from peewee import SqliteDatabase
+
+        from frigate.api.defs.request.recorded_http_body import RecordedHTTPResolve
+        from frigate.models import Recordings
+        from frigate.record.http_targets import resolve_source_target
+        from frigate.test.test_recorded_webrtc import ReaderLease
+
+        source = self.root / "source.mp4"
+        source.write_bytes(b"synthetic")
+        rows = [
+            SimpleNamespace(
+                path=str(source),
+                start_time=100,
+                end_time=102.003,
+                duration=1.9998,
+                keyframes=[0, 1000],
+            ),
+            SimpleNamespace(
+                path=str(source),
+                start_time=105.005,
+                end_time=107.003,
+                duration=1.998,
+                keyframes=[0, 1000],
+            ),
+        ]
+        limits = []
+
+        class Query(list):
+            def limit(self, value):
+                limits.append(value)
+                return self[:value]
+
+        def query(camera, after, before, stream):
+            return Query(
+                row
+                for row in rows
+                if stream == "main" and row.end_time > after and row.start_time < before
+            )
+
+        database = SqliteDatabase(
+            ":memory:", check_same_thread=False, thread_safe=False
+        )
+        with database.bind_ctx([Recordings]):
+            database.connect()
+            for target, before, expected in (
+                (101.9992, 110, 105.005),
+                (102.0001, 104, None),
+                (101.9, 110, 101.96),
+            ):
+                body = RecordedHTTPResolve(
+                    after=100, before=before, start_timestamp=target
+                )
+                async with ReaderLease("front", 100, before, owner="alice") as lease:
+                    with patch("frigate.record.http_targets._rows_query", query):
+                        result = await lease.guard(
+                            lease.run_blocking(
+                                resolve_source_target,
+                                "front",
+                                body,
+                                lease,
+                                "unused",
+                                lambda *_: {"start": 0},
+                                lambda *_: [
+                                    {"pts_time": 0, "duration_time": 0.04},
+                                    {"pts_time": 1.96, "duration_time": 0.04},
+                                ],
+                            )
+                        )
+                self.assertEqual(result["effective_start_timestamp"], expected)
+                self.assertEqual(result["exhausted"], expected is None)
+            database.close()
+        self.assertTrue(limits)
+        self.assertEqual(set(limits), {65})
+
+    async def test_resolution_limit_does_not_claim_range_exhaustion(self):
+        from peewee import SqliteDatabase
+
+        from frigate.api.defs.request.recorded_http_body import RecordedHTTPResolve
+        from frigate.models import Recordings
+        from frigate.record.http_targets import resolve_source_target
+        from frigate.test.test_recorded_webrtc import ReaderLease
+
+        path = self.root / "source-limit.mp4"
+        path.write_bytes(b"synthetic")
+        rows = [
+            SimpleNamespace(
+                path=str(path),
+                start_time=100 + index * 0.3,
+                end_time=100 + index * 0.3 + 0.2,
+                duration=0.2,
+                keyframes=[0],
+            )
+            for index in range(65)
+        ]
+
+        class Query(list):
+            def limit(self, value):
+                return self[:value]
+
+        database = SqliteDatabase(
+            ":memory:", check_same_thread=False, thread_safe=False
+        )
+        with database.bind_ctx([Recordings]):
+            database.connect()
+            body = RecordedHTTPResolve(after=100, before=3700, start_timestamp=100)
+            async with ReaderLease("front", 100, 3700, owner="alice") as lease:
+                with patch(
+                    "frigate.record.http_targets._rows_query",
+                    side_effect=lambda c, a, b, s: Query(rows if s == "main" else []),
+                ):
+                    result = await lease.guard(
+                        lease.run_blocking(
+                            resolve_source_target,
+                            "front",
+                            body,
+                            lease,
+                            "unused",
+                            lambda *_: {"start": 0},
+                            lambda *_: [{"pts_time": 0.5, "duration_time": 0.04}],
+                        )
+                    )
+            database.close()
+        self.assertIsNone(result["effective_start_timestamp"])
+        self.assertFalse(result["exhausted"])
+        self.assertEqual(result["reason"], "search_limit")
+        self.assertLess(result["searched_before"], 3700)
+
     async def test_bounded_bytes_and_readers(self):
         from frigate.comms.live_webrtc import LiveWebRTCError
 
@@ -349,6 +641,7 @@ class TestRecordedHTTPManager(unittest.IsolatedAsyncioTestCase):
 
         app = FastAPI()
         app.frigate_config = self.config
+        app.jwt_token = "synthetic"
         app.state.recorded_http_manager = self.manager
         user = {"username": "alice", "role": "admin"}
         for dependency in router.dependencies:
@@ -372,6 +665,31 @@ class TestRecordedHTTPManager(unittest.IsolatedAsyncioTestCase):
             discovered = await client.get("/front/recordings/http/status")
             self.assertEqual(discovered.status_code, 200)
             self.assertEqual(discovered.json()["max_window_seconds"], 30)
+            self.assertEqual(
+                discovered.json()["resolve_url"], "front/recordings/http/resolve"
+            )
+            self.manager.resolver = lambda *args: {
+                "effective_start_timestamp": 105.005,
+                "exhausted": False,
+                "searched_before": 120,
+                "reason": "frame_found",
+            }
+            with patch(
+                "frigate.api.recorded_http.jwt.decode",
+                return_value=SimpleNamespace(
+                    claims={"exp": time.time() + 300, "iat": time.time()},
+                ),
+            ):
+                target = await client.post(
+                    "/front/recordings/http/resolve",
+                    json={
+                        "after": 100,
+                        "before": 120,
+                        "start_timestamp": 102.0001,
+                    },
+                )
+            self.assertEqual(target.status_code, 200, target.text)
+            self.assertEqual(target.json()["effective_start_timestamp"], 105.005)
             full = await client.get(media)
             self.assertEqual(full.status_code, 200)
             self.assertEqual(full.content, b"0123456789" * 10)
@@ -611,3 +929,67 @@ class TestRecordedHTTPManager(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(list(session.directory.glob("p*.mp4")))
             self.assertFalse(self.live.external_encoders)
             await self.manager.delete("front", "alice", session.identifier)
+        self.body = RecordedHTTPCreate(
+            after=100,
+            before=112,
+            start_timestamp=102.0001,
+            quality="360",
+            start_policy="next",
+        )
+        session = await self.create()
+        self.assertEqual(session.effective_start, 110)
+        self.assertEqual(session.body.before, 112)
+        await self.manager.delete("front", "alice", session.identifier)
+        from peewee import SqliteDatabase
+
+        from frigate.api.defs.request.recorded_http_body import RecordedHTTPResolve
+        from frigate.models import Recordings
+
+        catalog = [
+            SimpleNamespace(
+                path=str(source),
+                start_time=100,
+                end_time=102.003,
+                duration=2,
+                keyframes=[0, 1000],
+            ),
+            SimpleNamespace(
+                path=str(source),
+                start_time=110,
+                end_time=112,
+                duration=2,
+                keyframes=[0, 1000],
+            ),
+        ]
+
+        class Query(list):
+            def limit(self, value):
+                return self[:value]
+
+        def rows(camera, after, before, stream):
+            return Query(
+                row
+                for row in catalog
+                if stream == "main" and row.end_time > after and row.start_time < before
+            )
+
+        database = SqliteDatabase(
+            ":memory:", check_same_thread=False, thread_safe=False
+        )
+        with database.bind_ctx([Recordings]):
+            database.connect()
+            with patch("frigate.record.http_targets._rows_query", rows):
+                for before, expected in ((112, 110), (109, None)):
+                    target = await self.manager.resolve(
+                        "front",
+                        "alice",
+                        RecordedHTTPResolve(
+                            after=100, before=before, start_timestamp=101.9995
+                        ),
+                        time.time() + 300,
+                        auth_issued=time.time(),
+                    )
+                    self.assertEqual(target["effective_start_timestamp"], expected)
+                    self.assertEqual(target["exhausted"], expected is None)
+            database.close()
+        self.assertEqual(source.read_bytes(), original)
