@@ -224,6 +224,7 @@ class TestRecordedWebRTCManager(unittest.IsolatedAsyncioTestCase):
             max_viewers=4,
         )
         self.config = SimpleNamespace(
+            ui=SimpleNamespace(recorded_http=False),
             live_webrtc=self.settings,
             cameras={
                 name: SimpleNamespace(

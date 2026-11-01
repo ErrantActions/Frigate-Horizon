@@ -41,6 +41,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useRecordingCoverage } from "@/hooks/use-recording-coverage";
 import RecordedWebRTCPlayer from "./RecordedWebRTCPlayer";
+import RecordedHTTPPlayer from "./RecordedHTTPPlayer";
 
 // forward buffer while playing the low quality stream; low bitrate makes
 // a longer buffer cheap and it rides out connection variance better
@@ -88,6 +89,8 @@ export type DynamicVideoPlayerProps = {
 export default function DynamicVideoPlayer(props: DynamicVideoPlayerProps) {
   const { data: config } = useSWR<FrigateConfig>("config");
   if (!config) return <ActivityIndicator />;
+  if (config.ui?.recorded_http)
+    return <RecordedHTTPPlayer key={props.camera} {...props} />;
   return config.live_webrtc?.enabled ? (
     <RecordedWebRTCPlayer key={props.camera} {...props} />
   ) : (

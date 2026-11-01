@@ -45,7 +45,8 @@ from frigate.comms.live_webrtc import (
     turn_ice_servers,
 )
 from frigate.const import MAX_SEGMENT_DURATION
-from frigate.models import Recordings, User
+from frigate.models import Recordings
+from frigate.record.access import recording_account_allows
 from frigate.record.lease_async import AsyncRecordingLease, AsyncRecordingLeaseLost
 from frigate.record.playback import PlaybackError, SourceClip, plan_sources
 
@@ -123,27 +124,9 @@ def load_sources(camera: str, window: RecordedWindow) -> list[SourceClip]:
 
 def current_account_allows(session: "RecordedSession", config) -> bool:
     """Revoke running or paused viewers on current account/password/role changes."""
-    database = User._meta.database
-    if database is None or not config.auth.enabled:
-        return False
-    opened_here = database.is_closed()
-    try:
-        account = User.get_or_none(User.username == session.owner)
-        if account is None or account.role not in config.auth.roles:
-            return False
-        if (
-            account.password_changed_at is not None
-            and session.auth_issued < account.password_changed_at.timestamp()
-        ):
-            return False
-        return session.camera in User.get_allowed_cameras(
-            account.role, config.auth.roles, set(config.cameras)
-        )
-    except DatabaseError:
-        return False
-    finally:
-        if opened_here:
-            database.close()
+    return recording_account_allows(
+        session.owner, session.camera, session.auth_issued, config
+    )
 
 
 def copy_sources(
@@ -478,7 +461,12 @@ class RecordedWebRTCManager:
 
     def available(self) -> bool:
         """Do not advertise recorded viewing without the shared configured runtime."""
-        return self.ready and not self.closed and self.live.available()
+        return (
+            self.ready
+            and not self.closed
+            and self.live.available()
+            and not self.live.config().ui.recorded_http
+        )
 
     def _check_camera(self, camera: str) -> None:
         if camera not in self.live.config().cameras:

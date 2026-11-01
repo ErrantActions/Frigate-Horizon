@@ -43,6 +43,7 @@ from frigate.api import (
     preview,
     protected_media,
     record,
+    recorded_http,
     recorded_webrtc,
     review,
 )
@@ -63,6 +64,7 @@ from frigate.comms.event_metadata_updater import (
 )
 from frigate.comms.live_hls import LiveHlsManager
 from frigate.comms.live_webrtc import LiveWebRTCManager
+from frigate.comms.recorded_http import RecordedHTTPManager
 from frigate.comms.recorded_webrtc import RecordedWebRTCManager
 from frigate.comms.reolink_api import ReolinkEventManager
 from frigate.config import FrigateConfig
@@ -135,6 +137,7 @@ def create_fastapi_app(
             await app.state.live_hls_manager.start()
             await app.state.live_webrtc_manager.start()
             await app.state.recorded_webrtc_manager.start()
+            await app.state.recorded_http_manager.start()
             await app.playback_manager.start()
             await app.state.audio_repair_manager.start()
             await app.state.compression_manager.start()
@@ -199,7 +202,12 @@ def create_fastapi_app(
                             finally:
                                 try:
                                     try:
-                                        await app.state.recorded_webrtc_manager.close()
+                                        try:
+                                            await (
+                                                app.state.recorded_http_manager.close()
+                                            )
+                                        finally:
+                                            await app.state.recorded_webrtc_manager.close()
                                     finally:
                                         await app.state.live_webrtc_manager.close()
                                 finally:
@@ -235,6 +243,11 @@ def create_fastapi_app(
     app.state.live_webrtc_manager = LiveWebRTCManager(lambda: app.frigate_config)
     app.state.recorded_webrtc_manager = RecordedWebRTCManager(
         app.state.live_webrtc_manager
+    )
+    app.state.recorded_http_manager = RecordedHTTPManager(
+        app.state.live_webrtc_manager,
+        frigate_config.ffmpeg.ffmpeg_path,
+        frigate_config.ffmpeg.ffprobe_path,
     )
     app.state.plugins = PluginManager(
         Path(CONFIG_DIR) / "plugins",
@@ -306,6 +319,7 @@ def create_fastapi_app(
     app.include_router(live_hls.router)
     app.include_router(live_webrtc.router)
     app.include_router(recorded_webrtc.router)
+    app.include_router(recorded_http.router)
     app.include_router(audio_repair.router)
     app.include_router(protected_media.router)
     app.include_router(bookmarks.router)

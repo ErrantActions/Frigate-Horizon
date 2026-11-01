@@ -123,16 +123,18 @@ export function TrackingDetails({
   );
 
   const { data: config } = useSWR<FrigateConfig>("config");
+  const recordedViewing = Boolean(
+    config?.ui.recorded_http || config?.live_webrtc?.enabled,
+  );
   const displaySource =
-    config?.live_webrtc?.enabled && isAnnotationSettingsOpen
+    recordedViewing && isAnnotationSettingsOpen
       ? "image"
       : selectedDisplaySource;
   const [recordedController, setRecordedController] =
     useState<DynamicVideoController | null>(null);
   useEffect(() => {
-    if (config?.live_webrtc?.enabled && displaySource === "video")
-      setManualOverride(null);
-  }, [config?.live_webrtc?.enabled, displaySource]);
+    if (recordedViewing && displaySource === "video") setManualOverride(null);
+  }, [recordedViewing, displaySource]);
 
   // Fetch recording segments for the event's time range to handle motion-only gaps.
   // Use the source offset (stable per event) so recordings don't refetch on every
@@ -150,7 +152,7 @@ export function TrackingDetails({
   );
 
   const { data: recordings } = useSWR<Recording[]>(
-    config && !config.live_webrtc?.enabled && event.camera
+    config && !recordedViewing && event.camera
       ? [
           `${event.camera}/recordings`,
           {
@@ -171,7 +173,7 @@ export function TrackingDetails({
   // snapping. The backend may snap clipFrom backwards to a keyframe, making
   // the video start earlier than the requested time.
   const vodManifestUrl = useMemo(() => {
-    if (!event.camera || config?.live_webrtc?.enabled) return null;
+    if (!event.camera || recordedViewing) return null;
     const startTime =
       event.start_time + annotationOffset / 1000 - REVIEW_PADDING;
     const endTime =
@@ -179,7 +181,7 @@ export function TrackingDetails({
       annotationOffset / 1000 +
       REVIEW_PADDING;
     return `vod/clip/${event.camera}/start/${startTime}/end/${endTime}`;
-  }, [event, annotationOffset, config?.live_webrtc?.enabled]);
+  }, [event, annotationOffset, recordedViewing]);
 
   const { data: vodManifest } = useSWR<VodManifest>(vodManifestUrl, null, {
     revalidateOnFocus: false,
@@ -433,7 +435,7 @@ export function TrackingDetails({
     const pinned = pinnedDetectTimestampRef.current;
     if (!isAnnotationSettingsOpen || pinned == null) return;
     const targetTimeRecord = pinned + annotationOffset / 1000;
-    if (config?.live_webrtc?.enabled && displaySource === "image") {
+    if (recordedViewing && displaySource === "image") {
       setManualOverride(targetTimeRecord);
       setVideoAnchor(targetTimeRecord);
       setCurrentTime(targetTimeRecord);
@@ -452,7 +454,7 @@ export function TrackingDetails({
     annotationOffset,
     displaySource,
     timestampToVideoTime,
-    config?.live_webrtc?.enabled,
+    recordedViewing,
   ]);
 
   const handleLifecycleClick = useCallback(
@@ -470,7 +472,7 @@ export function TrackingDetails({
         setCurrentTime(targetTimeRecord);
         return;
       }
-      if (config?.live_webrtc?.enabled && recordedController) {
+      if (recordedViewing && recordedController) {
         recordedController.seekToTimestamp(
           targetTimeRecord,
           recordedController.wantsPlayback(),
@@ -489,7 +491,7 @@ export function TrackingDetails({
       annotationOffset,
       displaySource,
       timestampToVideoTime,
-      config?.live_webrtc?.enabled,
+      recordedViewing,
       recordedController,
     ],
   );
@@ -543,7 +545,7 @@ export function TrackingDetails({
       setSeekToTimestamp(null);
       return;
     }
-    if (config?.live_webrtc?.enabled) {
+    if (recordedViewing) {
       if (!recordedController) return;
       recordedController.seekToTimestamp(
         seekToTimestamp,
@@ -565,7 +567,7 @@ export function TrackingDetails({
     seekToTimestamp,
     displaySource,
     timestampToVideoTime,
-    config?.live_webrtc?.enabled,
+    recordedViewing,
     recordedController,
   ]);
 
@@ -753,7 +755,7 @@ export function TrackingDetails({
         >
           {displaySource == "video" && (
             <>
-              {config.live_webrtc?.enabled ? (
+              {recordedViewing ? (
                 <DynamicVideoPlayer
                   key={event.id}
                   camera={event.camera}
@@ -796,7 +798,7 @@ export function TrackingDetails({
                   currentTimeOverride={currentTime}
                 />
               )}
-              {isVideoLoading && !config.live_webrtc?.enabled && (
+              {isVideoLoading && !recordedViewing && (
                 <ActivityIndicator className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2" />
               )}
             </>

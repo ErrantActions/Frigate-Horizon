@@ -1,4 +1,11 @@
 {
+  "recordedHttp": {
+    "continuationFailed": "The next recording window could not be prepared. Playback may pause at the window boundary.",
+    "qualityLabel": "Recording viewing quality",
+    "original": "Original",
+    "failed": "Recorded video could not be prepared or played. Retry or check connectivity, camera access, and media service availability.",
+    "cleanupPending": "The recording viewer could not be released immediately. Its bounded session will expire automatically."
+  },
   "recordedWebrtc": {
     "qualityLabel": "Adaptive recording viewing quality",
     "previewImage": "Recorded timeline preview",

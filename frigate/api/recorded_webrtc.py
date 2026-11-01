@@ -93,7 +93,7 @@ async def recorded_webrtc_status(
     available = manager_for(request).available()
     response.headers.update(HEADERS)
     return {
-        "enabled": settings.enabled,
+        "enabled": settings.enabled and not request.app.frigate_config.ui.recorded_http,
         "available": available,
         "session_url": f"{quote(camera_name, safe='')}/recordings/webrtc/sessions",
         "relay_available": available and settings.turn.enabled,

@@ -4672,6 +4672,7 @@ paths:
                     - type: boolean
                     - $ref: '#/components/schemas/LiveWebRTCDiscovery'
                     - $ref: '#/components/schemas/RecordedWebRTCDiscovery'
+                    - $ref: '#/components/schemas/RecordedHTTPDiscovery'
                 type: object
                 title: Response Native Features Native Features Get
       x-required-role: any
@@ -9483,6 +9484,236 @@ paths:
           content:
             application/json:
               schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/recordings/http/status:
+    get:
+      tags:
+        - Media
+      summary: Discovery
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Discover recording delivery without opening or probing original files.
+      operationId: discovery__camera_name__recordings_http_status_get
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordedHTTPDiscovery'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/recordings/http/sessions:
+    post:
+      tags:
+        - Media
+      summary: Create
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Return preparing state; media exists only after successful finite completion.
+      operationId: create__camera_name__recordings_http_sessions_post
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordedHTTPCreate'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordedHTTPStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/recordings/http/sessions/{session_id}:
+    get:
+      tags:
+        - Media
+      summary: Status
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Read status without renewing the nonrenewable hard expiry.
+      operationId: 
+        status__camera_name__recordings_http_sessions__session_id__get
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordedHTTPStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+    delete:
+      tags:
+        - Media
+      summary: Close
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Drain original-reader processes and response readers before releasing quota.
+      operationId: 
+        close__camera_name__recordings_http_sessions__session_id__delete
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+      security:
+        - frigateUserAuth: []
+  /{camera_name}/recordings/http/sessions/{session_id}/media.mp4:
+    head:
+      tags:
+        - Media
+      summary: Media
+      description: Serve exact completed-file lengths and single suffix, open or
+        explicit ranges.
+      operationId: 
+        media__camera_name__recordings_http_sessions__session_id__media_mp4_head
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      responses:
+        '200':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-required-role: camera
+    get:
+      tags:
+        - Media
+      summary: Media
+      description: |-
+        **Access:** Authenticated user with access to the referenced camera.
+
+        Serve exact completed-file lengths and single suffix, open or explicit ranges.
+      operationId: 
+        media__camera_name__recordings_http_sessions__session_id__media_mp4_get
+      parameters:
+        - name: camera_name
+          in: path
+          required: true
+          schema:
+            anyOf:
+              - type: string
+              - type: 'null'
+            title: Camera Name
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Session Id
+      responses:
+        '200':
+          description: Successful Response
         '422':
           description: Validation Error
           content:
@@ -16955,6 +17186,199 @@ components:
         - before
         - start_timestamp
       title: RecordedCreate
+    RecordedHTTPCreate:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        after:
+          type: number
+          minimum: 0.0
+          title: After
+        before:
+          type: number
+          minimum: 0.0
+          title: Before
+        start_timestamp:
+          type: number
+          minimum: 0.0
+          title: Start Timestamp
+        quality:
+          type: string
+          enum:
+            - auto
+            - original
+            - '360'
+            - '720'
+            - '1080'
+            - '2160'
+          title: Quality
+          default: auto
+      additionalProperties: false
+      type: object
+      required:
+        - after
+        - before
+        - start_timestamp
+      title: RecordedHTTPCreate
+      description: Request media by catalog time, never by a filesystem path.
+    RecordedHTTPDiscovery:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+        available:
+          type: boolean
+          title: Available
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        transport:
+          type: string
+          const: https_mp4
+          title: Transport
+          default: https_mp4
+        seek:
+          type: string
+          const: http_byte_range
+          title: Seek
+          default: http_byte_range
+        max_window_seconds:
+          type: integer
+          const: 30
+          title: Max Window Seconds
+          default: 30
+        session_url:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Session Url
+        qualities:
+          items:
+            type: string
+          type: array
+          title: Qualities
+          default: []
+        reason:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Reason
+        original_recordings_unchanged:
+          type: boolean
+          const: true
+          title: Original Recordings Unchanged
+          default: true
+        hls_fallback:
+          type: boolean
+          const: false
+          title: Hls Fallback
+          default: false
+      type: object
+      required:
+        - enabled
+        - available
+      title: RecordedHTTPDiscovery
+    RecordedHTTPSpan:
+      properties:
+        source_start:
+          type: number
+          title: Source Start
+        source_end:
+          type: number
+          title: Source End
+        media_start:
+          type: number
+          title: Media Start
+        media_end:
+          type: number
+          title: Media End
+      type: object
+      required:
+        - source_start
+        - source_end
+        - media_start
+        - media_end
+      title: RecordedHTTPSpan
+    RecordedHTTPStatus:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        session_id:
+          type: string
+          title: Session Id
+        camera:
+          type: string
+          title: Camera
+        state:
+          type: string
+          enum:
+            - preparing
+            - ready
+            - failed
+            - cleanup_pending
+          title: State
+        quality:
+          type: string
+          title: Quality
+        audio:
+          type: boolean
+          title: Audio
+        status_url:
+          type: string
+          title: Status Url
+        close_url:
+          type: string
+          title: Close Url
+        media_url:
+          type: string
+          title: Media Url
+        hard_expires_at:
+          type: number
+          title: Hard Expires At
+        timeline:
+          items:
+            $ref: '#/components/schemas/RecordedHTTPSpan'
+          type: array
+          title: Timeline
+        error:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Error
+        width:
+          anyOf:
+            - type: integer
+            - type: 'null'
+          title: Width
+        height:
+          anyOf:
+            - type: integer
+            - type: 'null'
+          title: Height
+      type: object
+      required:
+        - session_id
+        - camera
+        - state
+        - quality
+        - audio
+        - status_url
+        - close_url
+        - media_url
+        - hard_expires_at
+        - timeline
+        - error
+        - width
+        - height
+      title: RecordedHTTPStatus
     RecordedQuality:
       properties:
         version:

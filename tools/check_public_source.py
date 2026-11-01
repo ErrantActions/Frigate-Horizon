@@ -16,11 +16,25 @@ SYNTHETIC_HLS_INITIALIZATIONS = {
     "web/e2e/fixtures/media/live-hls/0/init_0.mp4": "57f53d40e2aac98067ca0620a737cf9643cf5f65b5f09fe4f48021f305bb91e8",
     "web/e2e/fixtures/media/live-hls/1/init_1.mp4": "8e73191c50cf640925746dc6d23c2a8b1609692691ec44762e4dd3ce58e168f5",
 }
+SYNTHETIC_REVIEW_MP4 = {
+    "web/e2e/fixtures/mock-data/https-review.mp4": "7e740e9b3c83499afee885ad1961e720cdfcfd6db69f39e107cf1e031678e2b8",
+}
 
 
 def is_synthetic_hls_initialization(name: str, path: Path) -> bool:
     """Allow only the two exact initialization headers from synthetic test media."""
     expected = SYNTHETIC_HLS_INITIALIZATIONS.get(name)
+    return (
+        expected is not None
+        and path.is_file()
+        and not path.is_symlink()
+        and hashlib.sha256(path.read_bytes()).hexdigest() == expected
+    )
+
+
+def is_synthetic_review_mp4(name: str, path: Path) -> bool:
+    """Allow only the exact generated testsrc2 MP4 used by range-seeking tests."""
+    expected = SYNTHETIC_REVIEW_MP4.get(name)
     return (
         expected is not None
         and path.is_file()
@@ -65,6 +79,7 @@ def main() -> None:
             (
                 relative.suffix.lower() in FORBIDDEN_SUFFIXES
                 and not is_synthetic_hls_initialization(name, path)
+                and not is_synthetic_review_mp4(name, path)
             )
             or any(part in FORBIDDEN_PARTS for part in relative.parts)
             or relative.name == ".env"

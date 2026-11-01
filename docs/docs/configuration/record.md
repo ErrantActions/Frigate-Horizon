@@ -21,6 +21,68 @@ Playing original H265/HEVC recordings depends on the browser, operating system,
 available codecs, hardware, and the recording's profile. A current browser
 version alone does not guarantee support.
 
+### Private HTTPS MP4 review
+
+Set `ui.recorded_http: true` to select finite HTTPS MP4 recording windows instead
+of recorded WebRTC. Live viewing, original recordings, retention, and archives
+are unchanged. Authentication and the configured live WebRTC admission runtime
+are required. There is no HLS or automatic failure fallback.
+
+Each viewer requests at most 30 seconds. Scaled H264/AAC outputs are generated
+on demand at an admitted 360, 720, 1080, or 2160 height. `auto` selects at most
+720. `original` performs read-only H264 or H265 video remuxing (AAC audio) and rejects unsupported or
+incompatible source configurations. Audio is omitted when selected sources do
+not all have known audio. `ui.recorded_http` gates this transport independently
+of legacy HLS and recording compatibility flags. Shared live admission still
+bounds scaled outputs. Original remuxing may begin at an earlier catalog keyframe.
+
+The Review client requests 20-second windows. Near the current window's end, it
+may prepare at most one upcoming MP4, only while visible and actively playing.
+Pause, seek, quality changes, hiding, or stop cancel this preparation. The
+upcoming window requires additional shared viewer, encoder (when scaling), and
+cache admission. It does not open hidden playback streams or permanent encoding
+pipelines. Hard expiries remain unchanged and nonrenewable. Capacity failures
+are explicit; current video continues to its boundary.
+
+The camera-authorized API is:
+
+- `GET /{camera}/recordings/http/status`: availability, qualities, and `session_url`.
+- `POST /{camera}/recordings/http/sessions`: `{version: 1, after, before,
+  start_timestamp, quality}` in catalog seconds. Returns `202` with
+  `state: preparing` and stable `status_url`, `close_url`, and `media_url`.
+- `GET /{camera}/recordings/http/sessions/{id}`: `preparing`, `ready`, or `failed`
+  status, explicit error code, dimensions, audio, and measured `timeline` spans.
+  Each span maps `source_start/source_end` to `media_start/media_end`, in seconds.
+  Recording gaps are omitted from media time, not filled with unrelated frames.
+- `GET` or `HEAD /{camera}/recordings/http/sessions/{id}/media.mp4`: completed
+  faststart MP4 only. Returns `409` before readiness or after preparation
+  failure. Single explicit, open-ended, and suffix byte ranges return `206`;
+  invalid, multiple, or unsatisfiable ranges return `416` with `bytes */size`.
+  Strong ETag or date `If-Range` mismatch returns the complete `200` response.
+- `DELETE /{camera}/recordings/http/sessions/{id}`: `204` only after readers and
+  preparation processes have stopped and output cleanup has completed.
+
+All routes require the current authorized account and session ownership.
+URLs are not bearer capabilities. Responses are private and non-cacheable.
+Polling and byte-range requests never renew the hard expiry, which is at most
+180 seconds and further limited by the authentication token and shared session
+policy. Ownership mismatch returns `404`; revocation returns `401`; expiry or
+disabled policy returns `410`. Cleanup failure is an explicit `503`, not a
+successful close.
+
+The backend admits at most two preparations, four 128 MiB cache reservations
+(512 MiB total), eight response readers, and two readers per session. Scaled
+preparation also reserves the shared live encoder budget; all sessions reserve
+the shared viewer budget. Preparation times out after 60 seconds. Source leases
+remain protected until actual subprocesses and reader threads have joined.
+Output is published only after finite completion, faststart validation, and
+per-span packet timing checks. FFmpeg frame quantization can adjust a span's
+measured duration slightly; the returned timeline is authoritative.
+Muxing can extend a segment's last displayed sample at an audio boundary. The
+backend attributes final packets by preserved payload hashes and measures their
+actual presentation intervals without extending catalog coverage. Consumers
+must map both source and media endpoint pairs, not assume equal durations.
+
 For recording-only cameras without generated previews, Review's camera tiles
 read the saved recordings and follow the main player's timestamp. These tiles
 request video-only media, remain muted, load only while visible, and show

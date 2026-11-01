@@ -500,7 +500,9 @@ export function RecordingView({
               setPlaybackStart(currentTime);
               return;
             }
-            let shouldPlayback = true;
+            let shouldPlayback = config?.ui.recorded_http
+              ? mainControllerRef.current.wantsPlayback()
+              : true;
 
             if (timelineType == "detail") {
               shouldPlayback = mainControllerRef.current.isPlaying();
@@ -521,7 +523,12 @@ export function RecordingView({
         } else {
           updateSelectedSegment(currentTime);
         }
-      } else if (playerTime != currentTime && timelineType != "detail") {
+      } else if (
+        playerTime != currentTime &&
+        timelineType != "detail" &&
+        (!config?.ui.recorded_http ||
+          mainControllerRef.current?.wantsPlayback())
+      ) {
         mainControllerRef.current?.play();
       }
     }
@@ -561,10 +568,12 @@ export function RecordingView({
   // shown on the Original pin so a doomed selection is labeled
   const mainCodecUnsupported = useMemo(
     () =>
-      !config?.live_webrtc?.enabled && coverage?.streams?.main
+      !config?.ui.recorded_http &&
+      !config?.live_webrtc?.enabled &&
+      coverage?.streams?.main
         ? !isCodecFamilySupported(coverage.streams.main.video_codec)
         : false,
-    [coverage, config?.live_webrtc?.enabled],
+    [coverage, config?.ui.recorded_http, config?.live_webrtc?.enabled],
   );
 
   // the pin is persisted globally, but the selector is hidden on cameras
@@ -1069,6 +1078,7 @@ export function RecordingView({
               />
             )}
             {!isMobileOnly &&
+              !config?.ui.recorded_http &&
               !config?.live_webrtc?.enabled &&
               config?.cameras[mainCamera]?.record.enabled &&
               config?.cameras[mainCamera]?.record.sub.enabled && (
@@ -1124,6 +1134,7 @@ export function RecordingView({
               // quality in the drawer
               features={
                 isMobileOnly &&
+                !config?.ui.recorded_http &&
                 !config?.live_webrtc?.enabled &&
                 config?.cameras[mainCamera]?.record.enabled &&
                 config?.cameras[mainCamera]?.record.sub.enabled

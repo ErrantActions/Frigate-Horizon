@@ -70,6 +70,19 @@ class TestNativeFeaturesAPI(unittest.TestCase):
                     "activation": "decoded_ready_control",
                     "warmup_max_seconds": 20,
                 },
+                "recorded_http": {
+                    "enabled": False,
+                    "available": False,
+                    "version": 1,
+                    "transport": "https_mp4",
+                    "seek": "http_byte_range",
+                    "max_window_seconds": 30,
+                    "session_url": None,
+                    "qualities": [],
+                    "reason": None,
+                    "original_recordings_unchanged": True,
+                    "hls_fallback": False,
+                },
             },
         )
         response = self.client.get(

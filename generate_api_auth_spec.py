@@ -81,6 +81,7 @@ from frigate.api import (
     preview,
     protected_media,
     record,
+    recorded_http,
     recorded_webrtc,
     review,
 )
@@ -181,6 +182,7 @@ ROUTERS = [
     live_hls.router,
     live_webrtc.router,
     recorded_webrtc.router,
+    recorded_http.router,
     audio_repair.router,
     protected_media.router,
     bookmarks.router,

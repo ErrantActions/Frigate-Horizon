@@ -19,6 +19,12 @@ class UnitSystemEnum(str, Enum):
 
 
 class UIConfig(FrigateBaseModel):
+    recorded_http: bool = Field(
+        default=False,
+        strict=True,
+        title="HTTPS MP4 recorded review",
+        description="Use private, viewer-owned MP4 files with HTTP byte-range seeking for recorded review instead of recorded WebRTC. Scaled H264/AAC copies are generated only on demand, with shared live media admission limits. Requires the live WebRTC admission runtime. Original files, retention, mirroring and live viewing are unchanged. No HLS fallback is selected.",
+    )
     live_hls: bool = Field(
         default=True,
         strict=True,
@@ -35,7 +41,7 @@ class UIConfig(FrigateBaseModel):
         default=True,
         strict=True,
         title="Allow Review compatibility playback",
-        description="Global administrator control for temporary H264 recording playback copies. Disable to use original recordings only. Existing recording files and recording-time audio settings are unchanged.",
+        description="Administrator control for legacy compatibility playback copies. This does not gate private HTTPS MP4 review selected by recorded_http. Existing recording files and recording-time audio settings are unchanged.",
     )
     timezone: str | None = Field(
         default=None,
