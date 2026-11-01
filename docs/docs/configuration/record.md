@@ -34,7 +34,11 @@ on demand at an admitted 360, 720, 1080, or 2160 height. `auto` selects at most
 incompatible source configurations. Audio is omitted when selected sources do
 not all have known audio. `ui.recorded_http` gates this transport independently
 of legacy HLS and recording compatibility flags. Shared live admission still
-bounds scaled outputs. Original remuxing may begin at an earlier catalog keyframe.
+bounds scaled outputs. Original remuxing may begin at an earlier source
+keyframe. Original mode probes actual packet timestamps rather than seeking
+from millisecond-rounded catalog keyframe indexes. Its copied packet identity
+and clock translation are verified against the read-only input before the
+measured source timeline is published.
 
 The Review client requests 20-second windows. Near the current window's end, it
 may prepare at most one upcoming MP4, only while visible and actively playing.

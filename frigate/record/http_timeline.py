@@ -1,6 +1,7 @@
 """Attribute immutable remuxed video packets to their measured source spans."""
 
 import math
+from fractions import Fraction
 
 
 class PacketTimelineError(ValueError):
@@ -9,6 +10,83 @@ class PacketTimelineError(ValueError):
     def __init__(self, code):
         self.code = code
         super().__init__(code)
+
+
+def _packet_clock(packet, time_base, field="pts"):
+    if field in packet:
+        return int(packet[field]) * Fraction(time_base)
+    return Fraction(str(packet[field + "_time"]))
+
+
+def _microsecond_time(value):
+    sign = "-" if value < 0 else ""
+    value = abs(value)
+    return f"{sign}{value // 1_000_000}.{value % 1_000_000:06d}"
+
+
+def original_seek_plan(packets, time_base, stream_start, wall_start, start, end):
+    """Seek a real keyframe using FFmpeg's microsecond clock, not a rounded index."""
+    tick = Fraction(time_base)
+    origin = round(Fraction(str(stream_start)) / tick) * tick
+    target = origin + Fraction(str(start)) - Fraction(str(wall_start))
+    cutoff = origin + Fraction(str(end)) - Fraction(str(wall_start))
+    keys = [
+        (index, _packet_clock(packet, time_base))
+        for index, packet in enumerate(packets)
+        if "K" in packet.get("flags", "") and _packet_clock(packet, time_base) <= target
+    ]
+    if not keys:
+        raise PacketTimelineError("recorded_http_original_keyframe_unavailable")
+    index, timestamp = max(keys, key=lambda item: item[1])
+    # AV_TIME_BASE is an integer microsecond clock. Ceiling is the first
+    # representable seek instant not before this exact packet timestamp.
+    seek_us = math.ceil(timestamp * 1_000_000)
+    end_us = math.floor(cutoff * 1_000_000)
+    if end_us <= seek_us:
+        raise PacketTimelineError("recorded_http_original_window_unplayable")
+    return {
+        "index": index,
+        "origin": origin,
+        "seek": _microsecond_time(seek_us),
+        "duration": _microsecond_time(end_us - seek_us),
+    }
+
+
+def original_packet_span(
+    source, copied, plan, source_base, copied_base, wall_start, end
+):
+    """Prove Original packet identity and clock translation before mapping footage."""
+    selected = source[plan["index"] : plan["index"] + len(copied)]
+    if not copied or len(selected) != len(copied):
+        raise PacketTimelineError("recorded_http_original_packet_count_mismatch")
+    shifts = []
+    timestamps = []
+    for original, output in zip(selected, copied, strict=True):
+        if not original.get("data_hash") or original["data_hash"] != output.get(
+            "data_hash"
+        ):
+            raise PacketTimelineError("recorded_http_original_packet_identity_mismatch")
+        timestamp = _packet_clock(original, source_base)
+        duration = (
+            int(original["duration"]) * Fraction(source_base)
+            if "duration" in original
+            else Fraction(str(original["duration_time"]))
+        )
+        if duration <= 0:
+            raise PacketTimelineError("recorded_http_invalid_packet_timing")
+        shifts.append(timestamp - _packet_clock(output, copied_base))
+        timestamps.append((timestamp, duration))
+    if max(shifts) - min(shifts) > max(Fraction(source_base), Fraction(copied_base)):
+        raise PacketTimelineError("recorded_http_original_clock_translation_mismatch")
+    first = wall_start + float(min(pts for pts, _ in timestamps) - plan["origin"])
+    last = wall_start + float(
+        max(pts + duration for pts, duration in timestamps) - plan["origin"]
+    )
+    if first >= end or any(
+        wall_start + float(pts - plan["origin"]) >= end for pts, _ in timestamps
+    ):
+        raise PacketTimelineError("recorded_http_original_packet_outside_window")
+    return first, min(end, last)
 
 
 def effective_window_start(spans, requested, after, before, *, forward=False):

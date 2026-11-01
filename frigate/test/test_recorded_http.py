@@ -848,6 +848,89 @@ class TestRecordedHTTPManager(unittest.IsolatedAsyncioTestCase):
         and os.environ.get("FRIGATE_PLAYBACK_TEST_FFPROBE"),
         "Explicit synthetic-media FFmpeg and FFprobe tools required",
     )
+    async def test_real_original_fractional_gop_arbitrary_offset_uses_packet_clock(
+        self,
+    ):
+        from frigate.api.defs.request.recorded_http_body import RecordedHTTPCreate
+        from frigate.comms.recorded_http import build_mp4, faststart
+        from frigate.record.playback import SourceClip
+
+        ffmpeg = os.environ["FRIGATE_PLAYBACK_TEST_FFMPEG"]
+        self.manager.ffmpeg = ffmpeg
+        self.manager.ffprobe = os.environ["FRIGATE_PLAYBACK_TEST_FFPROBE"]
+        source = self.root / "fractional-gop.mp4"
+        process = await asyncio.create_subprocess_exec(
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x360:rate=30000/1001",
+            "-t",
+            "6",
+            "-c:v",
+            "libx264",
+            "-threads",
+            "2",
+            "-preset",
+            "ultrafast",
+            "-bf",
+            "0",
+            "-g",
+            "59",
+            "-keyint_min",
+            "59",
+            "-sc_threshold",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(source),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(process.communicate(), 30)
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+        self.assertEqual(process.returncode, 0, stderr.decode(errors="replace"))
+        original = source.read_bytes()
+        self.manager.builder = build_mp4
+        self.manager.planner = lambda *_: [
+            SourceClip(str(source), 101.968, 2.032, 1.968, False, 102.2, 104),
+        ]
+        self.body = RecordedHTTPCreate(
+            after=102.2,
+            before=104,
+            start_timestamp=102.3,
+            quality="original",
+        )
+        session = await self.create()
+        self.assertAlmostEqual(
+            session.timeline[0]["source_start"], 100 + 59059 / 30000, places=6
+        )
+        self.assertNotEqual(session.timeline[0]["source_start"], 101.968)
+        self.assertLessEqual(session.timeline[0]["source_end"], 104)
+        self.assertEqual(session.effective_start, 102.3)
+        self.assertTrue(faststart(session.directory / "media.mp4"))
+        self.assertEqual(source.read_bytes(), original)
+        self.assertFalse(self.live.external_encoders)
+        await self.manager.delete("front", "alice", session.identifier)
+        self.assertFalse(self.live.external_viewers)
+
+    @unittest.skipUnless(
+        os.environ.get("FRIGATE_PLAYBACK_TEST_FFMPEG")
+        and os.environ.get("FRIGATE_PLAYBACK_TEST_FFPROBE"),
+        "Explicit synthetic-media FFmpeg and FFprobe tools required",
+    )
     async def test_real_scaled_and_original_completed_faststart_measured_gap_spans(
         self,
     ):

@@ -17,10 +17,45 @@ from frigate.record.http_timeline import (
     first_source_frame,
     measure_packet_spans,
     measure_packet_stream,
+    original_packet_span,
+    original_seek_plan,
 )
 
 
 class TestRecordedHTTPContract(unittest.TestCase):
+    def test_original_uses_actual_fractional_gop_keyframe_not_millisecond_index(self):
+        source = [
+            {"pts": 0, "duration": 1001, "flags": "K_", "data_hash": "first"},
+            {"pts": 59059, "duration": 1001, "flags": "K_", "data_hash": "key"},
+            {"pts": 60060, "duration": 1001, "flags": "__", "data_hash": "frame"},
+        ]
+        plan = original_seek_plan(source, "1/30000", 0, 100, 102.2, 104)
+        self.assertEqual(plan["index"], 1)
+        self.assertEqual(plan["seek"], "1.968634")
+        copied = [
+            {"pts": 0, "duration": 1001, "data_hash": "key"},
+            {"pts": 1001, "duration": 1001, "data_hash": "frame"},
+        ]
+        start, end = original_packet_span(
+            source,
+            copied,
+            plan,
+            "1/30000",
+            "1/30000",
+            100,
+            104,
+        )
+        self.assertAlmostEqual(start, 100 + 59059 / 30000, places=8)
+        self.assertAlmostEqual(end, 100 + 61061 / 30000, places=8)
+        for corrupted in (
+            [{**packet, "data_hash": "wrong"} for packet in copied],
+            [copied[0], {**copied[1], "pts": 1005}],
+        ):
+            with self.assertRaises(PacketTimelineError):
+                original_packet_span(
+                    source, corrupted, plan, "1/30000", "1/30000", 100, 104
+                )
+
     def test_forward_start_skips_measured_gap_without_extending_window(self):
         spans = [
             {"source_start": 100, "source_end": 101.999},

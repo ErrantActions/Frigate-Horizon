@@ -29,6 +29,8 @@ from frigate.record.http_timeline import (
     effective_window_start,
     measure_packet_spans,
     measure_packet_stream,
+    original_packet_span,
+    original_seek_plan,
 )
 from frigate.record.lease_async import AsyncRecordingLease, AsyncRecordingLeaseLost
 
@@ -155,7 +157,7 @@ def _media_packets(lease, ffprobe, path, *, audio=False):
                 "-show_data_hash",
                 "sha256",
                 "-show_entries",
-                "packet=pts_time,duration_time,data_hash",
+                "packet=pts,dts,duration,pts_time,dts_time,duration_time,data_hash,flags",
                 "-of",
                 "json",
                 str(path),
@@ -227,6 +229,26 @@ def build_mp4(session, clips, directory: Path, lease, ffmpeg: str, ffprobe: str)
             if signature is not None and current != signature:
                 raise LiveWebRTCError(422, "recorded_http_original_spans_incompatible")
             signature = current
+            input_packets = _media_packets(lease, ffprobe, source)
+            wall_origin = clip.start - clip.offset
+            end = min(
+                clip.wall_end if clip.wall_end is not None else end,
+                session.body.before,
+            )
+            try:
+                original_plan = original_seek_plan(
+                    input_packets,
+                    video["time_base"],
+                    info["start"],
+                    wall_origin,
+                    max(
+                        clip.wall_start if clip.wall_start is not None else clip.start,
+                        session.body.after,
+                    ),
+                    end,
+                )
+            except PacketTimelineError as error:
+                raise LiveWebRTCError(422, error.code) from None
         part = directory / f"p{len(parts)}.mp4"
         command = [
             ffmpeg,
@@ -241,12 +263,15 @@ def build_mp4(session, clips, directory: Path, lease, ffmpeg: str, ffprobe: str)
             "1",
             "-protocol_whitelist",
             "file,crypto,data",
+            *(["-seek_timestamp", "1"] if original else []),
             "-ss",
-            str(clip.offset + start - clip.start),
+            original_plan["seek"]
+            if original
+            else str(clip.offset + start - clip.start),
             "-i",
             str(source.resolve()),
             "-t",
-            str(duration),
+            original_plan["duration"] if original else str(duration),
             "-map",
             "0:v:0",
         ]
@@ -320,12 +345,40 @@ def build_mp4(session, clips, directory: Path, lease, ffmpeg: str, ffprobe: str)
         ):
             raise LiveWebRTCError(422, "recorded_http_output_spans_incompatible")
         output_signature = current_output
-        source_packets.append(_media_packets(lease, ffprobe, part))
+        part_packets = _media_packets(lease, ffprobe, part)
+        source_packets.append(part_packets)
         if audio:
             source_audio_packets.append(
                 _media_packets(lease, ffprobe, part, audio=True)
             )
-        if abs(info["duration"] - duration) > 0.15:
+        if original:
+            try:
+                start, source_end = original_packet_span(
+                    input_packets,
+                    part_packets,
+                    original_plan,
+                    video["time_base"],
+                    info["video"]["time_base"],
+                    wall_origin,
+                    end,
+                )
+            except PacketTimelineError as error:
+                logger.error(
+                    "Recorded HTTP original packet verification failed (%s)", error.code
+                )
+                raise LiveWebRTCError(422, error.code) from None
+            logger.debug(
+                "Recorded HTTP original requested %.6f-%.6f source %.6f-%.6f "
+                "seek %s duration %s packets %s",
+                clip.wall_start if clip.wall_start is not None else clip.start,
+                end,
+                start,
+                source_end,
+                original_plan["seek"],
+                original_plan["duration"],
+                len(part_packets),
+            )
+        elif abs(info["duration"] - duration) > 0.15:
             raise LiveWebRTCError(422, "recorded_http_span_timing_mismatch")
         if (
             sum(path.stat().st_size for path in parts) + part.stat().st_size
@@ -335,7 +388,9 @@ def build_mp4(session, clips, directory: Path, lease, ffmpeg: str, ffprobe: str)
         spans.append(
             {
                 "source_start": start,
-                "source_end": min(end, start + info["duration"]),
+                "source_end": source_end
+                if original
+                else min(end, start + info["duration"]),
                 "media_start": cursor + info["start"],
                 "media_end": cursor + info["start"] + info["duration"],
             }
