@@ -27,6 +27,9 @@ capture instead of waiting for a plugin motion-event window. Configure motion
 detection separately as for other cameras. The plugin reconciles this selection
 at runtime and after restart; it does not change original recording quality.
 Continuous cloud-camera availability remains subject to provider session gaps.
+Recording-only plugin cameras are not automatically enrolled in native
+compressed-vector background learning; that separate feature must not prevent
+the application from starting when the native extractor is absent.
 
 ### Private HTTPS MP4 review
 

@@ -15,7 +15,7 @@ from frigate.config import CameraConfig
 from frigate.motion.compressed_live import BINARY, native_media_input
 from frigate.motion.compressed_protocol import CompressedEvidence, read_extractor_events
 from frigate.motion.compressed_tuner import CompressedNoiseEstimator
-from frigate.motion.record_only import recording_only
+from frigate.motion.record_only import plugin_recording_only, recording_only
 
 logger = logging.getLogger(__name__)
 
@@ -258,7 +258,10 @@ class VectorPreviewManager:
         selected = {
             name: camera
             for name, camera in cameras.items()
-            if camera.enabled and recording_only(name) and not native_api_selected(name)
+            if camera.enabled
+            and recording_only(name)
+            and not plugin_recording_only(name)
+            and not native_api_selected(name)
         }
         if not selected:
             return
@@ -285,6 +288,7 @@ class VectorPreviewManager:
                 for name, camera in cameras.items()
                 if camera.enabled
                 and recording_only(name)
+                and not plugin_recording_only(name)
                 and not native_api_selected(name)
             }
             if self.background_cameras and self.supervisor is None:

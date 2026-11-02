@@ -25,6 +25,26 @@ from frigate.test.test_compressed_live import config
 
 
 class TestVectorPreviewManager(unittest.TestCase):
+    def test_plugin_camera_does_not_require_background_native_extractor(self):
+        manager = VectorPreviewManager()
+        camera = config()
+        with (
+            patch(
+                "frigate.motion.compressed_preview.recording_only", return_value=True
+            ),
+            patch(
+                "frigate.motion.compressed_preview.plugin_recording_only",
+                return_value=True,
+            ),
+            patch("frigate.motion.compressed_preview.Path.is_file", return_value=False),
+            patch("frigate.motion.compressed_preview.VectorPreview") as preview,
+        ):
+            manager.start_background({camera.name: camera})
+            manager.update_cameras({camera.name: camera})
+        preview.assert_not_called()
+        self.assertEqual(manager.background_cameras, {})
+        self.assertIsNone(manager.supervisor)
+
     def test_custom_auto_preview_allows_calibration_before_hard_expiry(self):
         process = MagicMock()
         process.poll.return_value = 0
