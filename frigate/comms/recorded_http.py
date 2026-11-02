@@ -23,6 +23,12 @@ from frigate.comms.live_webrtc import DETAIL_BITRATES, LiveWebRTCError
 from frigate.comms.recorded_webrtc import finish_cleanup
 from frigate.const import CACHE_DIR, MAX_SEGMENT_DURATION
 from frigate.record.access import recording_account_allows
+from frigate.record.http_source import (
+    file_identity,
+    indexed_mp4,
+    source_recording,
+    source_timeline,
+)
 from frigate.record.http_targets import load_http_sources, resolve_source_target
 from frigate.record.http_timeline import (
     PacketTimelineError,
@@ -573,6 +579,11 @@ class HTTPSession:
     readers: set[asyncio.Task] = field(default_factory=set)
     closing: bool = False
     cleanup_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    source_path: Path | None = None
+    source_identity: tuple[int, int, int, int] | None = None
+    source_lease: AsyncRecordingLease | None = None
+    playable_before: float | None = None
+    preparation_reason: str | None = None
 
 
 class RecordedHTTPManager:
@@ -674,7 +685,21 @@ class RecordedHTTPManager:
             raise LiveWebRTCError(410, "recorded_http_session_expired")
         if not await self.authorized(session):
             raise LiveWebRTCError(401, "recorded_http_session_revoked")
+        if session.source_lease is not None:
+            try:
+                session.source_lease.check()
+            except AsyncRecordingLeaseLost:
+                logger.exception("Recorded HTTP original source lease was lost")
+                raise LiveWebRTCError(503, "recorded_http_source_lease_lost") from None
         return session
+
+    def media_path(self, session):
+        """Use only the admitted immutable file, never an arbitrary requested path."""
+        if session.source_path is None:
+            return session.directory / "media.mp4"
+        if file_identity(session.source_path) != session.source_identity:
+            raise LiveWebRTCError(503, "recorded_http_source_changed")
+        return session.source_path
 
     def metadata(self, session):
         """Stable owned URLs carry no capability token or original file identity."""
@@ -695,11 +720,15 @@ class RecordedHTTPManager:
             "width": session.width,
             "height": session.height,
             "after": session.body.after,
-            "before": session.body.before,
+            "before": session.playable_before or session.body.before,
             "start_timestamp": session.body.start_timestamp,
             "effective_start_timestamp": session.effective_start,
-            "continuation_timestamp": session.body.before,
-            "next_timestamp": session.body.before,
+            "continuation_timestamp": session.playable_before or session.body.before,
+            "next_timestamp": session.playable_before or session.body.before,
+            "delivery": "original_file"
+            if session.source_path is not None
+            else "prepared",
+            "preparation_reason": session.preparation_reason,
         }
 
     async def create(self, camera, owner, body, auth_expires, *, auth_issued):
@@ -711,7 +740,7 @@ class RecordedHTTPManager:
         if body.quality not in self.qualities():
             raise LiveWebRTCError(422, "recorded_http_quality_not_available")
         quality = body.quality
-        if quality == "auto":
+        if quality == "auto" and body.delivery == "prepared":
             quality = str(
                 max(h for h in HEIGHTS if h <= min(720, self.live.settings.max_height))
             )
@@ -820,10 +849,103 @@ class RecordedHTTPManager:
         finally:
             self.resolve_tasks.discard(task)
 
+    async def _prepare_source(self, session):
+        """Admit a closed original without encoding, remuxing or copying its bytes."""
+        lease = self.lease_factory(
+            session.camera,
+            max(0, session.body.after - MAX_SEGMENT_DURATION),
+            session.body.before,
+            owner=session.owner,
+        )
+        await lease.__aenter__()
+        session.source_lease = lease
+        row = await lease.guard(
+            lease.run_blocking(
+                source_recording,
+                session.camera,
+                session.body.start_timestamp,
+                session.body.before,
+            )
+        )
+        path = Path(row.path)
+        identity = await lease.guard(lease.run_blocking(file_identity, path))
+        info = await lease.guard(lease.run_blocking(_probe, lease, self.ffprobe, path))
+        audio = next(
+            (stream for stream in info["streams"] if stream["codec_type"] == "audio"),
+            None,
+        )
+        reason = None
+        if info["video"]["codec_name"] not in session.body.video_codecs:
+            reason = "source_video_codec_unsupported"
+        elif audio is not None and audio["codec_name"] not in session.body.audio_codecs:
+            reason = "source_audio_codec_unsupported"
+        elif not await lease.guard(lease.run_blocking(indexed_mp4, path)):
+            reason = "source_requires_mp4_index"
+        if reason:
+            session.preparation_reason = reason
+            await finish_cleanup(lease.__aexit__(None, None, None))
+            session.source_lease = None
+            if session.body.delivery == "direct":
+                raise LiveWebRTCError(422, reason)
+            if session.quality == "original" and reason in {
+                "source_video_codec_unsupported",
+                "source_audio_codec_unsupported",
+            }:
+                session.quality = str(
+                    max(
+                        height
+                        for height in HEIGHTS
+                        if height <= self.live.settings.max_height
+                    )
+                )
+            logger.info("Preparing recorded viewing derivative (%s)", reason)
+            return False
+        timeline = source_timeline(row, info, session.body.after, session.body.before)
+        effective = effective_window_start(
+            timeline,
+            session.body.start_timestamp,
+            session.body.after,
+            session.body.before,
+            forward=session.body.start_policy == "next",
+        )
+        if effective is None:
+            raise LiveWebRTCError(422, "playback_start_in_gap")
+        if not await self.authorized(session) or session.deadline <= self.live.clock():
+            raise LiveWebRTCError(401, "recorded_http_session_revoked")
+        if await lease.guard(lease.run_blocking(file_identity, path)) != identity:
+            raise LiveWebRTCError(503, "recorded_http_source_changed")
+        session.source_path, session.source_identity = path, identity
+        session.timeline = timeline
+        session.effective_start = effective
+        session.playable_before = min(session.body.before, float(row.end_time))
+        session.audio = audio is not None
+        session.width = int(info["video"]["width"])
+        session.height = int(info["video"]["height"])
+        session.size, session.modified = identity[2], identity[3] // 1_000_000_000
+        session.etag = '"' + hashlib.sha256(repr(identity).encode()).hexdigest() + '"'
+        session.quality = "original"
+        session.state = "ready"
+        return True
+
     async def _prepare(self, session):
         encoder = "http-encoder:" + session.identifier
         reserved = False
         try:
+            if session.body.delivery != "prepared" and session.body.quality in {
+                "auto",
+                "original",
+            }:
+                async with asyncio.timeout(PREPARE_SECONDS):
+                    if await self._prepare_source(session):
+                        return
+            if session.quality == "auto":
+                session.quality = str(
+                    max(
+                        h
+                        for h in HEIGHTS
+                        if h <= min(720, self.live.settings.max_height)
+                    )
+                )
             if session.quality != "original":
                 await self.live.reserve_external(encoder, encoder=True)
                 reserved = True
@@ -905,6 +1027,11 @@ class RecordedHTTPManager:
     async def _finish_preparation(self, session, encoder, reserved):
         try:
             if session.state != "ready":
+                if session.source_lease is not None:
+                    await finish_cleanup(
+                        session.source_lease.__aexit__(None, None, None)
+                    )
+                    session.source_lease = None
                 try:
                     await asyncio.to_thread(shutil.rmtree, session.directory)
                 except FileNotFoundError:
@@ -956,6 +1083,9 @@ class RecordedHTTPManager:
             for reader in readers:
                 reader.cancel()
             await asyncio.gather(*readers, return_exceptions=True)
+            if session.source_lease is not None:
+                await finish_cleanup(session.source_lease.__aexit__(None, None, None))
+                session.source_lease = None
             try:
                 await asyncio.to_thread(shutil.rmtree, session.directory)
             except FileNotFoundError:
@@ -975,6 +1105,15 @@ class RecordedHTTPManager:
     async def _maintain_once(self):
         for session in tuple(self.sessions.values()):
             try:
+                if session.source_lease is not None:
+                    try:
+                        session.source_lease.check()
+                    except AsyncRecordingLeaseLost:
+                        logger.warning(
+                            "Closing recorded HTTP viewer after source lease loss"
+                        )
+                        await self._dispose(session)
+                        continue
                 if (
                     session.closing
                     or session.deadline <= self.live.clock()

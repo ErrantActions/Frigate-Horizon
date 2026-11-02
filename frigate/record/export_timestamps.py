@@ -17,39 +17,20 @@ class ExportTimestampMode(str, Enum):
     both = "both"
 
 
-def timestamp_mux_command(
-    ffmpeg: str,
-    source: str,
+def timestamp_output_args(
     subtitles: str,
-    destination: str,
     mode: ExportTimestampMode,
+    subtitle_input: int = 1,
 ) -> list[str]:
-    """Build a shell-free pass preserving original codecs for subtitle-only output."""
+    """Apply optional labels to an existing assembly pass without another remux."""
     if mode == ExportTimestampMode.none:
         raise ValueError("Timestamp mux requires an enabled mode")
     # Generated paths are internal, but filter syntax still requires escaping.
     escaped = subtitles.replace("\\", "/")
     for token in ("\\", "'", ":", ",", "[", "]", ";"):
         escaped = escaped.replace(token, "\\" + token)
-    command = [
-        ffmpeg,
-        "-hide_banner",
-        "-loglevel",
-        "warning",
-        "-y",
-        "-threads",
-        "2",
-        "-filter_threads",
-        "2",
-        "-i",
-        source,
-    ]
+    command: list[str] = []
     subtitle = mode in (ExportTimestampMode.subtitle, ExportTimestampMode.both)
-    if subtitle:
-        command.extend(["-i", subtitles])
-    command.extend(
-        ["-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0", "-map_chapters", "0"]
-    )
     if mode in (ExportTimestampMode.burn_in, ExportTimestampMode.both):
         command.extend(
             [
@@ -74,7 +55,7 @@ def timestamp_mux_command(
         command.extend(
             [
                 "-map",
-                "1:s:0",
+                f"{subtitle_input}:s:0",
                 "-c:s",
                 "mov_text",
                 "-metadata:s:s:0",
@@ -85,6 +66,42 @@ def timestamp_mux_command(
                 "0",
             ]
         )
+    return command
+
+
+def timestamp_mux_command(
+    ffmpeg: str,
+    source: str,
+    subtitles: str,
+    destination: str,
+    mode: ExportTimestampMode,
+    metadata: str | None = None,
+) -> list[str]:
+    """Build a shell-free pass preserving original codecs for subtitle-only output."""
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-y",
+        "-threads",
+        "2",
+        "-filter_threads",
+        "2",
+        "-i",
+        source,
+    ]
+    subtitle = mode in (ExportTimestampMode.subtitle, ExportTimestampMode.both)
+    if subtitle:
+        command.extend(["-i", subtitles])
+    if metadata:
+        command.extend(["-f", "ffmetadata", "-i", metadata])
+    command.extend(
+        ["-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0", "-map_chapters", "0"]
+    )
+    command.extend(timestamp_output_args(subtitles, mode))
+    if metadata:
+        command.extend(["-map_metadata", "2" if subtitle else "1"])
     command.extend(["-movflags", "+faststart", destination])
     return command
 

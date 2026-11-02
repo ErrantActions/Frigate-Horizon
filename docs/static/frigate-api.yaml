@@ -17264,6 +17264,34 @@ components:
             - next
           title: Start Policy
           default: strict
+        delivery:
+          type: string
+          enum:
+            - prepared
+            - auto
+            - direct
+          title: Delivery
+          default: prepared
+        video_codecs:
+          items:
+            type: string
+            enum:
+              - h264
+              - hevc
+          type: array
+          maxItems: 2
+          minItems: 1
+          title: Video Codecs
+        audio_codecs:
+          items:
+            type: string
+            enum:
+              - aac
+              - mp3
+              - opus
+          type: array
+          maxItems: 3
+          title: Audio Codecs
       additionalProperties: false
       type: object
       required:
@@ -17465,6 +17493,18 @@ components:
         next_timestamp:
           type: number
           title: Next Timestamp
+        delivery:
+          type: string
+          enum:
+            - prepared
+            - original_file
+          title: Delivery
+          default: prepared
+        preparation_reason:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Preparation Reason
       type: object
       required:
         - session_id

@@ -28,19 +28,29 @@ of recorded WebRTC. Live viewing, original recordings, retention, and archives
 are unchanged. Authentication and the configured live WebRTC admission runtime
 are required. There is no HLS or automatic failure fallback.
 
-Each viewer requests at most 30 seconds. Scaled H264/AAC outputs are generated
-on demand at an admitted 360, 720, 1080, or 2160 height. `auto` selects at most
-720. `original` performs read-only H264 or H265 video remuxing (AAC audio) and rejects unsupported or
-incompatible source configurations. Audio is omitted when selected sources do
-not all have known audio. `ui.recorded_http` gates this transport independently
-of legacy HLS and recording compatibility flags. Shared live admission still
-bounds scaled outputs. Original remuxing may begin at an earlier source
-keyframe. Original mode probes actual packet timestamps rather than seeking
-from millisecond-rounded catalog keyframe indexes. Its copied packet identity
-and clock translation are verified against the read-only input before the
-measured source timeline is published.
+Each request covers at most 30 seconds. Normal Review Auto and Original request
+`delivery: auto` and advertise the browser's video/audio decoders. A compatible,
+closed original MP4 is served directly with byte ranges: no video encode,
+remux, copy, or packet scan precedes playback. Its index may be at either end.
+An original-file lease remains active until the viewer and all readers stop.
+File identity is checked before reads. Incompatible codecs or fragmented MP4
+indexes produce an explicit prepared derivative with `preparation_reason`;
+`delivery: direct` instead rejects incompatibility.
 
-The Review client requests 20-second windows. Near the current window's end, it
+Scaled H264/AAC outputs remain on demand at admitted 360, 720, 1080, or 2160
+heights. Explicit scaled quality and Data Saver use this prepared path. For
+existing API clients, omitted `delivery` still means `prepared`, and prepared
+Auto selects at most 720. Prepared Original retains the verified packet-clock
+remux. Shared live admission bounds viewers and scaling without changing live
+viewing. Stored originals are never modified.
+
+The earlier implementation forced normal Auto review to complete and validate
+a scaled immutable window before playback. That preparation, not HTTPS itself,
+caused the startup and outside-window seek regression. Direct original delivery
+avoids that work; within-file seeking remains native browser byte-range seeking.
+
+The Review client requests 20-second ranges, but direct delivery ends at the
+selected original file's boundary. Near the current window's end, it
 may prepare at most one upcoming MP4, only while visible and actively playing.
 Pause, seek, quality changes, hiding, or stop cancel this preparation. The
 upcoming window requires additional shared viewer, encoder (when scaling), and
@@ -58,7 +68,9 @@ The camera-authorized API is:
   A `search_limit` result is not exhaustion; `searched_before` identifies the
   completed bounded search and the caller may explicitly search further.
 - `POST /{camera}/recordings/http/sessions`: `{version: 1, after, before,
-  start_timestamp, quality, start_policy}` in catalog seconds. `start_policy`
+  start_timestamp, quality, start_policy, delivery, video_codecs, audio_codecs}`
+  in catalog seconds. Decoder names are `h264`/`hevc` and `aac`/`mp3`/`opus`.
+  Only advertise codecs the client actually supports. `start_policy`
   defaults to `strict`; explicitly selecting `next` permits skipping a gap only
   inside that requested MP4 window. Returns `202` with
   `state: preparing` and stable `status_url`, `close_url`, and `media_url`.
@@ -66,15 +78,18 @@ The camera-authorized API is:
   status, explicit error code, dimensions, audio, and measured `timeline` spans.
   Each span maps `source_start/source_end` to `media_start/media_end`, in seconds.
   Recording gaps are omitted from media time, not filled with unrelated frames.
-  Bounds `after/before` and the requested `start_timestamp` remain unchanged.
+  `delivery` identifies `prepared` or `original_file`. Direct `before` and
+  `next_timestamp` identify the selected file's playable boundary, clipped to
+  the requested range. The client enforces that boundary even if the underlying
+  file contains earlier or later frames.
   `effective_start_timestamp` identifies the actual usable start when ready.
   A forward window without a usable next frame is `empty`, not fake-ready.
-  Its `next_timestamp` (also `continuation_timestamp`) is the exact requested `before`, not a rounded
+  A prepared file's `next_timestamp` (also `continuation_timestamp`) is the exact requested `before`, not a rounded
   measured tail. Resolve from that cursor, then explicitly create the next
   bounded window. Crossing an hour or review boundary requires a new search
   range supplied by the caller.
-- `GET` or `HEAD /{camera}/recordings/http/sessions/{id}/media.mp4`: completed
-  faststart MP4 only. Returns `409` before readiness or after preparation
+- `GET` or `HEAD /{camera}/recordings/http/sessions/{id}/media.mp4`: immutable
+  original MP4 or completed faststart derivative. Returns `409` before readiness or after preparation
   failure. Single explicit, open-ended, and suffix byte ranges return `206`;
   invalid, multiple, or unsatisfiable ranges return `416` with `bytes */size`.
   Strong ETag or date `If-Range` mismatch returns the complete `200` response.
@@ -222,11 +237,19 @@ or both. The default remains no labels. Subtitle-only output copies the video
 and audio codecs; burn-in creates an H.264 export copy using bounded software
 encoding. Neither option changes original recordings.
 
+Normal realtime exports retain Frigate's existing input/coverage planning.
+Captions, selected investigation metadata, chapters, and MP4 faststart are
+combined in the final assembly pass instead of repeatedly rewriting the whole
+export. Subtitle-only video remains stream-copied. Burn-in/Both still require
+software video encoding, and mixed-stream staging or custom/timelapse processing
+retains its existing behavior. Export concurrency and process priority are
+unchanged. The internal export manifest is not an HLS review fallback.
+
 Labels are derived from the realized recording timeline, including collapsed
 recording gaps and keyframe lead-in. They show the configured UI time zone
 (UTC when unset) and its offset, including daylight-saving changes. These are
 inferred Frigate capture-timeline labels, not verified camera-sensor clock
-measurements. Before applying labels, the exporter compares the intermediate
+measurements. Before publishing labeled output, the exporter compares the completed
 media duration with the planned timeline and fails explicitly if they disagree.
 Preview and arbitrary custom-speed exports do not expose these options until
 their capture-to-output mapping can be verified.
@@ -248,7 +271,7 @@ tag, readable using tools such as ffprobe. This does not make arbitrary context
 visible as subtitles or graphics in ordinary video players. Subtitle display
 and whether a player initially selects the timestamp track depend on the
 container/player; the track is not forced. Existing chapters and media streams
-are preserved by the context-remux pass.
+are preserved by the combined final mux.
 The context includes inferred capture-to-output span mappings so retained
 capture-time events can be related to media time across recording gaps.
 Re-encoding or sharing through another application may strip this metadata.

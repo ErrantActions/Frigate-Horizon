@@ -17,8 +17,17 @@ async function installHTTP(
     timelineTail?: number;
     searchLimitOnce?: boolean;
     nearHourEnd?: boolean;
+    directFile?: boolean;
   } = {},
 ) {
+  if (options.resolveTarget || options.searchLimitOnce) {
+    await app.page.addInitScript(() => {
+      Object.defineProperty(navigator, "connection", {
+        configurable: true,
+        value: { saveData: true },
+      });
+    });
+  }
   await app.installDefaults({
     config: {
       ui: { recorded_http: true },
@@ -45,6 +54,7 @@ async function installHTTP(
   const sessions = new Map<string, RecordedHTTPSession>();
   const activeSessions = new Set<string>();
   const polls = new Map<string, number>();
+  const timing = { firstSessionRequest: 0 };
   let resolveCount = 0;
   let createBarrier: Promise<void> | undefined;
   let deleteBarrier: Promise<void> | undefined;
@@ -144,6 +154,8 @@ async function installHTTP(
         });
       }
       if (path === "sessions" && method === "POST") {
+        if (timing.firstSessionRequest === 0)
+          timing.firstSessionRequest = Date.now();
         if (activeSessions.size >= maxViewers)
           return route.fulfill({
             status: 503,
@@ -153,6 +165,9 @@ async function installHTTP(
         const base = `front_door/recordings/http/sessions/${id}`;
         const after = Number(body.after);
         const before = Number(body.before);
+        const playableBefore = options.directFile
+          ? Math.min(before, after + 10)
+          : before;
         const session: RecordedHTTPSession = {
           version: 1,
           session_id: id,
@@ -162,7 +177,8 @@ async function installHTTP(
           before,
           start_timestamp: Number(body.start_timestamp),
           effective_start_timestamp: Number(body.start_timestamp),
-          next_timestamp: before,
+          next_timestamp: playableBefore,
+          delivery: options.directFile ? "original_file" : "prepared",
           quality: body.quality,
           audio: false,
           status_url: base,
@@ -172,9 +188,9 @@ async function installHTTP(
           timeline: [
             {
               source_start: after,
-              source_end: before - (options.timelineTail ?? 0),
+              source_end: playableBefore - (options.timelineTail ?? 0),
               media_start: 0,
-              media_end: before - after,
+              media_end: playableBefore - after,
             },
           ],
           error: null,
@@ -235,6 +251,7 @@ async function installHTTP(
     sessions,
     holdNextCreate,
     holdNextDelete,
+    timing,
   };
 }
 
@@ -242,7 +259,6 @@ test.describe("Recorded HTTPS MP4 @mobile", () => {
   test("decodes MP4, seeks in the same window and replaces quality while paused", async ({
     frigateApp,
   }) => {
-    const started = Date.now();
     const state = await installHTTP(frigateApp);
     const video = frigateApp.page.locator(
       "[data-recorded-transport=https_mp4] video",
@@ -252,7 +268,16 @@ test.describe("Recorded HTTPS MP4 @mobile", () => {
         video.evaluate((element: HTMLVideoElement) => element.videoHeight),
       )
       .toBe(180);
-    expect(Date.now() - started).toBeLessThan(10000);
+    await expect
+      .poll(() =>
+        video.evaluate(
+          (element: HTMLVideoElement) =>
+            element.getVideoPlaybackQuality().totalVideoFrames,
+        ),
+      )
+      .toBeGreaterThan(0);
+    expect(state.timing.firstSessionRequest).toBeGreaterThan(0);
+    expect(Date.now() - state.timing.firstSessionRequest).toBeLessThan(10000);
     await frigateApp.page
       .getByRole("button", { name: "Pause recording", exact: true })
       .click();
@@ -521,7 +546,10 @@ test.describe("Recorded HTTPS MP4 @mobile", () => {
         element.requestVideoFrameCallback(() => {
           if (element.currentSrc !== source)
             element.dataset.continuationDecoded = String(performance.now());
-          else sample();
+          else {
+            element.dataset.continuationEnded = String(performance.now());
+            sample();
+          }
         });
       sample();
       element.currentTime = 19.5;
@@ -693,6 +721,37 @@ test.describe("Recorded HTTPS MP4 @mobile", () => {
         Number(resolution.body.after),
       );
     }
+    expect(state.forbidden).toEqual([]);
+  });
+
+  test("normal Auto opens original media without resolver round trips or scaled preparation", async ({
+    frigateApp,
+  }) => {
+    const state = await installHTTP(frigateApp, false, 0, Infinity, {
+      directFile: true,
+    });
+    const video = frigateApp.page.locator(
+      "[data-recorded-transport=https_mp4] video",
+    );
+    await expect
+      .poll(() =>
+        video.evaluate((element: HTMLVideoElement) => element.videoHeight),
+      )
+      .toBe(180);
+    expect(state.calls.filter((call) => call.path === "resolve")).toHaveLength(
+      0,
+    );
+    const creation = state.calls.find((call) => call.path === "sessions");
+    expect(creation?.body).toMatchObject({ quality: "auto", delivery: "auto" });
+    expect(creation?.body.video_codecs).toContain("h264");
+    await video.evaluate((element: HTMLVideoElement) => {
+      element.currentTime = 9.9;
+    });
+    await expect.poll(() => state.sessions.size).toBeGreaterThanOrEqual(2);
+    expect(
+      state.calls.filter((call) => call.path === "sessions")[1].body
+        .start_timestamp,
+    ).toBe(Number(creation?.body.after) + 10);
     expect(state.forbidden).toEqual([]);
   });
 });

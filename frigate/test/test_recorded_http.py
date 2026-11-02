@@ -123,6 +123,139 @@ class TestRecordedHTTPManager(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.live.external_encoders)
         self.assertIn(session.identifier, self.live.external_viewers)
         await self.manager.delete("front", "alice", session.identifier)
+
+    async def test_direct_original_is_ready_without_copy_encode_or_packet_scan(self):
+        import struct
+
+        from frigate.comms.live_webrtc import LiveWebRTCError
+
+        original = self.root / "source.mp4"
+        original.write_bytes(
+            struct.pack(">I4s", 8, b"ftyp")
+            + struct.pack(">I4s", 8, b"moov")
+            + struct.pack(">I4s", 12, b"mdat")
+            + b"data"
+        )
+        content = original.read_bytes()
+        row = SimpleNamespace(
+            path=str(original),
+            start_time=100,
+            end_time=110,
+            has_audio=False,
+        )
+        info = {
+            "video": {"codec_name": "h264", "width": 3840, "height": 2160},
+            "streams": [{"codec_type": "video", "codec_name": "h264"}],
+            "duration": 10,
+            "start": 0,
+        }
+        self.body = self.body.model_copy(update={"delivery": "auto"})
+        with (
+            patch("frigate.comms.recorded_http.source_recording", return_value=row),
+            patch("frigate.comms.recorded_http._probe", return_value=info),
+            patch("frigate.comms.recorded_http._media_packets") as packets,
+        ):
+            session = await self.create()
+        metadata = self.manager.metadata(session)
+        self.assertEqual(metadata["delivery"], "original_file")
+        self.assertEqual(metadata["quality"], "original")
+        self.assertEqual(metadata["next_timestamp"], 110)
+        self.assertEqual(metadata["timeline"][0]["media_start"], 0)
+        self.assertFalse(session.directory.exists())
+        self.assertIsNotNone(session.source_lease)
+        self.assertFalse(self.live.external_encoders)
+        packets.assert_not_called()
+        self.assertEqual(self.manager.media_path(session), original)
+        original.write_bytes(content + b"changed")
+        with self.assertRaises(LiveWebRTCError) as changed:
+            self.manager.media_path(session)
+        self.assertEqual(changed.exception.code, "recorded_http_source_changed")
+        original.write_bytes(content)
+        lease = session.source_lease
+        await self.manager.delete("front", "alice", session.identifier)
+        self.assertIsNone(session.source_lease)
+        self.assertTrue(original.exists())
+        self.assertEqual(original.read_bytes(), content)
+        self.assertIsNotNone(lease)
+
+    async def test_unsupported_direct_codec_prepares_only_an_explicit_derivative(self):
+        import struct
+
+        original = self.root / "hevc.mp4"
+        original.write_bytes(
+            struct.pack(">I4s", 8, b"moov") + struct.pack(">I4s", 9, b"mdat") + b"x"
+        )
+        row = SimpleNamespace(path=str(original), start_time=100, end_time=110)
+        info = {
+            "video": {"codec_name": "hevc", "width": 3840, "height": 2160},
+            "streams": [{"codec_type": "video", "codec_name": "hevc"}],
+            "duration": 10,
+            "start": 0,
+        }
+        for quality, expected in (
+            ("auto", "720"),
+            ("original", str(self.live.settings.max_height)),
+        ):
+            self.body = self.body.model_copy(
+                update={"delivery": "auto", "quality": quality}
+            )
+            with (
+                patch("frigate.comms.recorded_http.source_recording", return_value=row),
+                patch("frigate.comms.recorded_http._probe", return_value=info),
+            ):
+                session = await self.create()
+            self.assertEqual(session.quality, expected)
+            self.assertEqual(
+                session.preparation_reason, "source_video_codec_unsupported"
+            )
+            self.assertIsNone(session.source_lease)
+            self.assertEqual(self.manager.metadata(session)["delivery"], "prepared")
+            self.assertTrue(original.exists())
+            await self.manager.delete("front", "alice", session.identifier)
+
+    async def test_direct_source_lease_is_released_when_probe_is_cancelled(self):
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        row = SimpleNamespace(
+            path=str(self.root / "source.mp4"), start_time=100, end_time=110
+        )
+        Path(row.path).write_bytes(b"source")
+
+        def blocked_probe(*_args):
+            started.set()
+            release.wait(5)
+            return {
+                "video": {"codec_name": "h264", "width": 320, "height": 180},
+                "streams": [{"codec_type": "video", "codec_name": "h264"}],
+                "duration": 10,
+                "start": 0,
+            }
+
+        self.body = self.body.model_copy(update={"delivery": "auto"})
+        with (
+            patch("frigate.comms.recorded_http.source_recording", return_value=row),
+            patch("frigate.comms.recorded_http._probe", side_effect=blocked_probe),
+        ):
+            created = await self.manager.create(
+                "front",
+                "alice",
+                self.body,
+                time.time() + 3600,
+                auth_issued=time.time(),
+            )
+            session = self.manager.sessions[created["session_id"]]
+            self.assertTrue(await asyncio.to_thread(started.wait, 5))
+            deletion = asyncio.create_task(
+                self.manager.delete("front", "alice", session.identifier)
+            )
+            await asyncio.sleep(0)
+            release.set()
+            await deletion
+        self.assertIsNone(session.source_lease)
+        self.assertTrue(Path(row.path).exists())
+        self.assertNotIn(session.identifier, self.live.external_viewers)
         self.assertFalse(self.live.external_viewers)
         self.assertFalse(session.directory.exists())
 

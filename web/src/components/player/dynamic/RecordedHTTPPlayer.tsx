@@ -105,6 +105,7 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
     let nextExhausted = false;
     let nextPromise: Promise<RecordedHTTPSession | undefined> | undefined;
     let prepareSeconds = 6;
+    let advancing = false;
     let releasing = Promise.resolve(true);
     const visible = () =>
       (document.visibilityState === "visible" && inViewport) ||
@@ -156,11 +157,12 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
       nextSession = undefined;
     };
     const nativePause = () => {
-      if (!video.ended) cancelNext();
+      if (!video.ended && !advancing) cancelNext();
     };
     const stop = () => {
       revision += 1;
       preparing = false;
+      advancing = false;
       clearTimeout(expiry);
       pollAbort?.abort();
       cancelNext();
@@ -203,6 +205,7 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
         return;
       }
       session.current = current;
+      advancing = false;
       requested.current = target;
       timestamp.current = target;
       video.muted = mutedRef.current;
@@ -214,12 +217,16 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
     const position = () => {
       const current = session.current;
       if (!current || video.readyState < 2 || video.seeking) return;
+      const last = current.timeline.at(-1);
+      if (last && video.currentTime >= last.media_end && wanted.current) {
+        void ended();
+        return;
+      }
       const value = recordingCatalogTime(current.timeline, video.currentTime);
       if (value !== undefined) {
         timestamp.current = value;
         callbacks.current.onTimestampUpdate?.(value);
       }
-      const last = current.timeline.at(-1);
       if (
         last &&
         wanted.current &&
@@ -308,13 +315,16 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
           );
         }
         const range = callbacks.current.timeRange;
+        const originalDelivery =
+          !saveData &&
+          (selected.current === "auto" || selected.current === "original");
         const searchAfter = Math.max(range.after, target);
         const searchBefore = Math.min(range.before, searchAfter + 3600);
         if (!(searchAfter <= target && target < searchBefore))
           throw new Error("Recording target is outside the selected range");
         let cursor = searchAfter;
         let resolution: RecordedHTTPResolution | undefined;
-        for (let attempt = 0; attempt < 4; attempt += 1) {
+        for (let attempt = 0; !originalDelivery && attempt < 4; attempt += 1) {
           const response = await axios.post<RecordedHTTPResolution>(
             endpoint(discover.resolve_url),
             {
@@ -340,9 +350,9 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
             throw new Error("Recording target search made no progress");
           cursor = resolution.searched_before;
         }
-        if (!resolution)
+        if (!resolution && !originalDelivery)
           throw new Error("Recording target resolution is unavailable");
-        if (resolution.effective_start_timestamp === null) {
+        if (resolution?.effective_start_timestamp === null) {
           if (!resolution.exhausted)
             throw new Error("Recording target resolution reached its limit");
           if (upcoming) nextExhausted = true;
@@ -352,8 +362,11 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
           }
           return;
         }
-        const resolvedTarget = resolution.effective_start_timestamp;
+        const resolvedTarget = originalDelivery
+          ? target
+          : resolution?.effective_start_timestamp;
         if (
+          resolvedTarget === undefined ||
           !Number.isFinite(resolvedTarget) ||
           resolvedTarget < cursor ||
           resolvedTarget >= searchBefore
@@ -384,6 +397,24 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
             start_timestamp: target,
             start_policy: "next",
             quality: requestedQuality,
+            delivery: originalDelivery ? "auto" : "prepared",
+            video_codecs: [
+              ...(video.canPlayType('video/mp4; codecs="avc1.42E01E"')
+                ? ["h264"]
+                : []),
+              ...(video.canPlayType('video/mp4; codecs="hvc1.1.6.L120.B0"')
+                ? ["hevc"]
+                : []),
+            ],
+            audio_codecs: [
+              ...(video.canPlayType('audio/mp4; codecs="mp4a.40.2"')
+                ? ["aac"]
+                : []),
+              ...(video.canPlayType("audio/mpeg") ? ["mp3"] : []),
+              ...(video.canPlayType('audio/mp4; codecs="opus"')
+                ? ["opus"]
+                : []),
+            ],
           },
           request,
         );
@@ -459,6 +490,7 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
       }
     };
     const seek = (target: number, shouldPlay: boolean) => {
+      advancing = false;
       cancelNext();
       wanted.current = shouldPlay;
       anchor.current = target;
@@ -498,7 +530,9 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
     };
     const ended = async () => {
       const current = session.current;
-      if (!current || !wanted.current) return;
+      if (!current || !wanted.current || advancing) return;
+      advancing = true;
+      video.pause();
       const target = nextTarget(current);
       if (target !== undefined) {
         const currentRevision = revision;
@@ -536,6 +570,7 @@ export default function RecordedHTTPPlayer(props: DynamicVideoPlayerProps) {
         }
       } else {
         wanted.current = false;
+        advancing = false;
         callbacks.current.onClipEnded?.();
       }
     };

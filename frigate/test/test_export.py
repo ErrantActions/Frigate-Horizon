@@ -657,7 +657,14 @@ class TestExportTimelineAlignment(unittest.TestCase):
         ):
             windows = exporter._staged_chapter_windows()
 
-        path = exporter._build_recording_segment_chapter_metadata_file(windows)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        with patch.object(
+            exporter,
+            "_chapter_metadata_path",
+            return_value=str(Path(directory.name) / "chapters.txt"),
+        ):
+            path = exporter._build_recording_segment_chapter_metadata_file(windows)
         self.addCleanup(os.remove, path)
         content = Path(path).read_text()
 

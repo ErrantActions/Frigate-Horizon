@@ -30,6 +30,8 @@ export type RecordedHTTPSession = {
   start_timestamp: number;
   effective_start_timestamp: number | null;
   next_timestamp: number;
+  delivery?: "prepared" | "original_file";
+  preparation_reason?: string | null;
   quality: RecordedHTTPQuality;
   audio: boolean;
   status_url: string;

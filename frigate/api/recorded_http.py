@@ -36,6 +36,11 @@ def read_slice(path, offset, length):
         return source.read(length)
 
 
+def read_owned_slice(manager, session, offset, length):
+    """Validate original identity on the same joined worker that reads its bytes."""
+    return read_slice(manager.media_path(session), offset, length)
+
+
 router = APIRouter(
     prefix="/{camera_name}/recordings/http",
     tags=["Media"],
@@ -246,8 +251,9 @@ class OwnedMP4Response(Response):
                 )
                 chunk = await finish_cleanup(
                     asyncio.to_thread(
-                        read_slice,
-                        self.session.directory / "media.mp4",
+                        read_owned_slice,
+                        self.manager,
+                        self.session,
                         self.last - remaining + 1,
                         min(256 * 1024, remaining),
                     )

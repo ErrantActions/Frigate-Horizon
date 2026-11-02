@@ -48,6 +48,8 @@ class RecordedHTTPStatus(BaseModel):
     effective_start_timestamp: float | None
     continuation_timestamp: float
     next_timestamp: float
+    delivery: Literal["prepared", "original_file"] = "prepared"
+    preparation_reason: str | None = None
 
 
 class RecordedHTTPTarget(BaseModel):

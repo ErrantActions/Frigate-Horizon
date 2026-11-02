@@ -16,6 +16,13 @@ class RecordedHTTPCreate(BaseModel):
     start_timestamp: float = Field(ge=0)
     quality: Literal["auto", "original", "360", "720", "1080", "2160"] = "auto"
     start_policy: Literal["strict", "next"] = "strict"
+    delivery: Literal["prepared", "auto", "direct"] = "prepared"
+    video_codecs: list[Literal["h264", "hevc"]] = Field(
+        default_factory=lambda: ["h264"], min_length=1, max_length=2
+    )
+    audio_codecs: list[Literal["aac", "mp3", "opus"]] = Field(
+        default_factory=lambda: ["aac", "mp3"], max_length=3
+    )
 
     @model_validator(mode="after")
     def bounded_window(self):

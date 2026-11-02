@@ -11,6 +11,7 @@ import shutil
 import string
 import subprocess as sp
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -60,6 +61,7 @@ from frigate.record.export_timestamps import (
     srt_timestamp_lines,
     timestamp_cues,
     timestamp_mux_command,
+    timestamp_output_args,
 )
 from frigate.record.lease_async import AsyncRecordingLease, AsyncRecordingLeaseLost
 from frigate.util.ffmpeg import run_ffmpeg_with_progress
@@ -909,7 +911,8 @@ class RecordingExporter(threading.Thread):
         else:
             stdin_payload = playlist_lines
 
-        return run_ffmpeg_with_progress(
+        started = time.monotonic()
+        result = run_ffmpeg_with_progress(
             ffmpeg_cmd,
             expected_duration_seconds=self._expected_output_duration_seconds(),
             on_progress=lambda percent: self._emit_progress(step, percent),
@@ -917,6 +920,15 @@ class RecordingExporter(threading.Thread):
             process_started=self._original_process_started,
             use_low_priority=True,
         )
+        logger.info(
+            "Export %s %s pass %.3fs: media %.3fs, result %d",
+            self.export_id,
+            step,
+            time.monotonic() - started,
+            self._expected_output_duration_seconds(),
+            result[0],
+        )
+        return result
 
     def _original_process_started(self, process: sp.Popen) -> None:
         """Supervise an export child while its original recording window is reserved."""
@@ -967,7 +979,12 @@ class RecordingExporter(threading.Thread):
             # a staged window's keyframe lead-in plays before it
             output_offset += _lead_in(rec)
             windows.append((clipped_start, clipped_end, output_offset))
-            output_offset += clipped_end - clipped_start
+            duration = (
+                rec.output_duration
+                if isinstance(rec, _ChapterWindow) and rec.output_duration is not None
+                else clipped_end - clipped_start + _lead_in(rec)
+            )
+            output_offset += duration - _lead_in(rec)
 
         if not windows:
             return None
@@ -1001,7 +1018,7 @@ class RecordingExporter(threading.Thread):
         if not review_rows:
             return None
 
-        total_output = windows[-1][2] + (windows[-1][1] - windows[-1][0])
+        total_output = output_offset
         last_recorded_end = windows[-1][1]
 
         def wall_to_output(t: float) -> float:
@@ -1353,14 +1370,59 @@ class RecordingExporter(threading.Thread):
             else:
                 chapters_path = None
 
-            chapter_args = (
-                f" -i {chapters_path} -map 0 -dn -map_metadata 1"
-                if chapters_path
-                else ""
+            metadata = (
+                self._build_investigation_metadata_file()
+                if getattr(self, "metadata_categories", ())
+                else None
             )
-            ffmpeg_cmd = (
-                f"{self.config.ffmpeg.ffmpeg_path} -hide_banner {ffmpeg_input}{chapter_args} -c copy -movflags +faststart"
-            ).split(" ")
+            if metadata and chapters_path:
+                with metadata.open("a", encoding="utf-8") as writer:
+                    writer.write(
+                        Path(chapters_path)
+                        .read_text(encoding="utf-8")
+                        .split("\n", 1)[1]
+                    )
+            resource = metadata or chapters_path
+            ffmpeg_cmd = [
+                self.config.ffmpeg.ffmpeg_path,
+                "-hide_banner",
+                *ffmpeg_input.split(" "),
+            ]
+            next_input = 1
+            if resource:
+                ffmpeg_cmd.extend(["-f", "ffmetadata", "-i", str(resource)])
+                next_input += 1
+            mode = getattr(self, "timestamp", ExportTimestampMode.none)
+            subtitles = None
+            if mode != ExportTimestampMode.none:
+                directory = Path(EXPORT_STAGING_DIR)
+                directory.mkdir(parents=True, exist_ok=True)
+                subtitles = directory / f"{self.export_id}_timestamps.srt"
+                self._timestamp_files.append(subtitles)
+                zone = (
+                    get_normalized_tz_name(self.config.ui.timezone)
+                    if self.config.ui.timezone
+                    else "UTC"
+                )
+                with subtitles.open("w", encoding="utf-8", newline="\n") as writer:
+                    writer.writelines(
+                        srt_timestamp_lines(
+                            timestamp_cues(self._timestamp_spans(), zone)
+                        )
+                    )
+                if mode in (ExportTimestampMode.subtitle, ExportTimestampMode.both):
+                    ffmpeg_cmd.extend(["-i", str(subtitles)])
+            ffmpeg_cmd.extend(["-map", "0:v:0", "-map", "0:a?", "-dn"])
+            if resource:
+                ffmpeg_cmd.extend(["-map_metadata", "1", "-map_chapters", "1"])
+            if subtitles:
+                ffmpeg_cmd.extend(
+                    timestamp_output_args(str(subtitles), mode, next_input)
+                )
+            else:
+                ffmpeg_cmd.extend(["-c", "copy"])
+            ffmpeg_cmd.extend(["-movflags", "+faststart"])
+            self._single_pass_labels = True
 
         # add metadata
         title = f"Frigate Recording for {self.camera}, {self.get_datetime_from_timestamp(self.start_time)} - {self.get_datetime_from_timestamp(self.end_time)}"
@@ -1373,10 +1435,13 @@ class RecordingExporter(threading.Thread):
                 f"title={title}",
                 "-metadata",
                 f"creation_time={creation_time}",
-                "-metadata",
-                f"comment=Camera: {self.camera}",
             ]
         )
+        if not (
+            getattr(self, "_single_pass_labels", False)
+            and getattr(self, "metadata_categories", ())
+        ):
+            ffmpeg_cmd.extend(["-metadata", f"comment=Camera: {self.camera}"])
 
         ffmpeg_cmd.append(video_path)
 
@@ -1557,6 +1622,7 @@ class RecordingExporter(threading.Thread):
             # staged runs hold a full copy of the export, so they must not
             # survive a failure the way the small chapter file could
             self._cleanup_staged_runs()
+            Path(self._chapter_metadata_path()).unlink(missing_ok=True)
             for path in self._timestamp_files:
                 path.unlink(missing_ok=True)
 
@@ -1594,7 +1660,16 @@ class RecordingExporter(threading.Thread):
                 ffmpeg_cmd, playlist_lines = self.get_record_export_command(video_path)
             else:
                 ffmpeg_cmd, playlist_lines = self.get_preview_export_command(video_path)
-        except DoesNotExist:
+        except (
+            DoesNotExist,
+            OSError,
+            ValueError,
+            DatabaseError,
+            ZoneInfoNotFoundError,
+            sp.SubprocessError,
+        ):
+            logger.exception("Export preparation failed for %s", self.export_id)
+            self._discard_failed_export(video_path, thumb_path)
             return
 
         # When neither custom ffmpeg arg is set the default path uses
@@ -1603,11 +1678,14 @@ class RecordingExporter(threading.Thread):
         # The retry branch below always re-encodes because cpu_fallback
         # requires custom args; it stays "encoding_retry".
         is_stream_copy = (
-            self.ffmpeg_input_args is None and self.ffmpeg_output_args is None
+            self.ffmpeg_input_args is None
+            and self.ffmpeg_output_args is None
+            and self.timestamp
+            not in (ExportTimestampMode.burn_in, ExportTimestampMode.both)
         )
         initial_step = "copying" if is_stream_copy else "encoding"
 
-        if self.staged_runs:
+        if self.staged_runs and is_stream_copy:
             # staging already reported a full pass under its own step
             initial_step = "merging"
 
@@ -1654,12 +1732,19 @@ class RecordingExporter(threading.Thread):
         else:
             if self.timestamp != ExportTimestampMode.none:
                 try:
-                    self._apply_timestamps(video_path)
+                    if getattr(self, "_single_pass_labels", False):
+                        self._validate_timestamp_timeline(
+                            video_path, self._timestamp_spans()
+                        )
+                    else:
+                        self._apply_timestamps(video_path)
                 except (OSError, ValueError, ZoneInfoNotFoundError):
                     logger.exception("Timestamp export failed for %s", self.export_id)
                     self._discard_failed_export(video_path, thumb_path)
                     return
-            if self.metadata_categories:
+            if self.metadata_categories and not getattr(
+                self, "_single_pass_labels", False
+            ):
                 try:
                     self._apply_investigation_metadata(video_path)
                 except (OSError, ValueError, DatabaseError):
@@ -1726,9 +1811,10 @@ class RecordingExporter(threading.Thread):
             raise ValueError("No realized recording timeline for timestamp labels")
         return spans
 
-    def _apply_timestamps(self, video_path: str) -> None:
-        """Render/mux an export copy and publish only after successful completion."""
-        spans = self._timestamp_spans()
+    def _validate_timestamp_timeline(
+        self, video_path: str, spans: list[TimestampSpan]
+    ) -> None:
+        """Verify caption timing against completed media without copying it again."""
         expected = sum(span.output_duration for span in spans)
 
         async def probe():
@@ -1755,6 +1841,11 @@ class RecordingExporter(threading.Thread):
             raise ValueError(
                 "Export media does not match the realized timestamp timeline"
             )
+
+    def _apply_timestamps(self, video_path: str) -> None:
+        """Render/mux a custom export copy after validating its capture timeline."""
+        spans = self._timestamp_spans()
+        self._validate_timestamp_timeline(video_path, spans)
         zone = (
             get_normalized_tz_name(self.config.ui.timezone)
             if self.config.ui.timezone
@@ -1786,8 +1877,8 @@ class RecordingExporter(threading.Thread):
             raise OSError("Timestamp export rendering failed")
         os.replace(rendered, video_path)
 
-    def _apply_investigation_metadata(self, video_path: str) -> None:
-        """Embed only selected camera-scoped context in an export copy."""
+    def _build_investigation_metadata_file(self) -> Path:
+        """Write only explicitly selected camera-scoped context for the final mux."""
         categories = self.metadata_categories
         offset = 0.0
         media_timeline = []
@@ -1885,9 +1976,15 @@ class RecordingExporter(threading.Thread):
         directory = Path(EXPORT_STAGING_DIR)
         directory.mkdir(parents=True, exist_ok=True)
         resource = directory / f"{self.export_id}_context.txt"
-        output = Path(video_path).with_suffix(".metadata.mp4")
-        self._timestamp_files.extend([resource, output])
+        self._timestamp_files.append(resource)
         resource.write_text(metadata_text(document), encoding="utf-8")
+        return resource
+
+    def _apply_investigation_metadata(self, video_path: str) -> None:
+        """Attach selected context to the legacy custom-path export copy."""
+        resource = self._build_investigation_metadata_file()
+        output = Path(video_path).with_suffix(".metadata.mp4")
+        self._timestamp_files.append(output)
         command = metadata_mux_command(
             self.config.ffmpeg.ffmpeg_path, video_path, str(resource), str(output)
         )
