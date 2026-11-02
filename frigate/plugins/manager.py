@@ -55,6 +55,7 @@ class PluginManager:
         self.suspended: set[str] = set()
         self.service_error: str | None = None
         self.inference = EventInferenceController(root)
+        self.recording_only_cameras: dict[str, bool] | None = None
 
     def _save(self) -> None:
         write_private_json(
@@ -72,12 +73,17 @@ class PluginManager:
         return self.root / "packages" / plugin_id / entry.digest
 
     def _claims(self) -> None:
+        configured = self.get_config().cameras
         cameras = {
             camera: True
             for entry in self.settings.plugins.values()
             for camera in entry.bindings.values()
+            if camera not in configured or not configured[camera].detect.enabled
         }
+        if cameras == self.recording_only_cameras:
+            return
         write_private_json(self.root / "recording-only.json", cameras)
+        self.recording_only_cameras = cameras
 
     async def start(self) -> None:
         """Restore lifecycle intent, but never authenticate or enable implicitly."""
@@ -486,7 +492,7 @@ class PluginManager:
                             changed = True
                     if changed:
                         await asyncio.to_thread(self._save)
-                        await asyncio.to_thread(self._claims)
+                    await asyncio.to_thread(self._claims)
                     if (
                         self.client
                         and any(item.enabled for item in self.settings.plugins.values())

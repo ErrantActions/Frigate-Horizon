@@ -21,6 +21,13 @@ Playing original H265/HEVC recordings depends on the browser, operating system,
 available codecs, hardware, and the recording's profile. A current browser
 version alone does not guarantee support.
 
+Plugin cameras such as Ring default to recording-only operation. Explicitly
+enabling the camera's `detect.enabled` selects normal continuous detection
+capture instead of waiting for a plugin motion-event window. Configure motion
+detection separately as for other cameras. The plugin reconciles this selection
+at runtime and after restart; it does not change original recording quality.
+Continuous cloud-camera availability remains subject to provider session gaps.
+
 ### Private HTTPS MP4 review
 
 Set `ui.recorded_http: true` to select finite HTTPS MP4 recording windows instead

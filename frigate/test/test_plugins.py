@@ -167,6 +167,34 @@ class TestPluginRuntime(unittest.IsolatedAsyncioTestCase):
         saved = json.loads((self.root / "settings.json").read_text())
         self.assertEqual(saved["plugins"]["ring"]["manifest"]["api_version"], 1)
 
+    async def test_continuous_detection_releases_only_its_recording_only_claim(self):
+        self.manager.settings.plugins["example"] = PluginEntry(
+            manifest=PluginManifest(**MANIFEST),
+            digest="0" * 64,
+            bindings={"one": "continuous", "two": "event_only"},
+        )
+        self.config.cameras = {
+            "continuous": SimpleNamespace(detect=SimpleNamespace(enabled=False)),
+            "event_only": SimpleNamespace(detect=SimpleNamespace(enabled=False)),
+            "unrelated": SimpleNamespace(detect=SimpleNamespace(enabled=True)),
+        }
+        target = self.root / "recording-only.json"
+        self.manager._claims()
+        self.assertEqual(
+            json.loads(target.read_text()), {"continuous": True, "event_only": True}
+        )
+        self.config.cameras["continuous"].detect.enabled = True
+        self.manager._claims()
+        self.assertEqual(json.loads(target.read_text()), {"event_only": True})
+        modified = target.stat().st_mtime_ns
+        self.manager._claims()
+        self.assertEqual(target.stat().st_mtime_ns, modified)
+        self.config.cameras["continuous"].detect.enabled = False
+        self.manager._claims()
+        self.assertEqual(
+            json.loads(target.read_text()), {"continuous": True, "event_only": True}
+        )
+
     async def test_external_install_requires_developer_mode_and_acknowledgement(self):
         with self.assertRaisesRegex(PluginError, "acknowledgement"):
             await self.manager.install(
@@ -195,7 +223,9 @@ class TestPluginRuntime(unittest.IsolatedAsyncioTestCase):
             digest="0" * 64,
             bindings={"device": "front"},
         )
-        self.config.cameras["front"] = SimpleNamespace(enabled=True)
+        self.config.cameras["front"] = SimpleNamespace(
+            enabled=True, detect=SimpleNamespace(enabled=False)
+        )
         snapshot = PluginSnapshot(
             state="running",
             events=[
@@ -225,7 +255,9 @@ class TestPluginRuntime(unittest.IsolatedAsyncioTestCase):
             digest="0" * 64,
             bindings={"device": "front"},
         )
-        self.config.cameras["front"] = SimpleNamespace(enabled=True)
+        self.config.cameras["front"] = SimpleNamespace(
+            enabled=True, detect=SimpleNamespace(enabled=False)
+        )
         clock = [100.0]
         self.manager.inference.clock = lambda: clock[0]
         with (
@@ -291,7 +323,9 @@ class TestPluginRuntime(unittest.IsolatedAsyncioTestCase):
             digest="0" * 64,
             bindings={"device": "front"},
         )
-        self.config.cameras["front"] = SimpleNamespace(enabled=False)
+        self.config.cameras["front"] = SimpleNamespace(
+            enabled=False, detect=SimpleNamespace(enabled=False)
+        )
         await self.manager._apply(
             "example",
             PluginSnapshot(
@@ -334,7 +368,9 @@ class TestPluginRuntime(unittest.IsolatedAsyncioTestCase):
     async def test_uninstall_refuses_configured_cameras(self):
         await self.manager.install(True, None, None, False)
         self.manager.settings.plugins["ring"].bindings["device"] = "front"
-        self.config.cameras["front"] = SimpleNamespace(enabled=True)
+        self.config.cameras["front"] = SimpleNamespace(
+            enabled=True, detect=SimpleNamespace(enabled=False)
+        )
         with self.assertRaisesRegex(PluginError, "remove_plugin_cameras_first"):
             await self.manager.uninstall("ring")
 
