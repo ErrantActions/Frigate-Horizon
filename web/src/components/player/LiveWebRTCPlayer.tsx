@@ -319,6 +319,7 @@ export default function LiveWebRTCPlayer({
                 lastTime > 0
                   ? Math.max(0, bytes - lastBytes) / (now - lastTime)
                   : 0,
+              bandwidthMeasured: lastTime > 0,
               totalFrames: total,
               droppedFrames: dropped,
               decodedFrames: total - dropped,

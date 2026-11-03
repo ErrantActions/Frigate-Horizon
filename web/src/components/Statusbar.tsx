@@ -21,6 +21,7 @@ import useSWR from "swr";
 import { FaCheck } from "react-icons/fa";
 import { MdCircle } from "react-icons/md";
 import { Link } from "react-router-dom";
+import { formatMetric, metricNumber } from "@/utils/resourceUtil";
 
 export default function Statusbar() {
   const { t } = useTranslation(["views/system"]);
@@ -33,11 +34,7 @@ export default function Statusbar() {
   const cpuPercent = useMemo(() => {
     const systemCpu = stats?.cpu_usages["frigate.full_system"]?.cpu;
 
-    if (!systemCpu || systemCpu == "0.0") {
-      return null;
-    }
-
-    return parseInt(systemCpu);
+    return metricNumber(systemCpu);
   }, [stats]);
 
   const { data: profilesData } = useSWR<ProfilesApiResponse>("profiles");
@@ -58,8 +55,8 @@ export default function Statusbar() {
   return (
     <div className="absolute bottom-0 left-0 right-0 z-10 flex h-8 w-full items-center justify-between border-t border-secondary-highlight bg-background_alt px-4 dark:text-secondary-foreground">
       <div className="flex h-full items-center gap-2">
-        {cpuPercent && (
-          <Link to="/system#general">
+        {cpuPercent !== null && (
+          <Link to="/system#general" title={t("resources.hostCpuDescription")}>
             <div className="flex cursor-pointer items-center gap-2 text-sm hover:underline">
               <MdCircle
                 className={`size-2 ${
@@ -70,7 +67,9 @@ export default function Statusbar() {
                       : "text-danger"
                 }`}
               />
-              CPU {cpuPercent}%
+              {t("resources.hostCpuValue", {
+                percent: formatMetric(cpuPercent),
+              })}
             </div>
           </Link>
         )}
@@ -95,14 +94,18 @@ export default function Statusbar() {
               break;
           }
 
-          const gpu = parseInt(stats.gpu);
+          const gpu = metricNumber(stats.gpu);
 
-          if (isNaN(gpu)) {
+          if (gpu === null) {
             return;
           }
 
           return (
-            <Link key={name} to="/system#general">
+            <Link
+              key={name}
+              to="/system#general"
+              title={t("resources.gpuBasis")}
+            >
               {" "}
               <div
                 key={name}
@@ -117,7 +120,7 @@ export default function Statusbar() {
                         : "text-danger"
                   }`}
                 />
-                {gpuTitle} {gpu}%
+                {gpuTitle} {formatMetric(gpu)}%
               </div>
             </Link>
           );

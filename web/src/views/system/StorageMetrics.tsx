@@ -149,6 +149,9 @@ export default function StorageMetrics({
   return (
     <div className="scrollbar-container mt-4 flex size-full flex-col overflow-y-auto">
       <RecordingStorageDashboard isActive={isActive}>
+        <p className="my-3 text-sm text-muted-foreground" role="note">
+          {t("resources.storageBasis")}
+        </p>
         {cameraError || statsError || configError ? (
           <div role="alert" className="my-4 rounded-lg border p-4 text-sm">
             <p>{t("loadFailed", { ns: "views/storage" })}</p>

@@ -26,6 +26,11 @@ import { useTranslation } from "react-i18next";
 import { CameraNameLabel } from "@/components/camera/FriendlyNameLabel";
 import { resolveCameraName } from "@/hooks/use-camera-friendly-name";
 import { isReplayCamera } from "@/utils/cameraUtil";
+import {
+  cpuCapacityPercent,
+  cpuCoreEquivalents,
+  formatMetric,
+} from "@/utils/resourceUtil";
 
 type CameraMetricsProps = {
   lastUpdated: number;
@@ -55,7 +60,7 @@ export default function CameraMetrics({
     [
       "stats/history",
       {
-        keys: "cameras.camera_fps,cameras.detection_fps,cameras.skipped_fps,cameras.ffmpeg_cpu,cameras.capture_cpu,cameras.detect_cpu,cameras.connection_quality,cameras.expected_fps,cameras.reconnects_last_hour,cameras.stalls_last_hour,camera_fps,detection_fps,skipped_fps,service.last_updated",
+        keys: "cameras.camera_fps,cameras.detection_fps,cameras.skipped_fps,cameras.ffmpeg_cpu,cameras.capture_cpu,cameras.detect_cpu,cameras.connection_quality,cameras.expected_fps,cameras.reconnects_last_hour,cameras.stalls_last_hour,camera_fps,detection_fps,skipped_fps,resources,service.last_updated",
       },
     ],
     {
@@ -142,17 +147,17 @@ export default function CameraMetrics({
       }
 
       series["overall_fps"].data.push({
-        x: statsIdx,
+        x: statsIdx + 1,
         y: stats.camera_fps,
       });
 
       series["overall_dps"].data.push({
-        x: statsIdx,
+        x: statsIdx + 1,
         y: stats.detection_fps,
       });
 
       series["overall_skipped_dps"].data.push({
-        x: statsIdx,
+        x: statsIdx + 1,
         y: stats.skipped_fps,
       });
     });
@@ -166,7 +171,10 @@ export default function CameraMetrics({
 
     const series: {
       [cam: string]: {
-        [key: string]: { name: string; data: { x: number; y: string }[] };
+        [key: string]: {
+          name: string;
+          data: { x: number; y: number | null }[];
+        };
       };
     } = {};
 
@@ -198,16 +206,16 @@ export default function CameraMetrics({
         }
 
         series[key]["ffmpeg"].data.push({
-          x: statsIdx,
-          y: camStats.ffmpeg_cpu ?? "0",
+          x: statsIdx + 1,
+          y: cpuCapacityPercent(camStats.ffmpeg_cpu, stats.resources),
         });
         series[key]["capture"].data.push({
-          x: statsIdx,
-          y: camStats.capture_cpu ?? "0",
+          x: statsIdx + 1,
+          y: cpuCapacityPercent(camStats.capture_cpu, stats.resources),
         });
         series[key]["detect"].data.push({
-          x: statsIdx,
-          y: camStats.detect_cpu ?? "0",
+          x: statsIdx + 1,
+          y: cpuCapacityPercent(camStats.detect_cpu, stats.resources),
         });
       });
     });
@@ -259,15 +267,15 @@ export default function CameraMetrics({
         }
 
         series[key]["fps"].data.push({
-          x: statsIdx,
+          x: statsIdx + 1,
           y: camStats.camera_fps,
         });
         series[key]["det"].data.push({
-          x: statsIdx,
+          x: statsIdx + 1,
           y: camStats.detection_fps,
         });
         series[key]["skip"].data.push({
-          x: statsIdx,
+          x: statsIdx + 1,
           y: camStats.skipped_fps,
         });
       });
@@ -382,7 +390,31 @@ export default function CameraMetrics({
                       >
                         {Object.keys(cameraCpuSeries).includes(camera.name) ? (
                           <div className="rounded-lg bg-background_alt p-2.5 md:rounded-2xl">
-                            <div className="mb-5">CPU</div>
+                            <div className="mb-2">
+                              {t("resources.cpuTitle")}
+                            </div>
+                            <p className="mb-3 text-xs text-muted-foreground">
+                              {t("resources.cameraCores", {
+                                ffmpeg: formatMetric(
+                                  cpuCoreEquivalents(
+                                    statsHistory.at(-1)?.cameras[camera.name]
+                                      ?.ffmpeg_cpu,
+                                  ),
+                                ),
+                                capture: formatMetric(
+                                  cpuCoreEquivalents(
+                                    statsHistory.at(-1)?.cameras[camera.name]
+                                      ?.capture_cpu,
+                                  ),
+                                ),
+                                detect: formatMetric(
+                                  cpuCoreEquivalents(
+                                    statsHistory.at(-1)?.cameras[camera.name]
+                                      ?.detect_cpu,
+                                  ),
+                                ),
+                              })}
+                            </p>
                             <CameraLineGraph
                               graphId={`${camera.name}-cpu`}
                               unit="%"

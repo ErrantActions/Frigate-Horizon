@@ -1,5 +1,5 @@
 import logging
-import re
+import math
 from typing import Any
 
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -9,6 +9,17 @@ from prometheus_client.core import (
     GaugeMetricFamily,
     InfoMetricFamily,
 )
+
+
+def metric_number(value: Any) -> float | None:
+    """Omit unavailable metrics while preserving zero and scientific notation."""
+    if isinstance(value, bool):
+        return float(value)
+    try:
+        numeric = float(str(value).strip().removesuffix("%"))
+    except (TypeError, ValueError):
+        return None
+    return numeric if math.isfinite(numeric) else None
 
 
 class CustomCollector:
@@ -21,9 +32,9 @@ class CustomCollector:
 
     def add_metric(self, metric, label, stats, key, multiplier=1.0):  # Now a method
         try:
-            string = str(stats[key])
-            value = float(re.findall(r"-?\d*\.?\d*", string)[0])
-            metric.add_metric(label, value * multiplier)
+            value = metric_number(stats[key])
+            if value is not None:
+                metric.add_metric(label, value * multiplier)
         except (KeyError, TypeError, IndexError, ValueError):
             pass
 
@@ -46,7 +57,9 @@ class CustomCollector:
                 label_values.append(cpu_usages[pid]["cmdline"])
             except KeyError:
                 pass
-            metric.add_metric(label_values, cpu_usages[pid][cpu_or_memory])
+            value = metric_number(cpu_usages[pid][cpu_or_memory])
+            if value is not None:
+                metric.add_metric(label_values, value)
             # Don't modify the original data
         except (KeyError, TypeError, IndexError):
             pass
@@ -65,12 +78,12 @@ class CustomCollector:
         # process stats for cameras, detectors and other
         cpu_usages_metric = GaugeMetricFamily(
             "frigate_cpu_usage_percent",
-            "Process CPU usage %",
+            "CPU percent of one logical CPU; frigate.full_system is host-wide",
             labels=["pid", "name", "process", "type", "cmdline"],
         )
         mem_usages = GaugeMetricFamily(
             "frigate_mem_usage_percent",
-            "Process memory usage %",
+            "Resident memory percent of effective host/container RAM capacity",
             labels=["pid", "name", "process", "type", "cmdline"],
         )
 
@@ -199,7 +212,12 @@ class CustomCollector:
         # bandwidth stats
         bandwidth_usages = GaugeMetricFamily(
             "frigate_bandwidth_usages_kBps",
-            "bandwidth usages kilobytes per second",
+            "Combined send/receive KiB per second (legacy kBps metric name)",
+            labels=["pid", "name", "process", "cmdline"],
+        )
+        bandwidth_bytes = GaugeMetricFamily(
+            "frigate_bandwidth_bytes_per_second",
+            "Combined send/receive bytes per second",
             labels=["pid", "name", "process", "cmdline"],
         )
 
@@ -218,12 +236,14 @@ class CustomCollector:
                     label.append(stats["cpu_usages"][b_pid]["cmdline"])  # process label
                     label.append(stats["cpu_usages"][b_pid]["cmdline"])  # cmdline label
                     self.add_metric(bandwidth_usages, label, b_stats, "bandwidth")
+                    self.add_metric(bandwidth_bytes, label, b_stats, "bandwidth", 1024)
                 except KeyError:
                     pass
         except KeyError:
             pass
 
         yield bandwidth_usages
+        yield bandwidth_bytes
 
         # detector stats
         try:
@@ -348,26 +368,83 @@ class CustomCollector:
         yield cpu_usages_metric
         yield mem_usages
 
+        resources = stats.get("resources", {})
+        capacity = metric_number(resources.get("cpu_capacity"))
+        memory_capacity = metric_number(resources.get("memory_capacity_bytes"))
+        cpu_capacity = GaugeMetricFamily(
+            "frigate_cpu_capacity_cores",
+            "Available logical CPU equivalents after affinity and visible quotas",
+        )
+        ram_capacity = GaugeMetricFamily(
+            "frigate_memory_capacity_bytes",
+            "Effective host/container RAM capacity in bytes",
+        )
+        cpu_share = GaugeMetricFamily(
+            "frigate_process_cpu_capacity_percent",
+            "Process CPU percent of available Frigate capacity",
+            labels=["pid"],
+        )
+        cpu_cores = GaugeMetricFamily(
+            "frigate_process_cpu_cores",
+            "Process logical CPU equivalents",
+            labels=["pid"],
+        )
+        resident = GaugeMetricFamily(
+            "frigate_process_resident_memory_bytes",
+            "Process resident RAM bytes (RSS), shared pages may overlap",
+            labels=["pid"],
+        )
+        host_cpu = GaugeMetricFamily(
+            "frigate_host_cpu_usage_percent",
+            "Host-wide CPU busy percent, including other workloads",
+        )
+        if capacity is not None and capacity > 0:
+            cpu_capacity.add_metric([], capacity)
+        if memory_capacity is not None and memory_capacity > 0:
+            ram_capacity.add_metric([], memory_capacity)
+        for pid, usage in stats.get("cpu_usages", {}).items():
+            if pid == "frigate.full_system":
+                self.add_metric(host_cpu, [], usage, "cpu")
+            elif pid.isdigit():
+                raw = metric_number(usage.get("cpu"))
+                if raw is not None and raw >= 0:
+                    cpu_cores.add_metric([pid], raw / 100)
+                    if capacity is not None and capacity > 0:
+                        cpu_share.add_metric([pid], raw / capacity)
+                self.add_metric(resident, [pid], usage, "mem_bytes")
+        yield from (
+            cpu_capacity,
+            ram_capacity,
+            cpu_share,
+            cpu_cores,
+            resident,
+            host_cpu,
+        )
+
         # gpu stats
         gpu_usages = GaugeMetricFamily(
-            "frigate_gpu_usage_percent", "GPU utilisation %", labels=["gpu_name"]
+            "frigate_gpu_usage_percent",
+            "Device-wide GPU processing engine busy percent",
+            labels=["gpu_name"],
         )
         gpu_mem_usages = GaugeMetricFamily(
-            "frigate_gpu_mem_usage_percent", "GPU memory usage %", labels=["gpu_name"]
+            "frigate_gpu_mem_usage_percent",
+            "Device-wide allocated GPU memory percent",
+            labels=["gpu_name"],
         )
         gpu_enc_usages = GaugeMetricFamily(
             "frigate_gpu_encoder_usage_percent",
-            "GPU encoder utilisation %",
+            "Device-wide GPU encoder busy percent",
             labels=["gpu_name"],
         )
         gpu_compute_usages = GaugeMetricFamily(
             "frigate_gpu_compute_usage_percent",
-            "GPU compute / encode utilisation %",
+            "Device-wide GPU compute / encode busy percent",
             labels=["gpu_name"],
         )
         gpu_dec_usages = GaugeMetricFamily(
             "frigate_gpu_decoder_usage_percent",
-            "GPU decoder utilisation %",
+            "Device-wide GPU decoder busy percent",
             labels=["gpu_name"],
         )
 
@@ -449,14 +526,14 @@ class CustomCollector:
         try:
             for storage_path, storage_stats in stats["service"]["storage"].items():
                 self.add_metric(
-                    storage_free, [storage_path], storage_stats, "free", 1e6
-                )  # MB to bytes
+                    storage_free, [storage_path], storage_stats, "free", 2**20
+                )
                 self.add_metric(
-                    storage_total, [storage_path], storage_stats, "total", 1e6
-                )  # MB to bytes
+                    storage_total, [storage_path], storage_stats, "total", 2**20
+                )
                 self.add_metric(
-                    storage_used, [storage_path], storage_stats, "used", 1e6
-                )  # MB to bytes
+                    storage_used, [storage_path], storage_stats, "used", 2**20
+                )
                 storage_mount_type.add_metric(
                     storage_path,
                     {

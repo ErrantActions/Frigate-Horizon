@@ -3,6 +3,20 @@
  */
 
 import { deepMerge, type DeepPartial } from "./config";
+import type { ResourceLimits } from "../../../src/types/stats";
+
+const RESOURCES: ResourceLimits = {
+  host_logical_cpus: 4,
+  cpu_affinity: 4,
+  cpu_quota: null,
+  cpu_capacity: 4,
+  cpu_scope: "host",
+  host_memory_bytes: 8 * 2 ** 30,
+  memory_limit_bytes: null,
+  memory_capacity_bytes: 8 * 2 ** 30,
+  memory_scope: "host",
+  errors: [],
+};
 
 function cameraStats(_name: string) {
   return {
@@ -25,6 +39,7 @@ function cameraStats(_name: string) {
 }
 
 export const BASE_STATS = {
+  resources: RESOURCES,
   cameras: {
     front_door: cameraStats("front_door"),
     backyard: cameraStats("backyard"),
@@ -32,6 +47,12 @@ export const BASE_STATS = {
   },
   cpu_usages: {
     "1": { cmdline: "frigate.app", cpu: "5.0", cpu_average: "4.5", mem: "2.1" },
+    "frigate.full_system": {
+      cmdline: "",
+      cpu: "5.0",
+      cpu_average: "5.0",
+      mem: "30.0",
+    },
   },
   detectors: {
     cpu: {

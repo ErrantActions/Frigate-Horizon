@@ -36,7 +36,9 @@ export type VolumeState = Record<string, number>;
 
 export type PlayerStatsType = {
   streamType: string;
+  /** Decimal kB/s; received video for WebRTC, available bandwidth estimate for HLS. */
   bandwidth: number;
+  bandwidthMeasured?: boolean;
   totalFrames: number;
   droppedFrames: number | undefined;
   decodedFrames: number | undefined;

@@ -155,6 +155,7 @@ export default function LivePlayer({
   const [stats, setStats] = useState<PlayerStatsType>({
     streamType: "-",
     bandwidth: 0, // in kBps
+    bandwidthMeasured: false,
     totalFrames: 0,
     droppedFrames: undefined,
     decodedFrames: 0,

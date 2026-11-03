@@ -470,7 +470,7 @@ test.describe("System — Health tab @medium", () => {
     );
     await expect(row).toBeVisible({ timeout: 15_000 });
     await expect(row).toContainText(
-      "/dev/shm allocation (64 MB) should be increased to at least 180 MB",
+      "/dev/shm allocation (64 MiB) should be increased to at least 180 MiB",
     );
     await expect(
       row.getByRole("link", { name: "Open settings" }),

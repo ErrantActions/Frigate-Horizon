@@ -18,6 +18,7 @@ from frigate.motion.record_only import recording_only
 from frigate.object_detection.base import ObjectDetectProcess
 from frigate.stats.hardware import HardwareStats, get_hardware_temperatures
 from frigate.types import StatsTrackingTypes
+from frigate.util.resource import get_resource_limits
 from frigate.util.services import (
     calculate_shm_requirements,
     get_bandwidth_stats,
@@ -338,6 +339,7 @@ def stats_snapshot(
     )
 
     hardware_stats.update_stats(stats)
+    stats["resources"] = get_resource_limits()
 
     if config.telemetry.stats.network_bandwidth:
         bandwidth_stats = get_bandwidth_stats(config)
@@ -396,6 +398,8 @@ def stats_snapshot(
         usage = cpu_usages.get(pid_str, {})
         det_stats["cpu"] = usage.get("cpu")
         det_stats["mem"] = usage.get("mem")
+        if usage.get("mem_bytes") is not None:
+            det_stats["mem_bytes"] = usage["mem_bytes"]
 
     for cam_stats in stats["cameras"].values():
         for pid_key, field in [
@@ -412,5 +416,7 @@ def stats_snapshot(
         usage = cpu_usages.get(pid_str, {})
         proc_stats["cpu"] = usage.get("cpu")
         proc_stats["mem"] = usage.get("mem")
+        if usage.get("mem_bytes") is not None:
+            proc_stats["mem_bytes"] = usage["mem_bytes"]
 
     return stats

@@ -18,6 +18,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { getUnitSize } from "@/utils/storageUtil";
+import { formatMetric, usagePercent } from "@/utils/resourceUtil";
 import { CameraStorage, StreamStorage } from "@/types/stats";
 import { RecordingStorageTiers, RecordingStorageUsage } from "@/types/storage";
 
@@ -350,7 +351,7 @@ export function CombinedStorageGraph({
               <TableHead>
                 {t("cameras.localFilesystemShare", { ns: "views/storage" })}
               </TableHead>
-              <TableHead>{t("storage.cameraStorage.bandwidth")}</TableHead>
+              <TableHead>{t("resources.recordingGrowth")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -457,11 +458,9 @@ export function CombinedStorageGraph({
                     );
                   })}
                   <TableCell>
-                    {(totalStorage.total > 0
-                      ? (row.usage / totalStorage.total) * 100
-                      : 0
-                    ).toFixed(2)}
-                    %
+                    {formatMetric(usagePercent(row.usage, totalStorage.total))}
+                    {usagePercent(row.usage, totalStorage.total) !== null &&
+                      "%"}
                   </TableCell>
                   <TableCell>
                     {isAggregate || row.bandwidth === undefined

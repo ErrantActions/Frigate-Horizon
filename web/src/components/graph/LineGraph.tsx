@@ -11,6 +11,7 @@ import { useTranslation } from "react-i18next";
 import { MdCircle } from "react-icons/md";
 import useSWR from "swr";
 import { useTimeFormat } from "@/hooks/use-date-utils";
+import { formatMetric, latestMetricPoint } from "@/utils/resourceUtil";
 
 const GRAPH_COLORS = ["#5C7CFA", "#ED5CFA", "#FAD75C"];
 
@@ -35,17 +36,15 @@ export function CameraLineGraph({
     revalidateOnFocus: false,
   });
 
-  const lastValues = useMemo<number[] | undefined>(() => {
+  const lastValues = useMemo<(number | null)[] | undefined>(() => {
     if (!dataLabels || !data || data.length == 0) {
       return undefined;
     }
 
-    return dataLabels.map(
-      (_, labelIdx) =>
-        // @ts-expect-error y is valid
-        data[labelIdx].data[data[labelIdx].data.length - 1]?.y ?? 0,
-    ) as number[];
-  }, [data, dataLabels]);
+    return dataLabels.map((_, labelIdx) =>
+      latestMetricPoint(data[labelIdx]?.data, updateTimes.length),
+    );
+  }, [data, dataLabels, updateTimes.length]);
 
   const { theme, systemTheme } = useTheme();
 
@@ -108,6 +107,7 @@ export function CameraLineGraph({
       },
       tooltip: {
         theme: systemTheme || theme,
+        y: { formatter: (val: number) => `${formatMetric(val)}${unit}` },
       },
       markers: {
         size: 0,
@@ -132,7 +132,7 @@ export function CameraLineGraph({
       yaxis: {
         show: true,
         labels: {
-          formatter: (val: number) => Math.ceil(val).toString(),
+          formatter: (val: number) => formatMetric(val),
           style: {
             colors: "#6B6B6B",
           },
@@ -140,7 +140,7 @@ export function CameraLineGraph({
         min: 0,
       },
     } as ApexCharts.ApexOptions;
-  }, [graphId, systemTheme, theme, formatTime]);
+  }, [graphId, systemTheme, theme, formatTime, unit]);
 
   useEffect(() => {
     ApexCharts.exec(graphId, "updateOptions", options, true, true);
@@ -170,8 +170,8 @@ export function CameraLineGraph({
                 {t("cameras.label." + label)}
               </div>
               <div className="text-xs text-primary">
-                {lastValues[labelIdx]}
-                {unit}
+                {formatMetric(lastValues[labelIdx])}
+                {lastValues[labelIdx] !== null && unit}
               </div>
             </div>
           ))}
@@ -204,10 +204,9 @@ export function EventsPerSecondsLineGraph({
 
   const { theme, systemTheme } = useTheme();
 
-  const lastValue = useMemo<number>(
-    // @ts-expect-error y is valid
-    () => data[0].data[data[0].data.length - 1]?.y ?? 0,
-    [data],
+  const lastValue = useMemo(
+    () => latestMetricPoint(data[0]?.data, updateTimes.length),
+    [data, updateTimes.length],
   );
 
   const locale = useDateLocale();
@@ -294,7 +293,7 @@ export function EventsPerSecondsLineGraph({
       yaxis: {
         show: true,
         labels: {
-          formatter: (val: number) => Math.ceil(val).toString(),
+          formatter: (val: number) => formatMetric(val),
           style: {
             colors: "#6B6B6B",
           },
@@ -323,8 +322,8 @@ export function EventsPerSecondsLineGraph({
       <div className="flex items-center gap-1">
         <div className="text-xs text-secondary-foreground">{name}</div>
         <div className="text-xs text-primary">
-          {lastValue}
-          {unit}
+          {formatMetric(lastValue)}
+          {lastValue !== null && unit}
         </div>
       </div>
       <Chart type="line" options={options} series={data} height="120" />

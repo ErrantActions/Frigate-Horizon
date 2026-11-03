@@ -1,4 +1,5 @@
 export interface FrigateStats {
+  resources?: ResourceLimits;
   cameras: { [camera_name: string]: CameraStats };
   cpu_usages: { [pid: string]: CpuStats };
   detectors: { [detectorKey: string]: DetectorStats };
@@ -12,6 +13,19 @@ export interface FrigateStats {
   skipped_fps: number;
   detection_fps: number;
 }
+
+export type ResourceLimits = {
+  host_logical_cpus: number;
+  cpu_affinity: number;
+  cpu_quota: number | null;
+  cpu_capacity: number | null;
+  cpu_scope: "host" | "container" | "unknown";
+  host_memory_bytes: number;
+  memory_limit_bytes: number | null;
+  memory_capacity_bytes: number | null;
+  memory_scope: "host" | "container" | "unknown";
+  errors: string[];
+};
 
 export type CameraStats = {
   capture_mode?: "recording_only" | "decoded_detection";
@@ -56,16 +70,17 @@ export type CameraStats = {
   expected_fps: number;
   reconnects_last_hour: number;
   stalls_last_hour: number;
-  ffmpeg_cpu?: string;
-  capture_cpu?: string;
-  detect_cpu?: string;
+  ffmpeg_cpu?: string | null;
+  capture_cpu?: string | null;
+  detect_cpu?: string | null;
 };
 
 export type CpuStats = {
-  cmdline: string;
+  cmdline?: string;
   cpu: string;
-  cpu_average: string;
-  mem: string;
+  cpu_average?: string | null;
+  mem: string | null;
+  mem_bytes?: number | null;
 };
 
 export type DetectorStats = {
@@ -73,8 +88,9 @@ export type DetectorStats = {
   inference_speed: number;
   pid: number;
   temperature?: number;
-  cpu?: string;
-  mem?: string;
+  cpu?: string | null;
+  mem?: string | null;
+  mem_bytes?: number | null;
 };
 
 export type EmbeddingsStats = {
@@ -89,8 +105,9 @@ export type EmbeddingsStats = {
 
 export type ExtraProcessStats = {
   pid: number;
-  cpu?: string;
-  mem?: string;
+  cpu?: string | null;
+  mem?: string | null;
+  mem_bytes?: number | null;
 };
 
 export type GpuVendor = "intel" | "amd" | "nvidia" | "rockchip" | "rpi";

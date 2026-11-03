@@ -3,7 +3,7 @@ import { FrigateStats, GpuInfo, GpuStats } from "@/types/stats";
 import { startTransition, useEffect, useMemo, useState } from "react";
 import { useFrigateStats } from "@/api/ws";
 import {
-  DetectorCpuThreshold,
+  ResourceCpuThreshold,
   DetectorMemThreshold,
   DetectorTempThreshold,
   GPUMemThreshold,
@@ -22,6 +22,13 @@ import { ThresholdBarGraph } from "@/components/graph/SystemGraph";
 import { cn } from "@/lib/utils";
 import { useTranslation } from "react-i18next";
 import { CiCircleAlert } from "react-icons/ci";
+import {
+  cpuCapacityPercent,
+  cpuCoreEquivalents,
+  formatMetric,
+  metricNumber,
+} from "@/utils/resourceUtil";
+import { getUnitSizeFromBytes } from "@/utils/storageUtil";
 
 type GeneralMetricsProps = {
   lastUpdated: number;
@@ -43,7 +50,7 @@ export default function GeneralMetrics({
     [
       "stats/history",
       {
-        keys: "detectors.inference_speed,detectors.temperature,detectors.cpu,detectors.mem,gpu_usages,npu_usages,processes.cpu,processes.mem,service.last_updated",
+        keys: "detectors.inference_speed,detectors.temperature,detectors.cpu,detectors.mem,detectors.mem_bytes,gpu_usages,npu_usages,processes.cpu,processes.mem,processes.mem_bytes,resources,service.last_updated",
       },
     ],
     {
@@ -201,12 +208,12 @@ export default function GeneralMetrics({
           series[key] = { name: key, data: [] };
         }
 
-        const data = detStats.cpu;
+        const data = cpuCapacityPercent(detStats.cpu, stats.resources);
 
-        if (data != undefined) {
+        if (data !== null) {
           series[key].data.push({
             x: statsIdx + 1,
-            y: data,
+            y: String(data),
           });
         }
       });
@@ -233,10 +240,11 @@ export default function GeneralMetrics({
           series[key] = { name: key, data: [] };
         }
 
-        if (detStats.mem != undefined) {
+        const memory = metricNumber(detStats.mem);
+        if (memory !== null) {
           series[key].data.push({
             x: statsIdx + 1,
-            y: detStats.mem,
+            y: String(memory),
           });
         }
       });
@@ -266,9 +274,10 @@ export default function GeneralMetrics({
           series[key] = { name: key, data: [] };
         }
 
-        if (stats.gpu) {
+        const value = metricNumber(stats.gpu);
+        if (value !== null) {
           hasValidGpu = true;
-          series[key].data.push({ x: statsIdx + 1, y: stats.gpu.slice(0, -1) });
+          series[key].data.push({ x: statsIdx + 1, y: String(value) });
         }
       });
     });
@@ -316,9 +325,10 @@ export default function GeneralMetrics({
           series[key] = { name: key, data: [] };
         }
 
-        if (stats.mem) {
+        const value = metricNumber(stats.mem);
+        if (value !== null) {
           hasValidGpu = true;
-          series[key].data.push({ x: statsIdx + 1, y: stats.mem.slice(0, -1) });
+          series[key].data.push({ x: statsIdx + 1, y: String(value) });
         }
       });
     });
@@ -350,9 +360,10 @@ export default function GeneralMetrics({
           series[key] = { name: key, data: [] };
         }
 
-        if (stats.enc) {
+        const value = metricNumber(stats.enc);
+        if (value !== null) {
           hasValidGpu = true;
-          series[key].data.push({ x: statsIdx + 1, y: stats.enc.slice(0, -1) });
+          series[key].data.push({ x: statsIdx + 1, y: String(value) });
         }
       });
     });
@@ -384,11 +395,12 @@ export default function GeneralMetrics({
           series[key] = { name: key, data: [] };
         }
 
-        if (stats.compute) {
+        const value = metricNumber(stats.compute);
+        if (value !== null) {
           hasValidGpu = true;
           series[key].data.push({
             x: statsIdx + 1,
-            y: stats.compute.slice(0, -1),
+            y: String(value),
           });
         }
       });
@@ -421,9 +433,10 @@ export default function GeneralMetrics({
           series[key] = { name: key, data: [] };
         }
 
-        if (stats.dec) {
+        const value = metricNumber(stats.dec);
+        if (value !== null) {
           hasValidGpu = true;
-          series[key].data.push({ x: statsIdx + 1, y: stats.dec.slice(0, -1) });
+          series[key].data.push({ x: statsIdx + 1, y: String(value) });
         }
       });
     });
@@ -491,7 +504,7 @@ export default function GeneralMetrics({
           series[key] = { name: key, data: [] };
         }
 
-        if (stats?.npu) {
+        if (Number.isFinite(stats?.npu)) {
           hasValidNpu = true;
           series[key].data.push({ x: statsIdx + 1, y: stats.npu });
         }
@@ -590,7 +603,11 @@ export default function GeneralMetrics({
     }
 
     const series: {
-      [key: string]: { name: string; data: { x: number; y: string }[] };
+      [key: string]: {
+        id?: string;
+        name: string;
+        data: { x: number; y: string }[];
+      };
     } = {};
 
     statsHistory.forEach((stats, statsIdx) => {
@@ -601,15 +618,17 @@ export default function GeneralMetrics({
       Object.entries(stats.processes).forEach(([key, procStats]) => {
         if (!(key in series)) {
           series[key] = {
+            id: key,
             name: t(`general.otherProcesses.series.${key}`),
             data: [],
           };
         }
 
-        if (procStats.cpu != undefined) {
+        const value = cpuCapacityPercent(procStats.cpu, stats.resources);
+        if (value !== null) {
           series[key].data.push({
             x: statsIdx + 1,
-            y: procStats.cpu,
+            y: String(value),
           });
         }
       });
@@ -623,7 +642,11 @@ export default function GeneralMetrics({
     }
 
     const series: {
-      [key: string]: { name: string; data: { x: number; y: string }[] };
+      [key: string]: {
+        id?: string;
+        name: string;
+        data: { x: number; y: string }[];
+      };
     } = {};
 
     statsHistory.forEach((stats, statsIdx) => {
@@ -634,21 +657,34 @@ export default function GeneralMetrics({
       Object.entries(stats.processes).forEach(([key, procStats]) => {
         if (!(key in series)) {
           series[key] = {
+            id: key,
             name: t(`general.otherProcesses.series.${key}`),
             data: [],
           };
         }
 
-        if (procStats.mem) {
+        const value = metricNumber(procStats.mem);
+        if (value !== null) {
           series[key].data.push({
             x: statsIdx + 1,
-            y: procStats.mem,
+            y: String(value),
           });
         }
       });
     });
     return Object.values(series);
   }, [statsHistory, t]);
+
+  const latest = statsHistory.at(-1);
+  const limits = latest?.resources;
+  const coreDetail = (raw: unknown) =>
+    t("resources.coreEquivalents", {
+      cores: formatMetric(cpuCoreEquivalents(raw)),
+    });
+  const memoryDetail = (bytes: number | null | undefined) =>
+    bytes == null
+      ? t("resources.rssUnavailable")
+      : t("resources.rss", { size: getUnitSizeFromBytes(bytes) });
 
   return (
     <>
@@ -659,6 +695,28 @@ export default function GeneralMetrics({
       />
 
       <div className="scrollbar-container mt-4 flex size-full flex-col overflow-y-auto">
+        <div
+          className="mb-4 space-y-1 text-sm text-muted-foreground"
+          role="note"
+        >
+          <p>
+            {limits?.cpu_capacity != null
+              ? t("resources.cpuBasis", {
+                  capacity: formatMetric(limits.cpu_capacity),
+                  scope: t(`resources.scope.${limits.cpu_scope}`),
+                })
+              : t("resources.cpuBasisUnavailable")}
+          </p>
+          <p>
+            {limits?.memory_capacity_bytes != null
+              ? t("resources.memoryBasis", {
+                  size: getUnitSizeFromBytes(limits.memory_capacity_bytes),
+                  scope: t(`resources.scope.${limits.memory_scope}`),
+                })
+              : t("resources.memoryBasisUnavailable")}
+          </p>
+          <p>{t("resources.gpuBasis")}</p>
+        </div>
         <div className="text-sm font-medium text-muted-foreground">
           {t("general.detector.title")}
         </div>
@@ -739,7 +797,8 @@ export default function GeneralMetrics({
                   graphId={`${series.name}-cpu`}
                   unit="%"
                   name={series.name}
-                  threshold={DetectorCpuThreshold}
+                  threshold={ResourceCpuThreshold}
+                  description={coreDetail(latest?.detectors[series.name]?.cpu)}
                   updateTimes={updateTimes}
                   data={[series]}
                   isActive={isActive}
@@ -759,6 +818,9 @@ export default function GeneralMetrics({
                   unit="%"
                   name={series.name}
                   threshold={DetectorMemThreshold}
+                  description={memoryDetail(
+                    latest?.detectors[series.name]?.mem_bytes,
+                  )}
                   updateTimes={updateTimes}
                   data={[series]}
                   isActive={isActive}
@@ -1016,7 +1078,10 @@ export default function GeneralMetrics({
                   key={`other-process-cpu-${index}`}
                   graphId={`other-process-cpu-${index}`}
                   unit="%"
-                  threshold={DetectorCpuThreshold}
+                  threshold={ResourceCpuThreshold}
+                  description={coreDetail(
+                    series.id ? latest?.processes[series.id]?.cpu : undefined,
+                  )}
                   updateTimes={updateTimes}
                   data={[series]}
                   isActive={isActive}
@@ -1037,6 +1102,11 @@ export default function GeneralMetrics({
                   graphId={`other-process-mem-${index}`}
                   unit="%"
                   threshold={DetectorMemThreshold}
+                  description={memoryDetail(
+                    series.id
+                      ? latest?.processes[series.id]?.mem_bytes
+                      : undefined,
+                  )}
                   updateTimes={updateTimes}
                   data={[series]}
                   isActive={isActive}

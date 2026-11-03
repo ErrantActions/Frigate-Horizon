@@ -10,6 +10,12 @@ import { isMobileOnly } from "react-device-detect";
 import { useTranslation } from "react-i18next";
 import useSWR from "swr";
 import { useTimeFormat } from "@/hooks/use-date-utils";
+import {
+  formatMetric,
+  latestMetricPoint,
+  metricPoint,
+} from "@/utils/resourceUtil";
+import type { ReactNode } from "react";
 
 type ThresholdBarGraphProps = {
   graphId: string;
@@ -19,6 +25,7 @@ type ThresholdBarGraphProps = {
   updateTimes: number[];
   data: ApexAxisChartSeries;
   isActive?: boolean;
+  description?: ReactNode;
 };
 export function ThresholdBarGraph({
   graphId,
@@ -28,16 +35,16 @@ export function ThresholdBarGraph({
   updateTimes,
   data,
   isActive = true,
+  description,
 }: ThresholdBarGraphProps) {
   const displayName = name || data[0]?.name || "";
   const { data: config } = useSWR<FrigateConfig>("config", {
     revalidateOnFocus: false,
   });
 
-  const lastValue = useMemo<number>(
-    // @ts-expect-error y is valid
-    () => data[0].data[data[0].data.length - 1]?.y ?? 0,
-    [data],
+  const lastValue = useMemo(
+    () => latestMetricPoint(data[0]?.data, updateTimes.length),
+    [data, updateTimes.length],
   );
 
   const yMax = useMemo(() => {
@@ -45,10 +52,10 @@ export function ThresholdBarGraph({
       return undefined;
     }
 
-    // @ts-expect-error y is valid
-    const yValues: number[] = data[0].data.map((point) => point?.y);
-    return Math.max(threshold.warning, ...yValues);
-  }, [data, threshold, unit]);
+    const yValues =
+      data[0]?.data.map(metricPoint).filter((value) => value !== null) ?? [];
+    return Math.max(100, ...yValues);
+  }, [data, unit]);
 
   const { theme, systemTheme } = useTheme();
 
@@ -138,7 +145,7 @@ export function ThresholdBarGraph({
       tooltip: {
         theme: systemTheme || theme,
         y: {
-          formatter: (val) => `${val}${unit}`,
+          formatter: (val) => `${formatMetric(val)}${unit}`,
         },
       },
       markers: {
@@ -164,7 +171,7 @@ export function ThresholdBarGraph({
       yaxis: {
         show: true,
         labels: {
-          formatter: (val: number) => Math.ceil(val).toString(),
+          formatter: (val: number) => formatMetric(val),
           style: {
             colors: "#6B6B6B",
           },
@@ -180,14 +187,14 @@ export function ThresholdBarGraph({
   }, [graphId, options]);
 
   const chartData = useMemo(() => {
-    if (data.length > 0 && data[0].data.length >= 30) {
+    if (!data[0] || data[0].data.length >= 30) {
       return data;
     }
 
     const dataPointCount = data[0].data.length;
     const fakeData = [];
     for (let i = dataPointCount; i < 30; i++) {
-      fakeData.push({ x: i - 30, y: 0 });
+      fakeData.push({ x: i - 30, y: null });
     }
 
     const paddedFirst = {
@@ -212,10 +219,13 @@ export function ThresholdBarGraph({
       <div className="flex items-center gap-1">
         <div className="text-xs text-secondary-foreground">{displayName}</div>
         <div className="text-xs text-primary">
-          {lastValue}
-          {unit}
+          {formatMetric(lastValue)}
+          {lastValue !== null && unit}
         </div>
       </div>
+      {description && (
+        <div className="text-xs text-muted-foreground">{description}</div>
+      )}
       <Chart type="bar" options={options} series={chartData} height="120" />
     </div>
   );

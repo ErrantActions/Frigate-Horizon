@@ -32,6 +32,7 @@ from frigate.const import (
 )
 from frigate.util.builtin import clean_camera_user_pass, escape_special_characters
 from frigate.util.env import UnknownVariableError, substitute_frigate_vars
+from frigate.util.resource import get_resource_limits
 
 logger = logging.getLogger(__name__)
 
@@ -115,10 +116,9 @@ def get_docker_memlimit_bytes() -> int:
 
 
 def get_cpu_stats() -> dict[str, dict]:
-    """Get cpu usages for each process id"""
+    """Keep raw per-core CPU percentages and expose exact resident memory bytes."""
     usages = {}
-    docker_memlimit = get_docker_memlimit_bytes() / 1024
-    total_mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1024
+    memory_capacity = get_resource_limits()["memory_capacity_bytes"]
 
     system_cpu = psutil.cpu_percent(
         interval=None
@@ -134,47 +134,60 @@ def get_cpu_stats() -> dict[str, dict]:
         pid = str(process.info["pid"])
         try:
             cpu_percent = process.info["cpu_percent"]
-            cmdline = " ".join(process.info["cmdline"]).rstrip()
+            cmdline = " ".join(process.info["cmdline"] or []).rstrip()
 
             if not any(keyword in cmdline for keyword in keywords):
                 continue
 
             with open(f"/proc/{pid}/stat") as f:
-                stats = f.readline().split()
-            utime = int(stats[13])
-            stime = int(stats[14])
-            start_time = int(stats[21])
+                fields = f.readline().rsplit(")", 1)[1].split()
+            utime = int(fields[11])
+            stime = int(fields[12])
+            start_time = int(fields[19])
 
             with open("/proc/uptime") as f:
-                system_uptime_sec = int(float(f.read().split()[0]))
+                system_uptime_sec = float(f.read().split()[0])
 
             clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
 
-            process_utime_sec = utime // clk_tck
-            process_stime_sec = stime // clk_tck
-            process_start_time_sec = start_time // clk_tck
+            process_utime_sec = utime / clk_tck
+            process_stime_sec = stime / clk_tck
+            process_start_time_sec = start_time / clk_tck
 
             process_elapsed_sec = system_uptime_sec - process_start_time_sec
             process_usage_sec = process_utime_sec + process_stime_sec
-            cpu_average_usage = process_usage_sec * 100 // process_elapsed_sec
+            cpu_average_usage = (
+                process_usage_sec * 100 / process_elapsed_sec
+                if process_elapsed_sec > 0
+                else None
+            )
 
             with open(f"/proc/{pid}/statm") as f:
                 mem_stats = f.readline().split()
-            mem_res = int(mem_stats[1]) * os.sysconf("SC_PAGE_SIZE") / 1024
-
-            if docker_memlimit > 0:
-                mem_pct = round((mem_res / docker_memlimit) * 100, 1)
-            else:
-                mem_pct = round((mem_res / total_mem) * 100, 1)
+            mem_res = int(mem_stats[1]) * os.sysconf("SC_PAGE_SIZE")
+            mem_pct = mem_res / memory_capacity * 100 if memory_capacity else None
 
             usages[pid] = {
                 "cpu": str(cpu_percent),
-                "cpu_average": str(round(cpu_average_usage, 2)),
-                "mem": f"{mem_pct}",
+                "cpu_average": str(round(cpu_average_usage, 4))
+                if cpu_average_usage is not None
+                else None,
+                "mem": str(mem_pct) if mem_pct is not None else None,
+                "mem_bytes": mem_res,
                 "cmdline": clean_camera_user_pass(cmdline),
             }
-        except Exception:
+        except (
+            psutil.NoSuchProcess,
+            psutil.AccessDenied,
+            FileNotFoundError,
+            ProcessLookupError,
+        ):
+            logger.debug(
+                "Process %s disappeared or is inaccessible while collecting stats", pid
+            )
             continue
+        except (OSError, ValueError, IndexError, TypeError):
+            logger.exception("Unable to collect resource stats for process %s", pid)
 
     return usages
 

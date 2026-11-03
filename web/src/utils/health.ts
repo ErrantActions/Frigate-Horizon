@@ -14,6 +14,7 @@ import { summarizeDevices } from "@/utils/detectionHardware";
 import { getSceneLabel } from "@/utils/modelUtil";
 import { isReplayCamera } from "@/utils/cameraUtil";
 import { resolveCameraName } from "@/hooks/use-camera-friendly-name";
+import { formatMetric, metricNumber } from "@/utils/resourceUtil";
 
 export type HealthState = "ok" | "warning" | "error" | "unknown" | "idle";
 
@@ -323,11 +324,17 @@ function decoderUsage(
     return undefined;
   }
 
-  const entry = Object.values(stats.gpu_usages).find(
-    (gpu) =>
-      gpu.vendor && FAMILY_VENDORS[family].includes(gpu.vendor) && gpu.dec,
+  const entries = Object.entries(stats.gpu_usages).filter(
+    ([, gpu]) =>
+      gpu.vendor &&
+      FAMILY_VENDORS[family].includes(gpu.vendor) &&
+      metricNumber(gpu.dec) !== null,
   );
-  return entry?.dec;
+  return entries.length
+    ? entries
+        .map(([name, gpu]) => `${name}: ${formatMetric(gpu.dec)}%`)
+        .join("; ")
+    : undefined;
 }
 
 function valueKey(value: string | string[]): string {
@@ -476,7 +483,7 @@ export function hwaccelRows({
       };
     }
     const detail = dec
-      ? `${cameraList} · ${t("health.hardware.decoderUsage", {
+      ? `${cameraList} · ${t("resources.deviceDecoderUsage", {
           ns: "views/system",
           usage: dec,
         })}`

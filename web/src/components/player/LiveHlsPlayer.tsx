@@ -216,6 +216,7 @@ export default function LiveHlsPlayer({
       setStats({
         streamType: "LL-HLS",
         bandwidth: (hlsRef.current?.bandwidthEstimate ?? 0) / 8000,
+        bandwidthMeasured: (hlsRef.current?.bandwidthEstimate ?? 0) > 0,
         totalFrames: total,
         droppedFrames: dropped,
         decodedFrames: total - dropped,

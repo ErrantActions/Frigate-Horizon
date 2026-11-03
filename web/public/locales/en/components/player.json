@@ -223,8 +223,10 @@
       "short": "Type"
     },
     "bandwidth": {
-      "title": "Bandwidth:",
-      "short": "Bandwidth"
+      "title": "Received video rate:",
+      "short": "Video rate",
+      "estimated": "Estimated available bandwidth:",
+      "valueMbps": "{{value}} Mb/s"
     },
     "totalFrames": "Total Frames:",
     "droppedFrames": {

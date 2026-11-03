@@ -3,6 +3,7 @@ import { useEffect, useMemo } from "react";
 import ApexCharts from "apexcharts";
 import Chart from "react-apexcharts";
 import { getUnitSize } from "@/utils/storageUtil";
+import { formatMetric, usagePercent } from "@/utils/resourceUtil";
 
 type StorageGraphProps = {
   graphId: string;
@@ -11,6 +12,7 @@ type StorageGraphProps = {
 };
 export function StorageGraph({ graphId, used, total }: StorageGraphProps) {
   const { theme, systemTheme } = useTheme();
+  const percent = usagePercent(used, total);
 
   const options = useMemo(() => {
     return {
@@ -63,6 +65,8 @@ export function StorageGraph({ graphId, used, total }: StorageGraphProps) {
         enabled: false,
       },
       xaxis: {
+        min: 0,
+        max: 100,
         axisBorder: {
           show: false,
         },
@@ -96,16 +100,15 @@ export function StorageGraph({ graphId, used, total }: StorageGraphProps) {
           </div>
         </div>
         <div className="text-xs text-primary">
-          {Math.round((used / total) * 100)}%
+          {formatMetric(percent)}
+          {percent !== null && "%"}
         </div>
       </div>
       <div className="h-5 overflow-hidden rounded-md">
         <Chart
           type="bar"
           options={options}
-          series={[
-            { data: [{ x: "storage", y: Math.round((used / total) * 100) }] },
-          ]}
+          series={[{ data: [{ x: "storage", y: percent }] }]}
           height="100%"
         />
       </div>

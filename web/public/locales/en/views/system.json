@@ -1,4 +1,26 @@
 {
+  "resources": {
+    "cpuTitle": "CPU (% of available capacity)",
+    "coreEquivalents": "{{cores}} logical CPU equivalents",
+    "cpuBasis": "Process CPU is a share of {{capacity}} available logical CPU equivalents ({{scope}}), respecting CPU affinity and visible container quotas. Core equivalents are shown separately. Chart colors show capacity utilization; camera health notices separately monitor per-core load and dropped frames.",
+    "cpuBasisUnavailable": "CPU capacity is unavailable. Normalized CPU percentages are not shown; any available core-equivalent readings remain valid.",
+    "memoryBasis": "Process memory is resident RAM (RSS), shown as a share of {{size}} ({{scope}}). Shared pages may appear in more than one process, so do not sum process RSS as total memory use.",
+    "memoryBasisUnavailable": "The memory capacity is unavailable. Resident bytes can still be shown without implying a known percentage.",
+    "scope": {
+      "host": "host capacity",
+      "container": "container capacity",
+      "unknown": "unknown capacity"
+    },
+    "gpuBasis": "GPU percentages are device-wide engine busy time, not Frigate-only use. Graphics/compute, encoder, and decoder engines are independent; do not add their percentages. GPU memory is a share of that device's memory.",
+    "rss": "{{size}} resident RAM (RSS)",
+    "rssUnavailable": "Resident memory size unavailable",
+    "hostCpuDescription": "Host CPU across all logical processors, including workloads outside Frigate. Process CPU charts use the capacity available to Frigate.",
+    "hostCpuValue": "Host CPU {{percent}}%",
+    "cameraCores": "Logical CPU equivalents: FFmpeg {{ffmpeg}}, capture {{capture}}, detection {{detect}}.",
+    "deviceDecoderUsage": "Device-wide decoders: {{usage}}",
+    "recordingGrowth": "Estimated recording growth",
+    "storageBasis": "Storage uses binary MiB, GiB, and TiB. Filesystem usage and recording-budget usage have different denominators. Camera growth rates estimate recorded file sizes, not network-interface traffic."
+  },
   "diagnosticTools": "Diagnostic tools",
   "detectionReports": {
     "title": "Detection Reports",
@@ -182,9 +204,9 @@
         "detector_stuck": "Detector {{detector}} was restarted after it stopped responding",
         "model_download_failed": "Downloading {{file}} for {{model}} failed: {{error}}",
         "skipped_detections": "Detection could not keep up and skipped {{pct}}% of frames for over a minute",
-        "ffmpeg_high_cpu": "FFmpeg CPU usage is high ({{cpu}}% average)",
-        "detect_high_cpu": "Detection CPU usage is high ({{cpu}}% average)",
-        "shm_too_low": "/dev/shm allocation ({{total}} MB) should be increased to at least {{min}} MB",
+        "ffmpeg_high_cpu": "FFmpeg per-core CPU load is high ({{cpu}}% of one logical CPU, lifetime average)",
+        "detect_high_cpu": "Detection per-core CPU load is high ({{cpu}}% of one logical CPU, lifetime average)",
+        "shm_too_low": "/dev/shm allocation ({{total}} MiB) should be increased to at least {{min}} MiB",
         "object_processing_behind": "Tracked object processing could not keep up, so camera frames were dropped. Check CPU utilization, and whether CPU limits or pinning on the container or VM are leaving Frigate too little CPU",
         "failed_login_one": "Failed login attempt for {{user}}",
         "failed_login_other": "Failed login attempts for {{user}}",
@@ -309,9 +331,9 @@
       "title": "Detectors",
       "inferenceSpeed": "Detector Inference Speed",
       "temperature": "Detector Temperature",
-      "cpuUsage": "Detector CPU Usage",
+      "cpuUsage": "Detector CPU (% of available capacity)",
       "cpuUsageInformation": "CPU used in preparing input and output data to/from detection models. This value does not measure inference usage, even if using a GPU or accelerator.",
-      "memoryUsage": "Detector Memory Usage"
+      "memoryUsage": "Detector Resident Memory (% of available RAM)"
     },
     "hardwareInfo": {
       "title": "Hardware Info",
@@ -351,8 +373,8 @@
     },
     "otherProcesses": {
       "title": "Other Processes",
-      "processCpuUsage": "Process CPU Usage",
-      "processMemoryUsage": "Process Memory Usage",
+      "processCpuUsage": "Process CPU (% of available capacity)",
+      "processMemoryUsage": "Process Resident Memory (% of available RAM)",
       "series": {
         "go2rtc": "go2rtc",
         "recording": "recording",
@@ -372,7 +394,7 @@
     },
     "shm": {
       "title": "SHM (shared memory) allocation",
-      "warning": "The current SHM size of {{total}}MB is too small. Increase it to at least {{min_shm}}MB.",
+      "warning": "The current SHM size of {{total}} MiB is too small. Increase it to at least {{min_shm}} MiB.",
       "frameLifetime": {
         "title": "Frame lifetime",
         "description": "Each camera has {{frames}} frame slots in shared memory. At the fastest camera's frame rate, each frame is available for approximately {{lifetime}}s before being overwritten."

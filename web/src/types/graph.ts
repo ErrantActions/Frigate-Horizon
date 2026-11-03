@@ -45,6 +45,11 @@ export const DetectorCpuThreshold = {
   error: 50,
 } as Threshold;
 
+export const ResourceCpuThreshold = {
+  warning: 75,
+  error: 95,
+} as Threshold;
+
 export const DetectorMemThreshold = {
   warning: 20,
   error: 50,

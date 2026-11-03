@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { PlayerStatsType } from "@/types/live";
 import { useTranslation } from "react-i18next";
+import { formatMetric, videoRateMbps } from "@/utils/resourceUtil";
 
 type PlayerStatsProps = {
   stats: PlayerStatsType;
@@ -16,6 +17,17 @@ export function PlayerStats({
   streamAuto = false,
 }: PlayerStatsProps) {
   const { t } = useTranslation(["components/player", "views/live"]);
+  const bandwidth = videoRateMbps(stats.bandwidth);
+  const bandwidthValue =
+    stats.bandwidthMeasured === false || bandwidth === null
+      ? "-"
+      : t("stats.bandwidth.valueMbps", {
+          value: formatMetric(bandwidth),
+        });
+  const bandwidthTitle =
+    stats.streamType === "HLS"
+      ? t("stats.bandwidth.estimated")
+      : t("stats.bandwidth.title");
   const streamTypeLabel = t(
     `stream.technology.name.${stats.streamType.toLowerCase()}`,
     { ns: "views/live", defaultValue: stats.streamType },
@@ -37,8 +49,8 @@ export function PlayerStats({
         <span className="text-white">{streamTypeLabel}</span>
       </p>
       <p>
-        <span className="text-white/70">{t("stats.bandwidth.title")}</span>{" "}
-        <span className="text-white">{stats.bandwidth.toFixed(2)} kBps</span>
+        <span className="text-white/70">{bandwidthTitle}</span>{" "}
+        <span className="text-white">{bandwidthValue}</span>
       </p>
       <p>
         <span className="text-white/70">{t("stats.totalFrames")}</span>{" "}
@@ -76,8 +88,12 @@ export function PlayerStats({
         <span className="text-white">{streamTypeLabel}</span>
       </div>
       <div className="flex flex-col items-center gap-1">
-        <span className="text-white/70">{t("stats.bandwidth.short")}</span>{" "}
-        <span className="text-white">{stats.bandwidth.toFixed(2)} kBps</span>
+        <span className="text-white/70">
+          {stats.streamType === "HLS"
+            ? t("stats.bandwidth.estimated")
+            : t("stats.bandwidth.short")}
+        </span>{" "}
+        <span className="text-white">{bandwidthValue}</span>
       </div>
       {stats.droppedFrames != undefined && (
         <div className="flex flex-col items-center justify-end gap-1">
